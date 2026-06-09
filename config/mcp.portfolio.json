@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "slackbridge": {
+      "command": "node",
+      "args": ["C:\\dev\\claude-slack-channel\\dist\\src\\main.js"]
+    }
+  }
+}
