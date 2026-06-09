@@ -112,6 +112,8 @@ async function main(): Promise<void> {
   const pending = new PendingPermissions();
   // request_id -> ボタンを出したメッセージ（確定時に書き換えるため覚えておく）
   const posted = new Map<string, { channel: string; ts: string }[]>();
+  // DM チャンネル -> 最後にメッセージを受け取ったスレッド。permission request をそこに出す
+  const activeThread = new Map<string, string>();
 
   const server = new ChannelServer({
     logger,
@@ -146,7 +148,7 @@ async function main(): Promise<void> {
       pending.prune();
       pending.add(req);
       const { text, blocks } = buildPermissionBlocks(req);
-      const results = await bridge.postToAll(text, blocks);
+      const results = await bridge.postToAll(text, blocks, (channel) => activeThread.get(channel));
       posted.set(
         req.request_id,
         results.filter((r) => r.ts !== '')
@@ -201,6 +203,9 @@ async function main(): Promise<void> {
         return;
       }
 
+      if (raw.channel && raw.threadTs) {
+        activeThread.set(raw.channel, raw.threadTs);
+      }
       await server.pushMessage(result.content, result.meta);
       if (raw.channel && raw.ts) {
         await bridge.addReaction(raw.channel, raw.ts, REACTION_SEEN);

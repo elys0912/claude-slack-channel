@@ -282,6 +282,18 @@ describe('SlackBridge の送信系', () => {
     expect(res.map((r) => r.channel)).toEqual([DM1, DM2]);
     expect(web.calls.filter((c) => c.method === 'chat.postMessage').length).toBe(2);
   });
+
+  it('postToAll は threadFor が返したスレッドにだけ返信する', async () => {
+    const { bridge, web } = makeBridge();
+    await bridge.init();
+    web.calls.length = 0;
+    await bridge.postToAll('perm', [{ type: 'section' }], (ch) => (ch === DM1 ? '5.0' : undefined));
+    const posts = web.calls.filter((c) => c.method === 'chat.postMessage');
+    expect(posts[0]?.args.channel).toBe(DM1);
+    expect(posts[0]?.args.thread_ts).toBe('5.0');
+    expect(posts[1]?.args.channel).toBe(DM2);
+    expect(posts[1]?.args).not.toHaveProperty('thread_ts');
+  });
 });
 
 describe('SlackBridge の受信', () => {

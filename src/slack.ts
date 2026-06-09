@@ -479,15 +479,24 @@ export class SlackBridge {
     }
   }
 
-  async postToAll(text: string, blocks?: unknown[]): Promise<{ channel: string; ts: string }[]> {
+  /**
+   * 許可ユーザー全員の DM に送る。threadFor が thread_ts を返したチャンネルでは
+   * そのスレッドに、返さなかったチャンネルではトップレベルに投稿する。
+   */
+  async postToAll(
+    text: string,
+    blocks?: unknown[],
+    threadFor?: (channel: string) => string | undefined
+  ): Promise<{ channel: string; ts: string }[]> {
     const out: { channel: string; ts: string }[] = [];
     for (const channel of this.dmChannels.values()) {
+      const threadTs = threadFor?.(channel);
       try {
         if (blocks) {
-          const res = await this.postBlocks(channel, text, blocks);
+          const res = await this.postBlocks(channel, text, blocks, threadTs);
           out.push({ channel, ts: res.ts });
         } else {
-          const res = await this.postText(channel, text);
+          const res = await this.postText(channel, text, threadTs);
           const first = res.ts[0];
           out.push({ channel, ts: first ?? '' });
         }
