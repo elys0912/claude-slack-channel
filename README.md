@@ -35,12 +35,16 @@ Claude Code（claude.exe、手元のセッション）
 
 ### 1. 依存関係のインストールとビルド
 
+好きな場所に clone してから（以下、clone 先を `<repo>` と書く）:
+
 ```
+git clone https://github.com/<owner>/claude-slack-channel.git
+cd claude-slack-channel
 npm install
 npm run build
 ```
 
-`dist/src/main.js` が作られる。以後 `scripts\start-portfolio.cmd` から起動できる。
+`dist/src/main.js` が作られる。以後 `scripts\start.cmd` から起動できる。
 
 ### 2. Slack アプリを manifest から作る
 
@@ -110,14 +114,30 @@ npm run check
 **Windows Terminal から**（VS Code 拡張の中の統合ターミナルでは動かない。理由は
 [権限の設計](#権限の設計)を参照）:
 
-```
-C:\dev\claude-slack-channel\scripts\start-portfolio.cmd
+まず `config\projects.example.json` を `config\projects.json` にコピーして、Claude Code を
+起動したいプロジェクトを並べる（`projects.json` は各自の環境依存なので git 管理外）:
+
+```json
+{
+  "projects": [
+    { "name": "my-app", "path": "C:\\path\\to\\my-app" }
+  ]
+}
 ```
 
-既定では `C:\dev\portfolio` で起動する。別のディレクトリで起動したい場合:
+そのうえで起動する:
 
 ```
-scripts\start-portfolio.cmd -Project C:\path\to\project
+<repo>\scripts\start.cmd
+```
+
+`projects.json` のプロジェクトが番号付きで表示されるので、番号を入力して作業ディレクトリを
+選ぶ（空 Enter で先頭、`q` で起動せずに終了）。
+
+選択を飛ばして直接指定したい場合:
+
+```
+scripts\start.cmd -Project C:\path\to\project
 ```
 
 起動のたびに全画面の警告ダイアログ（experimental channels の確認）が出るので、
@@ -135,10 +155,11 @@ Slack のアプリ一覧からこのボットに DM を送ると、手元のセ�
 
 ## 権限の設計
 
-起動スクリプトは Claude Code を次のフラグで起動する。
+起動スクリプトは Claude Code を次のフラグで起動する。MCP 設定（`slackbridge` サーバーの定義）は
+clone 先の絶対パスを含むため、起動のたびに `%TEMP%\claude-slack-channel\mcp.json` へ生成する。
 
 ```
---mcp-config config\mcp.portfolio.json
+--mcp-config %TEMP%\claude-slack-channel\mcp.json
 --setting-sources project,local
 --settings config\channel-settings.json
 --permission-mode default
@@ -182,7 +203,7 @@ channels（experimental）の動作を確認できていない（`docs/phase0.md
 - 送信者の許可判定は Slack のユーザー ID（`access.json` の `allowFrom`）で行う。表示名や
   メールアドレスでは判定しない。
 - トークン（`SLACK_BOT_TOKEN` / `SLACK_APP_TOKEN`）は状態ディレクトリの `.env` だけに置く。
-  環境変数にも `mcp.portfolio.json` にも書かない。
+  環境変数にも MCP 設定ファイルにも書かない。
 - Slack から届くメッセージは信頼できない入力として扱う。届いた指示をそのまま実行するかどうかは
   上記の権限設計（deny 優先、ユーザー設定を読まない）で制限している。
 
@@ -193,7 +214,7 @@ channels（experimental）の動作を確認できていない（`docs/phase0.md
 2. **OAuth & Permissions** でボットトークンを失効させる（またはアプリを一度アンインストールして
    再インストールし、新しいトークンを発行する）。
 3. `%USERPROFILE%\.claude\channels\slack\.env` を新しいトークンで書き直す。
-4. `npm run check` で疎通を確認してから、`scripts\start-portfolio.cmd` で再起動する。
+4. `npm run check` で疎通を確認してから、`scripts\start.cmd` で再起動する。
 
 ### 許可リストから外すときの手順
 
@@ -240,9 +261,14 @@ npm run typecheck # tsc --noEmit
 - `src/stdio-guard.ts` — stdout を MCP 専用に保つためのガード
 - `src/types.ts` — 共有型定義
 - `scripts/check.ts` — `npm run check` の実体。Slack への疎通確認
-- `scripts/start-portfolio.ps1` / `start-portfolio.cmd` — 起動スクリプト
+- `scripts/start.ps1` / `start.cmd` — 起動スクリプト（プロジェクト選択付き）
+- `config/projects.json` — 起動時に選べるプロジェクトの一覧（各自作成・git 管理外）
 - `config/channel-settings.json` — channel セッション専用の権限設定
-- `config/mcp.portfolio.json` — `--mcp-config` に渡す MCP サーバー定義
+- `config/projects.example.json` — `projects.json` のひな形
 - `config/access.example.json` / `config/env.example` — `access.json` / `.env` のひな形
 - `slack-app-manifest.yaml` — Slack アプリの manifest
 - `docs/phase0.md` — channels 機能そのものの実機確認手順（スパイク）
+
+## ライセンス
+
+[MIT](LICENSE)
