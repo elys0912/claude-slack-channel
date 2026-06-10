@@ -72,6 +72,29 @@ function truncatePlain(text: string, maxLen: number): { text: string; truncated:
   return { text: text.slice(0, cut) + '…', truncated: true };
 }
 
+/** 等幅で表示するブロック（input_preview の表示用） */
+export function preformattedBlock(text: string): unknown {
+  return {
+    type: 'rich_text',
+    elements: [
+      {
+        type: 'rich_text_preformatted',
+        elements: [{ type: 'text', text }]
+      }
+    ]
+  };
+}
+
+function button(label: string, actionId: string, requestId: string, style?: 'primary' | 'danger'): unknown {
+  return {
+    type: 'button',
+    text: { type: 'plain_text', text: label },
+    ...(style ? { style } : {}),
+    action_id: actionId,
+    value: requestId
+  };
+}
+
 export function buildPermissionBlocks(
   req: PermissionRequest,
   previewLimit: number = 2800
@@ -95,15 +118,7 @@ export function buildPermissionBlocks(
       type: 'section',
       text: { type: 'plain_text', text: descriptionResult.text }
     },
-    {
-      type: 'rich_text',
-      elements: [
-        {
-          type: 'rich_text_preformatted',
-          elements: [{ type: 'text', text: previewResult.text }]
-        }
-      ]
-    },
+    preformattedBlock(previewResult.text),
     {
       type: 'context',
       elements: [
@@ -116,30 +131,10 @@ export function buildPermissionBlocks(
     {
       type: 'actions',
       elements: [
-        {
-          type: 'button',
-          text: { type: 'plain_text', text: 'Allow' },
-          style: 'primary',
-          action_id: 'perm_allow',
-          value: req.request_id
-        },
-        {
-          type: 'button',
-          text: { type: 'plain_text', text: 'Deny' },
-          style: 'danger',
-          action_id: 'perm_deny',
-          value: req.request_id
-        },
-        ...(truncated
-          ? [
-              {
-                type: 'button',
-                text: { type: 'plain_text', text: 'See more' },
-                action_id: 'perm_more',
-                value: req.request_id
-              }
-            ]
-          : [])
+        button('Allow', 'perm_allow', req.request_id, 'primary'),
+        button('Deny', 'perm_deny', req.request_id, 'danger'),
+        // 省略した部分があるときだけ、全文を出すボタンを付ける
+        ...(truncated ? [button('See more', 'perm_more', req.request_id)] : [])
       ]
     }
   ];

@@ -71,15 +71,26 @@ export interface SlackDeps {
   socket?: SocketClientLike;
 }
 
+/** 受信メッセージの位置情報（リアクションやスレッド返信の宛先に使う） */
+export interface InboundRef {
+  channel?: string;
+  ts?: string;
+  /** スレッド外のメッセージなら ts と同じ（そのメッセージを起点にスレッドを作る） */
+  threadTs?: string;
+  user?: string;
+}
+
+/** ボタンが押されたメッセージと押した人 */
+export interface ActionContext {
+  userId?: string;
+  channelId?: string;
+  messageTs?: string;
+  value?: string;
+}
+
 export interface SlackBridgeEvents {
-  onMessage: (
-    r: GateResult,
-    raw: { channel?: string; ts?: string; threadTs?: string; user?: string }
-  ) => void | Promise<void>;
-  onAction: (
-    parsed: ActionParse,
-    ctx: { userId?: string; channelId?: string; messageTs?: string; value?: string }
-  ) => void | Promise<void>;
+  onMessage: (r: GateResult, raw: InboundRef) => void | Promise<void>;
+  onAction: (parsed: ActionParse, ctx: ActionContext) => void | Promise<void>;
 }
 
 export interface SlackInitResult {
