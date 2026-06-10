@@ -2,29 +2,19 @@
 // トークンそのものは絶対に表示しない（接頭辞だけ表示する）。
 import { WebClient } from '@slack/web-api';
 import { loadAccess, loadTokens, stateDir } from '../src/config.js';
+import { errMessage, slackErrorCode } from '../src/errors.js';
 
+/** `xoxb-abc...` → `xoxb-***`（トークン本体は出さない） */
 function tokenPrefix(token: string): string {
   const dash = token.indexOf('-');
   if (dash === -1) return '***';
   return `${token.slice(0, dash + 1)}***`;
 }
 
-function errMessage(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
-}
-
-// @slack/web-api のプラットフォームエラーは `data.error` に invalid_auth / missing_scope
-// などのコード文字列を持つ。それ以外の Error はメッセージだけ表示する。
-function platformErrorCode(e: unknown): string | undefined {
-  if (typeof e === 'object' && e !== null && 'data' in e) {
-    const data = (e as { data?: unknown }).data;
-    if (typeof data === 'object' && data !== null && 'error' in data) {
-      const code = (data as { error?: unknown }).error;
-      if (typeof code === 'string') return code;
-    }
-  }
-  return undefined;
-}
+const AUTH_ERROR_HINTS: Record<string, string> = {
+  invalid_auth: 'SLACK_BOT_TOKEN が無効。api.slack.com でトークンを確認して',
+  missing_scope: 'ボットトークンのスコープが不足している。OAuth & Permissions を確認して',
+};
 
 async function main(): Promise<void> {
   const dir = stateDir();
@@ -56,17 +46,10 @@ async function main(): Promise<void> {
   try {
     auth = await client.auth.test();
   } catch (e) {
-    const code = platformErrorCode(e);
-    if (code) {
-      console.error(`[check] auth.test に失敗: ${code}`);
-      if (code === 'invalid_auth') {
-        console.error('  SLACK_BOT_TOKEN が無効。api.slack.com でトークンを確認して');
-      } else if (code === 'missing_scope') {
-        console.error('  ボットトークンのスコープが不足している。OAuth & Permissions を確認して');
-      }
-    } else {
-      console.error(`[check] auth.test に失敗: ${errMessage(e)}`);
-    }
+    const code = slackErrorCode(e);
+    console.error(`[check] auth.test に失敗: ${code ?? errMessage(e)}`);
+    const hint = code ? AUTH_ERROR_HINTS[code] : undefined;
+    if (hint) console.error(`  ${hint}`);
     process.exitCode = 1;
     return;
   }
