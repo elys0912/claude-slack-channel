@@ -1,4 +1,4 @@
-﻿# start.ps1 / spike.ps1 から dot-source して使う共通関数。
+﻿# start.ps1 から dot-source して使う共通関数。
 
 # claude.exe の場所を返す。PATH を優先し、無ければ VS Code 拡張の同梱版のうち
 # 最新バージョンを使う。見つからなければ $null。

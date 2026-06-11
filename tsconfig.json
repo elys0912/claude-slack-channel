@@ -12,5 +12,5 @@
     "skipLibCheck": true
   },
   "include": ["src", "scripts"],
-  "exclude": ["test", "spike", "node_modules", "dist"]
+  "exclude": ["test", "node_modules", "dist"]
 }
