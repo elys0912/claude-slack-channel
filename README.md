@@ -88,6 +88,8 @@ SLACK_APP_TOKEN=xapp-...
 ### 3. 疎通を確認する
 
 ```powershell
+git clone https://github.com/elys0912/claude-slack-channel.git
+cd claude-slack-channel
 npm install
 npm run build
 npm run check
