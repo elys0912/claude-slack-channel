@@ -15,7 +15,7 @@ interface Captured {
 
 async function connect(
   overrides: Partial<{
-    onReply: (a: { chat_id: string; text: string; thread_ts?: string }) => Promise<string>;
+    onReply: (a: { chat_id: string; text: string; thread_ts?: string | undefined }) => Promise<string>;
   }> = {}
 ): Promise<{ client: Client; server: ChannelServer; captured: Captured }> {
   const captured: Captured = {

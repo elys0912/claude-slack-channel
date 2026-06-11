@@ -4,9 +4,9 @@ import { sanitizeMeta } from './format.js';
 
 /** 添付ファイルのうち、Claude に要約して渡す情報だけ */
 export interface FileInfo {
-  name?: string;
-  mimetype?: string;
-  size?: number;
+  name?: string | undefined;
+  mimetype?: string | undefined;
+  size?: number | undefined;
 }
 
 export interface InboundMessage {
