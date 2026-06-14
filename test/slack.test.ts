@@ -439,3 +439,285 @@ describe('SlackBridge の受信', () => {
     await bridge.stop();
   });
 });
+
+// --- 現状固定（受信 payload の詰め替えと送信エラーの扱い） ---
+describe('toInboundMessage の現状固定', () => {
+  it('user_team が無ければ event.team を userTeam に使う', () => {
+    const msg = toInboundMessage({ team_id: 'T123ABC', event: { team: 'TFALLBACK' } });
+    expect(msg.userTeam).toBe('TFALLBACK');
+  });
+
+  it('user_team があれば event.team より優先する', () => {
+    const msg = toInboundMessage({ team_id: 'T123ABC', event: { user_team: 'TUSER', team: 'TFALLBACK' } });
+    expect(msg.userTeam).toBe('TUSER');
+  });
+
+  it('files が配列でなければ undefined になる', () => {
+    const msg = toInboundMessage({ event: { files: 'not-an-array' } });
+    expect(msg.files).toBeUndefined();
+  });
+
+  it('files の size が数値でなければ undefined、name/mimetype が文字列でなければ undefined', () => {
+    const msg = toInboundMessage({ event: { files: [{ name: 1, mimetype: null, size: '10' }, 'junk'] } });
+    expect(msg.files).toEqual([
+      { name: undefined, mimetype: undefined, size: undefined },
+      { name: undefined, mimetype: undefined, size: undefined },
+    ]);
+  });
+
+  it('event が無ければ全項目 undefined', () => {
+    const msg = toInboundMessage({});
+    expect(msg).toEqual({
+      teamId: undefined,
+      eventId: undefined,
+      channelType: undefined,
+      channel: undefined,
+      user: undefined,
+      userTeam: undefined,
+      botId: undefined,
+      subtype: undefined,
+      text: undefined,
+      ts: undefined,
+      threadTs: undefined,
+      files: undefined,
+    });
+  });
+});
+
+describe('SlackBridge の受信（現状固定）', () => {
+  async function startWithActionCapture() {
+    const made = makeBridge();
+    await made.bridge.init();
+    const seen: ActionParse[] = [];
+    const ctxs: ActionContext[] = [];
+    await made.bridge.start({
+      onMessage: () => undefined,
+      onAction: (p, ctx) => {
+        seen.push(p);
+        ctxs.push(ctx);
+      },
+    });
+    return { ...made, seen, ctxs };
+  }
+
+  it('container.message_ts が無ければ message.ts を messageTs に使う', async () => {
+    const { socket, ctxs } = await startWithActionCapture();
+    socket.emit('interactive', {
+      type: 'interactive',
+      body: {
+        type: 'block_actions',
+        team: { id: 'T123ABC' },
+        user: { id: 'U111AAA' },
+        channel: { id: DM1 },
+        message: { ts: '77.7' },
+        actions: [{ action_id: 'perm_deny', value: 'abcde' }],
+      },
+      ack: async () => undefined,
+    });
+    await flush();
+    expect(ctxs[0]?.messageTs).toBe('77.7');
+  });
+
+  it('container.message_ts があれば message.ts より優先する', async () => {
+    const { socket, ctxs } = await startWithActionCapture();
+    socket.emit('interactive', {
+      type: 'interactive',
+      body: {
+        type: 'block_actions',
+        team: { id: 'T123ABC' },
+        user: { id: 'U111AAA' },
+        channel: { id: DM1 },
+        container: { message_ts: '55.5' },
+        message: { ts: '77.7' },
+        actions: [{ action_id: 'perm_deny', value: 'abcde' }],
+      },
+      ack: async () => undefined,
+    });
+    await flush();
+    expect(ctxs[0]?.messageTs).toBe('55.5');
+  });
+
+  it('actions が配列でなければ action 無しとして invalid_request_id になる', async () => {
+    const { socket, seen, ctxs } = await startWithActionCapture();
+    socket.emit('interactive', {
+      type: 'interactive',
+      body: {
+        type: 'block_actions',
+        team: { id: 'T123ABC' },
+        user: { id: 'U111AAA' },
+        channel: { id: DM1 },
+        actions: { action_id: 'perm_allow', value: 'abcde' },
+      },
+      ack: async () => undefined,
+    });
+    await flush();
+    expect(seen[0]).toEqual({ ok: false, reason: 'invalid_request_id' });
+    expect(ctxs[0]).toEqual({ userId: 'U111AAA', channelId: DM1, messageTs: undefined, value: undefined });
+  });
+
+  it('body が空でも onAction は呼ばれる（not_block_actions）', async () => {
+    const { socket, seen, ctxs } = await startWithActionCapture();
+    socket.emit('interactive', { type: 'interactive', body: {}, ack: async () => undefined });
+    await flush();
+    expect(seen[0]).toEqual({ ok: false, reason: 'not_block_actions' });
+    expect(ctxs[0]).toEqual({ userId: undefined, channelId: undefined, messageTs: undefined, value: undefined });
+  });
+
+  it('ack が例外を投げても処理は続く（warn に記録）', async () => {
+    const made = makeBridge();
+    const warnSpy = vi.spyOn(made.logger, 'warn');
+    await made.bridge.init();
+    const seen: GateResult[] = [];
+    await made.bridge.start({ onMessage: (r) => void seen.push(r), onAction: () => undefined });
+    made.socket.emit('slack_event', {
+      type: 'events_api',
+      body: {
+        team_id: 'T123ABC',
+        event_id: 'Ev9',
+        event: { type: 'message', channel_type: 'im', channel: DM1, user: 'U111AAA', text: 'hi', ts: '9.9' },
+      },
+      ack: async () => {
+        throw new Error('ack failed');
+      },
+    });
+    await flush();
+    expect(seen[0]?.kind).toBe('deliver');
+    expect(warnSpy.mock.calls[0]?.[0]).toContain('ack');
+  });
+
+  it('event.type が message 以外なら ack だけして onMessage は呼ばない', async () => {
+    const made = makeBridge();
+    await made.bridge.init();
+    let acked = 0;
+    const seen: GateResult[] = [];
+    await made.bridge.start({ onMessage: (r) => void seen.push(r), onAction: () => undefined });
+    made.socket.emit('slack_event', {
+      type: 'events_api',
+      body: { team_id: 'T123ABC', event: { type: 'reaction_added' } },
+      ack: async () => {
+        acked += 1;
+      },
+    });
+    await flush();
+    expect(acked).toBe(1);
+    expect(seen).toEqual([]);
+  });
+
+  it('onMessage に渡る raw は threadTs が無ければ ts で埋まる', async () => {
+    const made = makeBridge();
+    await made.bridge.init();
+    const raws: unknown[] = [];
+    await made.bridge.start({ onMessage: (_r, raw) => void raws.push(raw), onAction: () => undefined });
+    made.socket.emit('slack_event', {
+      type: 'events_api',
+      body: {
+        team_id: 'T123ABC',
+        event_id: 'Ev1',
+        event: { type: 'message', channel_type: 'im', channel: DM1, user: 'U111AAA', text: 'hi', ts: '1.1' },
+      },
+      ack: async () => undefined,
+    });
+    await flush();
+    expect(raws[0]).toEqual({ channel: DM1, ts: '1.1', threadTs: '1.1', user: 'U111AAA' });
+  });
+});
+
+describe('SlackBridge の送信（現状固定）', () => {
+  it('ratelimited（SDK のリトライ枯渇）はそのままの例外として投げる', async () => {
+    const { bridge, web } = makeBridge();
+    await bridge.init();
+    const err = platformError('ratelimited');
+    web.rejectMarkdown = err;
+    await expect(bridge.postText(DM1, 'hi')).rejects.toBe(err);
+    // text へのフォールバックはしない
+    expect(web.calls.filter((c) => c.method === 'chat.postMessage').length).toBe(0);
+  });
+
+  it('コードが無い汎用 Error（リトライ枯渇時）もそのまま投げる', async () => {
+    const { bridge, web } = makeBridge();
+    await bridge.init();
+    const err = new Error('A rate limit was exceeded (retries exhausted)');
+    web.rejectMarkdown = err;
+    await expect(bridge.postText(DM1, 'hi')).rejects.toBe(err);
+  });
+
+  it('途中のチャンクで失敗すると、それまでの ts は返らず例外になる', async () => {
+    const { bridge, web } = makeBridge();
+    await bridge.init();
+    web.calls.length = 0;
+    const original = web.chat.postMessage;
+    let n = 0;
+    web.chat.postMessage = async (args) => {
+      n += 1;
+      if (n === 2) throw platformError('internal_error');
+      return original(args);
+    };
+    const text = ('あ'.repeat(99) + '\n').repeat(300);
+    await expect(bridge.postText(DM1, text)).rejects.toThrow(/internal_error/);
+    expect(web.calls.filter((c) => c.method === 'chat.postMessage').length).toBe(1);
+  });
+
+  it('空文字の postText は何も送らず ts:[] を返す', async () => {
+    const { bridge, web } = makeBridge();
+    await bridge.init();
+    web.calls.length = 0;
+    await expect(bridge.postText(DM1, '')).resolves.toEqual({ ts: [] });
+    expect(web.calls).toEqual([]);
+  });
+
+  it('updateText は blocks を空にして escapeMrkdwn した text で更新する', async () => {
+    const { bridge, web } = makeBridge();
+    await bridge.init();
+    web.calls.length = 0;
+    await bridge.updateText(DM1, '1.0', '<b> & <!here>');
+    expect(web.calls[0]?.method).toBe('chat.update');
+    expect(web.calls[0]?.args.blocks).toEqual([]);
+    expect(web.calls[0]?.args.text).toBe('&lt;b&gt; &amp; @​here');
+  });
+
+  it('postToAll は失敗したチャンネルを結果から除いて続行する', async () => {
+    const { bridge, web, logger } = makeBridge();
+    const errorSpy = vi.spyOn(logger, 'error');
+    await bridge.init();
+    const original = web.chat.postMessage;
+    web.chat.postMessage = async (args) => {
+      if (args.channel === DM1) throw platformError('channel_not_found');
+      return original(args);
+    };
+    const res = await bridge.postToAll('hello');
+    expect(res).toEqual([{ channel: DM2, ts: '100.1' }]);
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('init は conversations.open が channel.id を返さないユーザーを飛ばす', async () => {
+    const { bridge, web, logger } = makeBridge();
+    const warnSpy = vi.spyOn(logger, 'warn');
+    web.conversations.open = async (args) =>
+      args.users === 'U111AAA' ? { ok: true } : { ok: true, channel: { id: DM2 } };
+    const res = await bridge.init();
+    expect(res.dmChannels.size).toBe(1);
+    expect(bridge.allowedDmChannels.has(DM1)).toBe(false);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('init は DM を 1 件も開けなければ Error', async () => {
+    const { bridge, web } = makeBridge();
+    web.conversations.open = async () => {
+      throw platformError('user_not_found');
+    };
+    await expect(bridge.init()).rejects.toThrow(/1 件も/);
+  });
+
+  it('init は enterprise_id が access.teamId と一致しても通す', async () => {
+    const { bridge, web } = makeBridge();
+    web.auth.test = async () => ({ ok: true, team_id: 'TOTHER1', enterprise_id: 'T123ABC', user_id: BOT });
+    const res = await bridge.init();
+    expect(res.teamId).toBe('TOTHER1');
+  });
+
+  it('init は user_id が無ければ Error', async () => {
+    const { bridge, web } = makeBridge();
+    web.auth.test = async () => ({ ok: true, team_id: 'T123ABC' });
+    await expect(bridge.init()).rejects.toThrow(/user_id/);
+  });
+});

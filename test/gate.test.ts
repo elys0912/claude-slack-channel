@@ -222,3 +222,117 @@ describe('parsePermissionReply', () => {
     expect(parsePermissionReply('yes abcdef')).toBeNull();
   });
 });
+
+// --- 現状固定（既知の挙動をそのまま固定する。仕様として望ましいかは別途判断） ---
+describe('gate の現状固定', () => {
+  it('"yes maybe" は現状 verdict になる（maybe が ID の文字集合に収まるため）', () => {
+    const result = gate(baseMsg({ text: 'yes maybe' }), access, selfBotUserId, new EventDedupe());
+    expect(result).toEqual({ kind: 'verdict', verdict: { requestId: 'maybe', behavior: 'allow' } });
+  });
+
+  it('"Y abcde" は allow の verdict になる（大文字小文字を区別しない）', () => {
+    const result = gate(baseMsg({ text: 'Y abcde' }), access, selfBotUserId, new EventDedupe());
+    expect(result).toEqual({ kind: 'verdict', verdict: { requestId: 'abcde', behavior: 'allow' } });
+  });
+
+  it('前後に空白があっても verdict になる', () => {
+    const result = gate(baseMsg({ text: '  no ABCDE \n' }), access, selfBotUserId, new EventDedupe());
+    expect(result).toEqual({ kind: 'verdict', verdict: { requestId: 'abcde', behavior: 'deny' } });
+  });
+
+  it('空白のみの本文は、そのまま deliver される', () => {
+    const result = gate(baseMsg({ text: '   ' }), access, selfBotUserId, new EventDedupe());
+    expect(result.kind).toBe('deliver');
+    if (result.kind === 'deliver') expect(result.content).toBe('   ');
+  });
+
+  it('本文が空で添付が複数なら "(N attachments)" になる', () => {
+    const result = gate(
+      baseMsg({
+        subtype: 'file_share',
+        text: '',
+        files: [
+          { name: 'a.png', mimetype: 'image/png', size: 1 },
+          { name: 'b.txt', mimetype: 'text/plain', size: 2 },
+        ],
+      }),
+      access,
+      selfBotUserId,
+      new EventDedupe()
+    );
+    expect(result.kind).toBe('deliver');
+    if (result.kind === 'deliver') {
+      expect(result.content).toBe('(2 attachments)');
+      expect(result.meta.attachment_count).toBe('2');
+      expect(result.meta.attachments).toBe('a.png(image/png, 1); b.txt(text/plain, 2)');
+    }
+  });
+
+  it('本文が undefined で添付も無ければ "(attachment)" になる', () => {
+    const result = gate(baseMsg({ text: undefined, files: undefined }), access, selfBotUserId, new EventDedupe());
+    expect(result.kind).toBe('deliver');
+    if (result.kind === 'deliver') {
+      expect(result.content).toBe('(attachment)');
+      expect('attachment_count' in result.meta).toBe(false);
+    }
+  });
+
+  it('添付の name / mimetype / size が欠けていても空文字で埋める', () => {
+    const result = gate(
+      baseMsg({ subtype: 'file_share', text: '', files: [{}] }),
+      access,
+      selfBotUserId,
+      new EventDedupe()
+    );
+    expect(result.kind).toBe('deliver');
+    if (result.kind === 'deliver') expect(result.meta.attachments).toBe('(, )');
+  });
+
+  it('eventId が undefined なら重複判定をしない（同じ内容が 2 回とも deliver される）', () => {
+    const dedupe = new EventDedupe();
+    const first = gate(baseMsg({ eventId: undefined }), access, selfBotUserId, dedupe);
+    const second = gate(baseMsg({ eventId: undefined }), access, selfBotUserId, dedupe);
+    expect(first.kind).toBe('deliver');
+    expect(second.kind).toBe('deliver');
+  });
+
+  it('user が空文字なら bot_or_self として drop する', () => {
+    const result = gate(baseMsg({ user: '' }), access, selfBotUserId, new EventDedupe());
+    expect(result).toEqual({ kind: 'drop', reason: 'bot_or_self' });
+  });
+
+  it('user が undefined なら bot_or_self として drop する', () => {
+    const result = gate(baseMsg({ user: undefined }), access, selfBotUserId, new EventDedupe());
+    expect(result).toEqual({ kind: 'drop', reason: 'bot_or_self' });
+  });
+
+  it('userTeam が access の teamId と同じなら通す', () => {
+    const result = gate(baseMsg({ userTeam: 'T123' }), access, selfBotUserId, new EventDedupe());
+    expect(result.kind).toBe('deliver');
+  });
+
+  it('判定順: team → user_team → im → bot → subtype → allowFrom → dedupe の順で最初に当たった理由になる', () => {
+    const dedupe = new EventDedupe();
+    // teamId 不一致かつ許可外ユーザー → team_mismatch が先
+    expect(gate(baseMsg({ teamId: 'TX', user: 'U999' }), access, selfBotUserId, dedupe)).toEqual({
+      kind: 'drop',
+      reason: 'team_mismatch',
+    });
+    // channelType 不一致かつ bot → not_im が先
+    expect(gate(baseMsg({ channelType: 'channel', botId: 'B1' }), access, selfBotUserId, dedupe)).toEqual({
+      kind: 'drop',
+      reason: 'not_im',
+    });
+    // subtype 不一致かつ許可外ユーザー → unsupported_subtype が先
+    expect(gate(baseMsg({ subtype: 'bot_message', user: 'U999' }), access, selfBotUserId, dedupe)).toEqual({
+      kind: 'drop',
+      reason: 'unsupported_subtype',
+    });
+  });
+
+  it('drop されたイベントは dedupe に記録されない', () => {
+    const dedupe = new EventDedupe();
+    expect(gate(baseMsg({ eventId: 'X', user: 'U999' }), access, selfBotUserId, dedupe).kind).toBe('drop');
+    expect(gate(baseMsg({ eventId: 'X' }), access, selfBotUserId, dedupe).kind).toBe('deliver');
+  });
+});

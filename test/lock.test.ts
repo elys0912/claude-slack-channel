@@ -1,8 +1,11 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { InstanceLock } from '../src/lock.js';
+
+// OS の pid 上限（Linux 既定 4194304、Windows は DWORD）を超えない範囲で、実在しないことが確実な値
+const DEAD_PID = 2_000_000_000;
 
 describe('InstanceLock', () => {
   let dir: string;
@@ -46,10 +49,11 @@ describe('InstanceLock', () => {
     expect(lockA.tryAcquire().acquired).toBe(true);
     lockA.release(); // タイマーだけ止める。ファイルは自分のものなので消える
 
-    // 生きたまま放置されたロックを模して再現: 直接ファイルを書き、heartbeat を古くする
+    // 死んだプロセスが残したロックを模す: 直接ファイルを書き、heartbeat を古くする
+    // （pid は実在しないことが確実な値にする）
     fs.writeFileSync(
       file,
-      JSON.stringify({ pid: 111, heartbeat: clock, startedAt: clock }),
+      JSON.stringify({ pid: DEAD_PID, heartbeat: clock, startedAt: clock }),
     );
     clock += 40000; // staleMs を超えて時間を進める
 
@@ -100,6 +104,65 @@ describe('InstanceLock', () => {
     const lockA2 = new InstanceLock(file, { now, pid: 111 });
     expect(lockA2.tryAcquire().acquired).toBe(true);
     lockA.release();
+  });
+
+  it('書き出すキーは pid / heartbeat / startedAt だけ', () => {
+    const lock = new InstanceLock(file, { now, pid: 111 });
+    expect(lock.tryAcquire().acquired).toBe(true);
+    const info = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>;
+    expect(Object.keys(info).sort()).toEqual(['heartbeat', 'pid', 'startedAt']);
+    expect(info).toEqual({ pid: 111, heartbeat: 1_000_000, startedAt: 1_000_000 });
+    lock.release();
+    // 一時ファイルも残さない
+    expect(fs.readdirSync(dir)).toEqual([]);
+  });
+
+  it('heartbeat は intervalMs ごとにファイルの heartbeat だけを更新する', () => {
+    vi.useFakeTimers();
+    try {
+      const lock = new InstanceLock(file, { now, pid: 111, intervalMs: 1000 });
+      expect(lock.tryAcquire().acquired).toBe(true);
+
+      clock += 1500;
+      vi.advanceTimersByTime(1000);
+      let info = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>;
+      expect(info).toEqual({ pid: 111, heartbeat: 1_001_500, startedAt: 1_000_000 });
+
+      clock += 1000;
+      vi.advanceTimersByTime(1000);
+      info = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>;
+      expect(info.heartbeat).toBe(1_002_500);
+      expect(info.startedAt).toBe(1_000_000);
+
+      // release 後は更新されない
+      lock.release();
+      fs.writeFileSync(file, JSON.stringify({ pid: DEAD_PID, heartbeat: 1, startedAt: 1 }));
+      clock += 1000;
+      vi.advanceTimersByTime(1000);
+      info = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>;
+      expect(info.heartbeat).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('stale 判定の境界: heartbeat からちょうど staleMs 経過では取得できず、それを超えると取得できる', () => {
+    fs.writeFileSync(file, JSON.stringify({ pid: DEAD_PID, heartbeat: clock, startedAt: clock }));
+    clock += 30000;
+    const lockA = new InstanceLock(file, { now, pid: 222, staleMs: 30000 });
+    expect(lockA.tryAcquire().acquired).toBe(false);
+
+    clock += 1;
+    const lockB = new InstanceLock(file, { now, pid: 222, staleMs: 30000 });
+    expect(lockB.tryAcquire().acquired).toBe(true);
+    lockB.release();
+  });
+
+  it('キーが欠けたファイルは壊れているものとして扱い取得できる', () => {
+    fs.writeFileSync(file, JSON.stringify({ pid: DEAD_PID, heartbeat: clock }));
+    const lock = new InstanceLock(file, { now, pid: 111 });
+    expect(lock.tryAcquire().acquired).toBe(true);
+    lock.release();
   });
 
   it('タイマーが残らない（テストプロセスが終了できる）', () => {
