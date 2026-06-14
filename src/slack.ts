@@ -3,7 +3,6 @@
 import { WebClient } from '@slack/web-api';
 import { SocketModeClient } from '@slack/socket-mode';
 import type { ParsedAccess } from './config.js';
-import type { Logger as SlackSdkLogger } from '@slack/logger';
 import type { Logger } from './log.js';
 import { toSlackLogger } from './log.js';
 import { EventDedupe, gate } from './gate.js';
@@ -99,23 +98,6 @@ export interface SlackInitResult {
   dmChannels: Map<string, string>;
 }
 
-/**
- * Slack SDK に渡すロガー。setName を無視して、代わりに行頭へ範囲名を付ける。
- * （Logger はプロセスで 1 つを共有しているので、SDK に名前を書き換えさせない）
- */
-function sdkLogger(logger: Logger, scope: string): SlackSdkLogger {
-  const base = toSlackLogger(logger);
-  const tag = `[${scope}]`;
-  return {
-    ...base,
-    debug: (...m: unknown[]) => logger.debug(tag, ...m),
-    info: (...m: unknown[]) => logger.info(tag, ...m),
-    warn: (...m: unknown[]) => logger.warn(tag, ...m),
-    error: (...m: unknown[]) => logger.error(tag, ...m),
-    setName: () => undefined,
-  };
-}
-
 const MARKDOWN_REJECT_RE =
   /invalid_arguments?|unknown_argument|msg_too_long|invalid_form_data|invalid_markdown|invalid_blocks/i;
 
@@ -196,7 +178,7 @@ export class SlackBridge {
     this.web =
       deps.web ??
       (new WebClient(deps.botToken, {
-        logger: sdkLogger(deps.logger, 'slack-web'),
+        logger: toSlackLogger(deps.logger, 'slack-web'),
         retryConfig: RETRY_CONFIG,
         timeout: 15000,
       }) as unknown as SlackWebApiLike);
@@ -208,7 +190,7 @@ export class SlackBridge {
         this.injectedSocket ??
         (new SocketModeClient({
           appToken: this.appToken,
-          logger: sdkLogger(this.logger, 'slack-socket'),
+          logger: toSlackLogger(this.logger, 'slack-socket'),
           autoReconnectEnabled: true,
           clientOptions: { retryConfig: RETRY_CONFIG },
         }) as unknown as SocketClientLike);

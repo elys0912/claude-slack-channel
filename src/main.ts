@@ -35,10 +35,7 @@ async function abort(logger: Logger, what: string, e: unknown, cleanup: () => Pr
 
 // --- 起動 ---------------------------------------------------------------------
 
-async function main(): Promise<void> {
-  const dir = stateDir();
-  const logger = createLogger(dir);
-
+async function main(dir: string, logger: Logger): Promise<void> {
   // 同時に動く Slack ブリッジは1つだけ。2つ目は Slack に繋がず縮退モードで動く
   const lock = new InstanceLock(path.join(dir, 'instance.lock'));
   const lockResult = lock.tryAcquire();
@@ -125,17 +122,19 @@ function installShutdown(logger: Logger, cleanup: () => Promise<void>): void {
 
 // --- 予期しない例外でもプロセスを落とさない ---------------------------------------
 
-const bootLogger = createLogger(stateDir());
+// Logger はプロセスで 1 つ。起動前の例外も main() 内も同じものに書く
+const stateDirectory = stateDir();
+const logger = createLogger(stateDirectory);
 
 process.on('unhandledRejection', (reason: unknown) => {
-  bootLogger.error('unhandledRejection', reason);
+  logger.error('unhandledRejection', reason);
 });
 process.on('uncaughtException', (e: unknown) => {
-  bootLogger.error('uncaughtException', e);
+  logger.error('uncaughtException', e);
 });
 
-main().catch((e: unknown) => {
+main(stateDirectory, logger).catch((e: unknown) => {
   process.stderr.write(`[slackbridge] 起動に失敗: ${errMessage(e)}\n`);
-  bootLogger.error('起動に失敗', e);
+  logger.error('起動に失敗', e);
   void exitWithError(1);
 });
