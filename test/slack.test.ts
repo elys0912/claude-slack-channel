@@ -1,104 +1,11 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { SlackBridge, isMarkdownRejection, toInboundMessage } from '../src/slack.js';
-import type { ActionContext, SlackWebApiLike, SocketClientLike } from '../src/slack.js';
+import type { ActionContext } from '../src/slack.js';
 import { Logger } from '../src/log.js';
-import type { ParsedAccess } from '../src/config.js';
 import type { GateResult } from '../src/gate.js';
 import type { ActionParse } from '../src/permission.js';
-
-const ACCESS: ParsedAccess = { teamId: 'T123ABC', allowFrom: ['U111AAA', 'U222BBB'] };
-const DM1 = 'D111AAA';
-const DM2 = 'D222BBB';
-const BOT = 'UBOT000';
-
-interface ApiCall {
-  method: string;
-  args: Record<string, unknown>;
-}
-
-interface FakeWeb extends SlackWebApiLike {
-  calls: ApiCall[];
-  /** postMessage が markdown_text を含むとき投げるエラー */
-  rejectMarkdown: unknown;
-  reactionError: unknown;
-}
-
-function makeWeb(): FakeWeb {
-  const calls: ApiCall[] = [];
-  let seq = 0;
-  const web: FakeWeb = {
-    calls,
-    rejectMarkdown: undefined,
-    reactionError: undefined,
-    auth: {
-      test: async () => {
-        calls.push({ method: 'auth.test', args: {} });
-        return { ok: true, team_id: 'T123ABC', user_id: BOT };
-      },
-    },
-    conversations: {
-      open: async (args) => {
-        calls.push({ method: 'conversations.open', args });
-        return { ok: true, channel: { id: args.users === 'U111AAA' ? DM1 : DM2 } };
-      },
-    },
-    chat: {
-      postMessage: async (args) => {
-        if (args.markdown_text !== undefined && web.rejectMarkdown !== undefined) {
-          calls.push({ method: 'chat.postMessage:rejected', args });
-          throw web.rejectMarkdown;
-        }
-        calls.push({ method: 'chat.postMessage', args });
-        seq += 1;
-        return { ok: true, ts: `100.${seq}` };
-      },
-      update: async (args) => {
-        calls.push({ method: 'chat.update', args });
-        return { ok: true, ts: String(args.ts) };
-      },
-    },
-    reactions: {
-      add: async (args) => {
-        calls.push({ method: 'reactions.add', args });
-        if (web.reactionError !== undefined) throw web.reactionError;
-        return { ok: true };
-      },
-    },
-  };
-  return web;
-}
-
-interface FakeSocket extends SocketClientLike {
-  listeners: Map<string, ((arg: unknown) => void)[]>;
-  started: number;
-  disconnected: number;
-  emit(event: string, arg: unknown): void;
-}
-
-function makeSocket(): FakeSocket {
-  const listeners = new Map<string, ((arg: unknown) => void)[]>();
-  return {
-    listeners,
-    started: 0,
-    disconnected: 0,
-    on(event: string, listener: (...args: never[]) => void) {
-      const list = listeners.get(event) ?? [];
-      list.push(listener as unknown as (arg: unknown) => void);
-      listeners.set(event, list);
-      return this;
-    },
-    async start() {
-      this.started += 1;
-      return {};
-    },
-    async disconnect() {
-      this.disconnected += 1;
-    },
-    emit(event: string, arg: unknown) {
-      for (const l of listeners.get(event) ?? []) l(arg);
-    },
-  };
-}
+import { ACCESS, BOT, DM1, DM2, flush, makeSocket, makeWeb, platformError } from './helpers/fake-slack.js';
+import type { FakeSocket, FakeWeb } from './helpers/fake-slack.js';
 
 function makeBridge(): { bridge: SlackBridge; web: FakeWeb; socket: FakeSocket; logger: Logger } {
   const web = makeWeb();
@@ -113,18 +20,6 @@ function makeBridge(): { bridge: SlackBridge; web: FakeWeb; socket: FakeSocket; 
     socket,
   });
   return { bridge, web, socket, logger };
-}
-
-function platformError(code: string): Error & { data: { error: string } } {
-  const e = new Error(`An API error occurred: ${code}`) as Error & { data: { error: string } };
-  e.data = { error: code };
-  return e;
-}
-
-/** マイクロタスクを吐き出して非同期ハンドラの完了を待つ */
-async function flush(): Promise<void> {
-  for (let i = 0; i < 10; i++) await Promise.resolve();
-  await new Promise((r) => setTimeout(r, 0));
 }
 
 describe('isMarkdownRejection', () => {
