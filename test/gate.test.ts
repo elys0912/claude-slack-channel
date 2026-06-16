@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { EventDedupe, gate, parsePermissionReply, type InboundMessage } from '../src/gate.js';
-import type { AccessConfig } from '../src/types.js';
+import type { ParsedAccess } from '../src/config.js';
 
-const access: AccessConfig = { teamId: 'T123', allowFrom: ['U123'] };
+const access: ParsedAccess = { teamId: 'T123', allowFrom: ['U123'] };
 const selfBotUserId = 'UBOT1';
 
 function baseMsg(overrides: Partial<InboundMessage> = {}): InboundMessage {

@@ -1,6 +1,8 @@
 // Slack events_api の受信メッセージを、中継すべきかどうか判定する純関数群（I/O なし）
-import type { AccessConfig, Verdict } from './types.js';
+import type { ParsedAccess } from './config.js';
+import type { Verdict } from './types.js';
 import { sanitizeMeta } from './format.js';
+import { PERMISSION_ID_BODY } from './permission.js';
 
 /** 添付ファイルのうち、Claude に要約して渡す情報だけ */
 export interface FileInfo {
@@ -53,7 +55,8 @@ export class EventDedupe {
   }
 }
 
-const PERMISSION_REPLY_RE = /^\s*(y|yes|n|no)\s+([a-km-z]{5})\s*$/i;
+// ボタン側（parseBlockAction）は小文字のみ受け付けるが、返信側は大文字も受けて小文字化する
+const PERMISSION_REPLY_RE = new RegExp(String.raw`^\s*(y|yes|n|no)\s+(${PERMISSION_ID_BODY})\s*$`, 'i');
 
 /** permission relay への返信テキストをパースする（y/yes→allow, n/no→deny, ID は小文字化） */
 export function parsePermissionReply(text: string): Verdict | null {
@@ -91,7 +94,7 @@ function attachmentPlaceholder(files: FileInfo[] | undefined): string {
 /** Slack からの受信イベントを判定する。判定順は仕様書のとおり最初に当てはまったもので決まる */
 export function gate(
   msg: InboundMessage,
-  access: AccessConfig,
+  access: ParsedAccess,
   selfBotUserId: string | undefined,
   dedupe: EventDedupe
 ): GateResult {

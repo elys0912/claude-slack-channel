@@ -1,5 +1,6 @@
 // permission relay（Slack 上での実行許可のやり取り）に関する純関数群（I/O なし）
-import type { AccessConfig, Verdict } from './types.js';
+import type { ParsedAccess } from './config.js';
+import type { Verdict } from './types.js';
 import { neutralizeBroadcasts } from './format.js';
 
 export interface PermissionRequest {
@@ -9,7 +10,9 @@ export interface PermissionRequest {
   input_preview: string;
 }
 
-export const PERMISSION_ID_RE = /^[a-km-z]{5}$/;
+/** request_id の文字集合（小文字 5 文字、l を除く）。gate.ts の返信パターンもこれから組み立てる */
+export const PERMISSION_ID_BODY = '[a-km-z]{5}';
+export const PERMISSION_ID_RE = new RegExp(`^${PERMISSION_ID_BODY}$`);
 
 export function isValidRequestId(id: string): boolean {
   return PERMISSION_ID_RE.test(id);
@@ -206,7 +209,7 @@ export type ActionParse =
 
 export function parseBlockAction(
   input: BlockActionInput,
-  access: AccessConfig,
+  access: ParsedAccess,
   allowedDmChannels: ReadonlySet<string>
 ): ActionParse {
   if (input.type !== 'block_actions') {
