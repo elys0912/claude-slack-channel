@@ -1,7 +1,7 @@
 // chunkText の出力が、分割前の実装（test/fixtures/chunk-legacy.ts）と一致することを固定シードで確認する。
 // あわせて、出力の不変条件（content の連結 = 元の文字列、prefix/suffix がフェンス状態と一致）を検証する。
 import { describe, expect, it } from 'vitest';
-import { chunkText } from '../src/chunk.js';
+import { chunkText, splitPieces } from '../src/chunk.js';
 import { chunkText as chunkTextLegacy } from './fixtures/chunk-legacy.js';
 
 // 固定シードの簡易 PRNG（mulberry32）
@@ -163,6 +163,34 @@ describe('chunkText の不変条件', () => {
         continue;
       }
       expect(reconstruct(chunks, limit), `case #${i} limit=${limit} text=${JSON.stringify(text)}`).toBe(text);
+    }
+  });
+
+  it('splitPieces: content の連結が元の文字列、prefix/suffix がフェンス状態と一致、chunkText と整合', () => {
+    const rand = mulberry32(99);
+    for (let i = 0; i < 1000; i++) {
+      const limit = 64 + Math.floor(rand() * 200);
+      const len = Math.floor(rand() * limit * 5);
+      const text = randomText(rand, len);
+      const pieces = splitPieces(text, limit);
+      const label = `case #${i} limit=${limit} text=${JSON.stringify(text)}`;
+
+      expect(pieces.map((p) => p.content).join(''), label).toBe(text);
+      expect(pieces.map((p) => p.prefix + p.content + p.suffix), label).toEqual(chunkText(text, limit));
+
+      let open: string | undefined = undefined;
+      pieces.forEach((p, idx) => {
+        expect(p.prefix, label).toBe(open === undefined ? '' : '```' + open + '\n');
+        expect(p.prefix.length + p.content.length + p.suffix.length, label).toBeLessThanOrEqual(limit);
+        const isLast = idx === pieces.length - 1;
+        if (isLast) {
+          expect(p.suffix, label).toBe('');
+        } else {
+          open = fenceStateAfter(open, p.content);
+          expect(p.suffix, label).toBe(open === undefined ? '' : '\n```');
+          expect(p.content.length, label).toBeGreaterThan(0);
+        }
+      });
     }
   });
 });
