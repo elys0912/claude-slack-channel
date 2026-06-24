@@ -84,7 +84,6 @@ export interface ActionContext {
   userId?: string | undefined;
   channelId?: string | undefined;
   messageTs?: string | undefined;
-  value?: string | undefined;
 }
 
 export interface SlackBridgeEvents {
@@ -95,7 +94,8 @@ export interface SlackBridgeEvents {
 export interface SlackInitResult {
   botUserId: string;
   teamId: string;
-  dmChannels: Map<string, string>;
+  /** 開けた DM チャンネルの件数 */
+  dmChannelCount: number;
 }
 
 const MARKDOWN_REJECT_RE =
@@ -168,7 +168,7 @@ export function toBlockActionInput(body: RawEvent): { input: BlockActionInput; c
       actionId: str(action.action_id),
       value,
     },
-    ctx: { userId, channelId, messageTs, value },
+    ctx: { userId, channelId, messageTs },
   };
 }
 
@@ -263,7 +263,7 @@ export class SlackBridge {
       throw new Error('許可ユーザーの DM チャンネルを 1 件も開けなかった');
     }
 
-    return { botUserId, teamId: teamId || enterpriseId, dmChannels: new Map(this.dmChannels) };
+    return { botUserId, teamId: teamId || enterpriseId, dmChannelCount: this.dmChannels.size };
   }
 
   // --- 起動・停止 -----------------------------------------------------------
