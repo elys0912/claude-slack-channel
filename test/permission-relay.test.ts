@@ -77,18 +77,27 @@ describe('PermissionRelay', () => {
     expect(updates[0]?.text).toContain('expired');
   });
 
-  it('テキストの回答は、手元に記録が無い ID でも Claude に送る', async () => {
+  it('テキストの回答は、手元に記録が無い ID なら Claude に送らず false を返す', async () => {
     const { relay, updates, verdicts } = setup();
-    await relay.answerByText({ requestId: 'zzzzz', behavior: 'deny' }, 'U1');
+    expect(await relay.answerByText({ requestId: 'zzzzz', behavior: 'deny' }, 'U1')).toBe(false);
 
-    expect(verdicts).toEqual([{ requestId: 'zzzzz', behavior: 'deny' }]);
+    expect(verdicts).toEqual([]);
     expect(updates).toEqual([]);
+  });
+
+  it('テキストの回答でも、期限切れの ID は Claude に送らない', async () => {
+    let t = 0;
+    const { relay, verdicts } = setup(() => t);
+    await relay.request(REQ);
+    t = 5000;
+    expect(await relay.answerByText({ requestId: 'abcde', behavior: 'allow' }, 'U1')).toBe(false);
+    expect(verdicts).toEqual([]);
   });
 
   it('テキストの回答でも、記録がある ID ならメッセージを書き換える', async () => {
     const { relay, updates } = setup();
     await relay.request(REQ);
-    await relay.answerByText({ requestId: 'abcde', behavior: 'deny' }, 'U1');
+    expect(await relay.answerByText({ requestId: 'abcde', behavior: 'deny' }, 'U1')).toBe(true);
 
     expect(updates).toHaveLength(1);
     expect(updates[0]?.text).toContain('Denied');

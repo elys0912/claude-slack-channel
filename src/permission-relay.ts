@@ -70,16 +70,19 @@ export class PermissionRelay {
   }
 
   /**
-   * `yes xxxxx` / `no xxxxx` の返信による回答。
-   * 手元に記録が無い ID でも Claude 側はまだ待っている可能性があるので、判定はそのまま送る。
+   * `yes xxxxx` / `no xxxxx` の返信による回答。手元に記録が無い（期限切れ・未知の）ID は Claude に送らない。
+   * 送ったら true を返す。
    */
-  async answerByText(verdict: Verdict, byUserId: string): Promise<void> {
+  async answerByText(verdict: Verdict, byUserId: string): Promise<boolean> {
     const req = this.pending.take(verdict.requestId);
+    if (!req) {
+      this.logger.warn(`記録の無い permission id=${verdict.requestId} への返信は送らない`);
+      return false;
+    }
     await this.claude.sendVerdict(verdict);
-    this.logger.info(
-      `verdict を送信 id=${verdict.requestId} behavior=${verdict.behavior} known=${req !== undefined}`
-    );
-    if (req) await this.markResolved(req, verdict.behavior, byUserId);
+    this.logger.info(`verdict を送信 id=${verdict.requestId} behavior=${verdict.behavior}`);
+    await this.markResolved(req, verdict.behavior, byUserId);
+    return true;
   }
 
   /**

@@ -91,12 +91,16 @@ function attachmentPlaceholder(files: FileInfo[] | undefined): string {
   return '(attachment)';
 }
 
-/** Slack からの受信イベントを判定する。判定順は仕様書のとおり最初に当てはまったもので決まる */
+/**
+ * Slack からの受信イベントを判定する。判定順は仕様書のとおり最初に当てはまったもので決まる。
+ * isKnownRequest を渡すと、`yes xxxxx` の形でも保留中の request_id でなければ verdict にせず通常のメッセージとして扱う。
+ */
 export function gate(
   msg: InboundMessage,
   access: ParsedAccess,
   selfBotUserId: string | undefined,
-  dedupe: EventDedupe
+  dedupe: EventDedupe,
+  isKnownRequest?: (requestId: string) => boolean
 ): GateResult {
   if (msg.teamId === undefined || msg.teamId !== access.teamId) {
     return { kind: 'drop', reason: 'team_mismatch' };
@@ -121,7 +125,7 @@ export function gate(
   }
 
   const verdict = parsePermissionReply(msg.text ?? '');
-  if (verdict) {
+  if (verdict && (isKnownRequest === undefined || isKnownRequest(verdict.requestId))) {
     return { kind: 'verdict', verdict };
   }
 

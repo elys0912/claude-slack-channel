@@ -97,7 +97,7 @@ export function createDegradedDeps(logger: Logger): McpDeps {
 
 // --- Slack → Claude（受信イベントの処理） --------------------------------------
 
-/** DM で届いたメッセージ。`yes xxxxx` / `no xxxxx` なら許可の回答、それ以外は Claude へ中継する */
+/** DM で届いたメッセージ。保留中の ID への `yes xxxxx` / `no xxxxx` なら許可の回答、それ以外は Claude へ中継する */
 export async function handleMessage(
   { bridge, server, relay, logger }: Wiring,
   result: GateResult,
@@ -109,7 +109,8 @@ export async function handleMessage(
       return;
 
     case 'verdict':
-      await relay.answerByText(result.verdict, raw.user ?? '');
+      // gate 通過後に期限が切れた場合は Claude に送っていないので、リアクションも付けない
+      if (!(await relay.answerByText(result.verdict, raw.user ?? ''))) return;
       if (raw.channel && raw.ts) {
         const reaction = result.verdict.behavior === 'allow' ? REACTION.ALLOW : REACTION.DENY;
         await bridge.addReaction(raw.channel, raw.ts, reaction);
@@ -191,6 +192,7 @@ export async function startBridgeApp(opts: BridgeAppOptions): Promise<RunningApp
   await bridge.start({
     onMessage: (result, raw) => handleMessage(wiring, result, raw),
     onAction: (parsed, ctx) => handleAction(wiring, parsed, ctx),
+    isKnownRequest: (id) => relay.lookup(id) !== undefined,
   });
   logger.info('Slack ブリッジ稼働中');
 

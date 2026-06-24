@@ -225,9 +225,24 @@ describe('parsePermissionReply', () => {
 
 // --- 現状固定（既知の挙動をそのまま固定する。仕様として望ましいかは別途判断） ---
 describe('gate の現状固定', () => {
-  it('"yes maybe" は現状 verdict になる（maybe が ID の文字集合に収まるため）', () => {
+  it('"yes maybe" は isKnownRequest を省略すると verdict になる（maybe が ID の文字集合に収まるため）', () => {
     const result = gate(baseMsg({ text: 'yes maybe' }), access, selfBotUserId, new EventDedupe());
     expect(result).toEqual({ kind: 'verdict', verdict: { requestId: 'maybe', behavior: 'allow' } });
+  });
+
+  it('"yes maybe" は保留中の ID でなければ通常のメッセージとして deliver される', () => {
+    const asked: string[] = [];
+    const isKnown = (id: string): boolean => {
+      asked.push(id);
+      return id === 'abcde';
+    };
+    const result = gate(baseMsg({ text: 'yes maybe' }), access, selfBotUserId, new EventDedupe(), isKnown);
+    expect(result.kind).toBe('deliver');
+    if (result.kind === 'deliver') expect(result.content).toBe('yes maybe');
+    expect(asked).toEqual(['maybe']);
+
+    const known = gate(baseMsg({ text: 'no ABCDE' }), access, selfBotUserId, new EventDedupe(), isKnown);
+    expect(known).toEqual({ kind: 'verdict', verdict: { requestId: 'abcde', behavior: 'deny' } });
   });
 
   it('"Y abcde" は allow の verdict になる（大文字小文字を区別しない）', () => {

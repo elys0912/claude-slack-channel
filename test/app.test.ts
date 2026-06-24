@@ -238,13 +238,17 @@ describe('Slack → MCP', () => {
     expect(String(h.web.calls.find((c) => c.method === 'chat.update')?.args.text)).toContain('Denied');
   });
 
-  it('記録のない ID への "yes" も verdict として送られ、リアクションが付く（現状固定）', async () => {
-    h.socket.emit('slack_event', dmEnvelope('yes zzzzz'));
+  it('記録のない ID への "yes" は verdict にせず、通常のメッセージとして届ける', async () => {
+    await sendPermissionRequest(h.client);
+    h.web.calls.length = 0;
+
+    h.socket.emit('slack_event', dmEnvelope('yes maybe'));
     await flush();
 
-    const verdict = h.notifications.find((x) => x.method === 'notifications/claude/channel/permission');
-    expect(verdict?.params).toEqual({ request_id: 'zzzzz', behavior: 'allow' });
-    expect(h.web.calls.map((c) => c.method)).toEqual(['reactions.add']);
+    expect(h.notifications.some((x) => x.method === 'notifications/claude/channel/permission')).toBe(false);
+    const n = h.notifications.find((x) => x.method === 'notifications/claude/channel');
+    expect(n?.params?.content).toBe('yes maybe');
+    expect(h.web.calls).toEqual([{ method: 'reactions.add', args: { channel: DM1, timestamp: '10.1', name: REACTION.SEEN } }]);
   });
 
   it('permission_request は直前に受信したスレッドに投稿される', async () => {
