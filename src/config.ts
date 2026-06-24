@@ -82,10 +82,12 @@ export function loadTokens(dir: string): Tokens {
   return { botToken, appToken };
 }
 
+// teamId はワークスペース ID（T...）、allowFrom はユーザー ID（U...）のみ受け付ける。
+// Enterprise Grid の組織 ID（E...）やグリッドのユーザー ID（W...）は受信イベントの team_id / user と一致しないため不可。
 export const AccessSchema = z.strictObject({
-  teamId: z.string().regex(/^[TE][A-Z0-9]{2,}$/, 'teamId の形式が不正'),
+  teamId: z.string().regex(/^T[A-Z0-9]{2,}$/, 'teamId の形式が不正（T で始まるワークスペース ID）'),
   allowFrom: z
-    .array(z.string().regex(/^[UW][A-Z0-9]{2,}$/, 'allowFrom のID形式が不正'))
+    .array(z.string().regex(/^U[A-Z0-9]{2,}$/, 'allowFrom のID形式が不正（U で始まるユーザー ID）'))
     .min(1, 'allowFrom は1件以上必要')
     .refine((arr) => new Set(arr).size === arr.length, {
       message: 'allowFrom に重複がある',

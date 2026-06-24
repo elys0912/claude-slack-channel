@@ -143,9 +143,17 @@ describe('loadAccess', () => {
   it('正常系', () => {
     fs.writeFileSync(
       path.join(dir, 'access.json'),
-      JSON.stringify({ teamId: 'T12345', allowFrom: ['U12345', 'W12345'] }),
+      JSON.stringify({ teamId: 'T12345', allowFrom: ['U12345', 'U67890'] }),
     );
-    expect(loadAccess(dir)).toEqual({ teamId: 'T12345', allowFrom: ['U12345', 'W12345'] });
+    expect(loadAccess(dir)).toEqual({ teamId: 'T12345', allowFrom: ['U12345', 'U67890'] });
+  });
+
+  it('teamId は T で始まるものだけ、allowFrom は U で始まるものだけ受け付ける', () => {
+    const write = (v: unknown): void => fs.writeFileSync(path.join(dir, 'access.json'), JSON.stringify(v));
+    write({ teamId: 'E12345', allowFrom: ['U12345'] });
+    expect(() => loadAccess(dir)).toThrow(/teamId/);
+    write({ teamId: 'T12345', allowFrom: ['W12345'] });
+    expect(() => loadAccess(dir)).toThrow(/allowFrom/);
   });
 
   it('未知のキーは拒否する', () => {

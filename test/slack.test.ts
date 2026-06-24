@@ -823,11 +823,10 @@ describe('SlackBridge の送信（現状固定）', () => {
     await expect(bridge.init()).rejects.toThrow(/1 件も/);
   });
 
-  it('init は enterprise_id が access.teamId と一致しても通す', async () => {
+  it('init は team_id が無ければ Error（enterprise_id では代用しない）', async () => {
     const { bridge, web } = makeBridge();
-    web.auth.test = async () => ({ ok: true, team_id: 'TOTHER1', enterprise_id: 'T123ABC', user_id: BOT });
-    const res = await bridge.init();
-    expect(res.teamId).toBe('TOTHER1');
+    web.auth.test = async () => ({ ok: true, user_id: BOT });
+    await expect(bridge.init()).rejects.toThrow(/team_id/);
   });
 
   it('init は user_id が無ければ Error', async () => {
