@@ -385,7 +385,7 @@ describe('SlackBridge の受信', () => {
     expect(socket.disconnected).toBe(1);
   });
 
-  it('disconnected が続くとバックオフして start をやり直す', async () => {
+  it('切断されたら、古い接続を disconnect してから start し直す', async () => {
     vi.useFakeTimers();
     try {
       const { bridge, socket } = makeBridge();
@@ -393,27 +393,89 @@ describe('SlackBridge の受信', () => {
       await bridge.start({ onMessage: () => undefined, onAction: () => undefined });
       expect(socket.started).toBe(1);
 
-      socket.emit('disconnected', {});
-      await vi.advanceTimersByTimeAsync(1000);
+      socket.drop();
+      await vi.advanceTimersByTimeAsync(999);
+      expect(socket.started).toBe(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(socket.disconnected).toBe(1);
+      expect(socket.started).toBe(2);
+      expect(socket.leaked).toBe(0);
+      expect(socket.open).toBe(1);
+
+      // 張り直しの disconnect() が出す disconnected で、さらに再接続を予約しない
+      await vi.advanceTimersByTimeAsync(120000);
       expect(socket.started).toBe(2);
 
-      // 再接続後も繋がらないままなら、待ち時間が伸びる
-      socket.emit('disconnected', {});
-      await vi.advanceTimersByTimeAsync(1000);
-      expect(socket.started).toBe(2);
+      // 繋がったのでバックオフは初期値に戻っている
+      socket.drop();
       await vi.advanceTimersByTimeAsync(1000);
       expect(socket.started).toBe(3);
-
-      // connected が来たらバックオフがリセットされる
-      socket.emit('connected', {});
-      socket.emit('disconnected', {});
-      await vi.advanceTimersByTimeAsync(1000);
-      expect(socket.started).toBe(4);
-
+      expect(socket.leaked).toBe(0);
       await bridge.stop();
-      socket.emit('disconnected', {});
-      await vi.advanceTimersByTimeAsync(60000);
-      expect(socket.started).toBe(4); // stop 後は再接続しない
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('start() が失敗したらバックオフを伸ばしてやり直し、繋がったら初期値に戻す', async () => {
+    vi.useFakeTimers();
+    try {
+      const { bridge, socket, logger } = makeBridge();
+      const errorSpy = vi.spyOn(logger, 'error');
+      await bridge.init();
+      await bridge.start({ onMessage: () => undefined, onAction: () => undefined });
+
+      socket.failStart = ['auth', 'closed'];
+      socket.drop();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(socket.started).toBe(2); // 1 回目: apps.connections.open の失敗
+      await vi.advanceTimersByTimeAsync(1999);
+      expect(socket.started).toBe(2);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(socket.started).toBe(3); // 2 回目: hello 前に切断
+      await vi.advanceTimersByTimeAsync(3999);
+      expect(socket.started).toBe(3);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(socket.started).toBe(4); // 3 回目で成功
+      expect(socket.open).toBe(1);
+      expect(socket.leaked).toBe(0);
+      expect(errorSpy.mock.calls.filter((c) => String(c[0]).includes('再接続に失敗'))).toHaveLength(2);
+
+      socket.drop();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(socket.started).toBe(5);
+      await bridge.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('stop 後は再接続しない（予約済みの再接続も取り消す）', async () => {
+    vi.useFakeTimers();
+    try {
+      const { bridge, socket } = makeBridge();
+      await bridge.init();
+      await bridge.start({ onMessage: () => undefined, onAction: () => undefined });
+
+      socket.drop();
+      await bridge.stop();
+      socket.drop();
+      await vi.advanceTimersByTimeAsync(120000);
+      expect(socket.started).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('最初の start() の途中で切断されても、別途再接続を予約しない', async () => {
+    vi.useFakeTimers();
+    try {
+      const { bridge, socket } = makeBridge();
+      await bridge.init();
+      socket.failStart = ['closed'];
+      await expect(bridge.start({ onMessage: () => undefined, onAction: () => undefined })).rejects.toThrow();
+      await vi.advanceTimersByTimeAsync(120000);
+      expect(socket.started).toBe(1);
     } finally {
       vi.useRealTimers();
     }

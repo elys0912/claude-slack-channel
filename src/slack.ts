@@ -21,7 +21,8 @@ const TEXT_LIMIT = 3900;
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 60000;
 
-// 長時間ブロックしないよう、リトライは控えめにする（Web API / Socket Mode 共通）
+// 長時間ブロックしないよう、Web API のリトライは控えめにする
+// （Socket Mode 側の apps.connections.open は SDK の既定に任せる）
 const RETRY_CONFIG = { retries: 2, factor: 2, minTimeout: 500, maxTimeout: 5000 };
 
 /** threadTs があるときだけ chat.* に渡す thread_ts を作る */
@@ -192,6 +193,8 @@ export class SlackBridge {
   private listenersBound = false;
   private connected = false;
   private stopping = false;
+  /** start() の実行中。この間の disconnected は start() の失敗として扱うので、別途再接続を予約しない */
+  private connecting = false;
   private backoffMs = RECONNECT_BASE_MS;
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -216,8 +219,8 @@ export class SlackBridge {
         (new SocketModeClient({
           appToken: this.appToken,
           logger: toSlackLogger(this.logger, 'slack-socket'),
-          autoReconnectEnabled: true,
-          clientOptions: { retryConfig: RETRY_CONFIG },
+          // 再接続はこちらで行う（SDK の自動再接続と二重に張らないため）
+          autoReconnectEnabled: false,
         }) as unknown as SocketClientLike);
     }
     return this.socketClient;
@@ -275,7 +278,12 @@ export class SlackBridge {
       this.bindListeners();
       this.listenersBound = true;
     }
-    await this.socket().start();
+    this.connecting = true;
+    try {
+      await this.socket().start();
+    } finally {
+      this.connecting = false;
+    }
   }
 
   async stop(): Promise<void> {
@@ -308,7 +316,7 @@ export class SlackBridge {
     on('disconnected', () => {
       this.connected = false;
       this.logger.warn('socket: disconnected');
-      this.scheduleReconnect();
+      if (!this.connecting) this.scheduleReconnect();
     });
 
     on('slack_event', (arg) => {
@@ -325,15 +333,32 @@ export class SlackBridge {
     this.backoffMs = Math.min(this.backoffMs * 2, RECONNECT_MAX_MS);
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = undefined;
-      if (this.stopping || this.connected) return;
-      this.logger.warn(`socket: 再接続を試みる（次の待ち ${this.backoffMs}ms）`);
-      // SocketModeClient の自動再接続と競合しても start() は冪等に扱われる
-      void Promise.resolve(this.socket().start()).catch((e: unknown) => {
-        this.logger.error('socket: 再接続に失敗', e);
-        this.scheduleReconnect();
-      });
+      void this.reconnect();
     }, delay);
     this.reconnectTimer.unref?.();
+  }
+
+  /**
+   * 張り直し。SDK の start() は古い WebSocket を片付けずに新しいものを作るので、
+   * 先に disconnect() で古い接続を閉じてから start() する。失敗したらバックオフして再度予約する。
+   */
+  private async reconnect(): Promise<void> {
+    if (this.stopping || this.connected) return;
+    this.logger.warn(`socket: 再接続を試みる（次の待ち ${this.backoffMs}ms）`);
+    const socket = this.socket();
+    this.connecting = true;
+    try {
+      await socket.disconnect();
+      if (this.stopping) return;
+      await socket.start();
+      // start() の途中で stop() された場合、張れてしまった接続を閉じる
+      if (this.stopping) await socket.disconnect();
+    } catch (e) {
+      this.logger.error('socket: 再接続に失敗', e);
+      this.scheduleReconnect();
+    } finally {
+      this.connecting = false;
+    }
   }
 
   // --- 受信ハンドラ ---------------------------------------------------------
