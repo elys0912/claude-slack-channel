@@ -17,6 +17,7 @@ oauth_config:
       - im:history        # message.im の受信に必要
       - im:write          # conversations.open（許可ユーザーとの DM を特定）
       - reactions:write   # 受信 / 判定のリアクション
+      - users:read        # npm run check で allowFrom の表示名を確認（users.info）
 settings:
   event_subscriptions:
     bot_events:
