@@ -386,6 +386,19 @@ describe('MCP → Slack', () => {
     expect(res.content).toEqual([{ type: 'text', text: 'error: An API error occurred: channel_not_found' }]);
   });
 
+  it('長い reply が途中で失敗したら、送れた件数を error 文に含める', async () => {
+    const original = h.web.chat.postMessage;
+    let n = 0;
+    h.web.chat.postMessage = async (args) => {
+      n += 1;
+      if (n === 3) throw platformError('internal_error');
+      return original(args);
+    };
+    const text = ('あ'.repeat(99) + '\n').repeat(300);
+    const res = await h.client.callTool({ name: 'reply', arguments: { chat_id: DM1, text } });
+    expect(res.content).toEqual([{ type: 'text', text: 'error: An API error occurred: internal_error (sent=2)' }]);
+  });
+
   it('react はコロンを外してリアクションを付ける', async () => {
     const res = await h.client.callTool({ name: 'react', arguments: { chat_id: DM1, message_id: '10.1', emoji: ':eyes:' } });
     expect(res.content).toEqual([{ type: 'text', text: 'reacted' }]);
