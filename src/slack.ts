@@ -392,6 +392,7 @@ export class SlackBridge {
 
       const msg = toInboundMessage(body);
       const result = gate(msg, this.access, this.botUserId, this.dedupe, this.handlers?.isKnownRequest);
+      if (result.kind !== 'drop') this.learnDmChannel(msg.user, msg.channel);
       await this.handlers?.onMessage(result, {
         channel: msg.channel,
         ts: msg.ts,
@@ -401,6 +402,18 @@ export class SlackBridge {
     } catch (e) {
       this.logger.error('slack_event の処理で例外', e);
     }
+  }
+
+  /**
+   * init() で conversations.open に失敗した許可ユーザーの DM を、gate を通った受信（team・im・allowFrom を確認済み）から覚える。
+   * 既に DM が分かっているユーザーは上書きしない。
+   */
+  private learnDmChannel(user: string | undefined, channel: string | undefined): void {
+    if (!user || !channel || this.dmChannels.has(user)) return;
+    if (!this.access.allowFrom.includes(user)) return;
+    this.dmChannels.set(user, channel);
+    this.dmChannelIds.add(channel);
+    this.logger.info(`受信した DM から送信先を追加 user=${user} channel=${channel}`);
   }
 
   private async handleInteractive(arg: RawEvent): Promise<void> {
