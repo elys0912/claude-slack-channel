@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { escapeMrkdwn, neutralizeBroadcasts, sanitizeMeta } from '../src/format.js';
+import { META_VALUE_MAX, escapeMrkdwn, neutralizeBroadcasts, sanitizeMeta } from '../src/format.js';
 
 describe('neutralizeBroadcasts', () => {
   it('neutralizes <!channel>', () => {
@@ -77,5 +77,12 @@ describe('sanitizeMeta', () => {
 
   it('returns empty object for empty input', () => {
     expect(sanitizeMeta({})).toEqual({});
+  });
+
+  it('値は META_VALUE_MAX 文字までに切り詰め、末尾を … にする', () => {
+    expect(META_VALUE_MAX).toBe(2000);
+    const out = sanitizeMeta({ ok: 'x'.repeat(2000), long: 'y'.repeat(2001) });
+    expect(out.ok).toBe('x'.repeat(2000));
+    expect(out.long).toBe('y'.repeat(1999) + '…');
   });
 });

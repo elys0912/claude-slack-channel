@@ -68,17 +68,19 @@ export function parsePermissionReply(text: string): Verdict | null {
   return { requestId, behavior };
 }
 
-const DANGEROUS_NAME_CHARS_RE = /[;\r\n<>]/g;
+// 区切り（;）・改行・タグや属性の区切りになり得る文字（< > " ' =）は _ に置き換える
+const DANGEROUS_NAME_CHARS_RE = /[;\r\n<>"'=]/g;
 
-function sanitizeAttachmentName(name: string): string {
-  return name.replace(DANGEROUS_NAME_CHARS_RE, '_');
+/** 添付のファイル名・MIME タイプを meta に載せられる形にする（送信者が自由に付けられる値のため） */
+function sanitizeAttachmentField(value: string): string {
+  return value.replace(DANGEROUS_NAME_CHARS_RE, '_');
 }
 
 function buildAttachmentsSummary(files: FileInfo[]): string {
   return files
     .map((f) => {
-      const name = sanitizeAttachmentName(f.name ?? '');
-      const mimetype = f.mimetype ?? '';
+      const name = sanitizeAttachmentField(f.name ?? '');
+      const mimetype = sanitizeAttachmentField(f.mimetype ?? '');
       const size = f.size ?? '';
       return `${name}(${mimetype}, ${size})`;
     })
