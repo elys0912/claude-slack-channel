@@ -73,13 +73,13 @@ async function main(dir: string, logger: Logger): Promise<void> {
     logger.info(`Slack 接続確認 OK bot=${init.botUserId} team=${init.teamId} dm=${init.dmChannelCount}件`);
   } catch (e) {
     return abort(logger, 'Slack への接続確認に失敗', e, async () => {
-      await bridge.stop();
       lock.release();
+      await bridge.stop();
     });
   }
 
-  const app = await startBridgeApp({ bridge, logger, lock });
-  installShutdown(logger, app.stop);
+  // 終了処理は Socket Mode の接続を待つ前に登録する。開始に失敗したら startBridgeApp が後片付けしてから投げる
+  await startBridgeApp({ bridge, logger, lock, onCleanupReady: (stop) => installShutdown(logger, stop) });
 }
 
 // --- 終了処理 -------------------------------------------------------------------
