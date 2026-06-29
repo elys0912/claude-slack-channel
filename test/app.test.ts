@@ -396,7 +396,10 @@ describe('MCP → Slack', () => {
     expect(res.isError).toBeFalsy();
     const posts = h.web.calls.filter((c) => c.method === 'chat.postMessage');
     expect(posts).toEqual([
-      { method: 'chat.postMessage', args: { channel: DM1, markdown_text: 'hi', thread_ts: '10.1' } },
+      {
+        method: 'chat.postMessage',
+        args: { channel: DM1, markdown_text: 'hi', thread_ts: '10.1', unfurl_links: false, unfurl_media: false },
+      },
     ]);
   });
 

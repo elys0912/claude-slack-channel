@@ -131,6 +131,17 @@ describe('SlackBridge.postText', () => {
     await expect(bridge.postText(DM1, 'hi')).rejects.toThrow(/channel_not_found/);
   });
 
+  it('markdown_text / text のどちらで送ってもリンクとメディアを展開させない', async () => {
+    await bridge.postText(DM1, 'https://example.invalid/');
+    web.rejectMarkdown = platformError('invalid_arguments');
+    await bridge.postText(DM1, 'https://example.invalid/');
+    const sent = web.calls.filter((c) => c.method === 'chat.postMessage');
+    expect(sent.map((p) => [p.args.markdown_text !== undefined, p.args.unfurl_links, p.args.unfurl_media])).toEqual([
+      [true, false, false],
+      [false, false, false],
+    ]);
+  });
+
   it('一斉メンションを無効化する', async () => {
     await bridge.postText(DM1, '<!channel> みんな見て @here');
     const sent = String(web.calls[0]?.args.markdown_text);
@@ -157,6 +168,7 @@ describe('SlackBridge の送信系', () => {
 
     const r = await bridge.postBlocks(DM1, '<!here> perm', [{ type: 'section' }]);
     expect(r.ts).toBe('100.1');
+    expect(web.calls[0]?.args).toMatchObject({ unfurl_links: false, unfurl_media: false });
     expect(String(web.calls[0]?.args.text)).toContain('@​here');
 
     await bridge.updateBlocks(DM1, '100.1', '<!channel> done', []);
