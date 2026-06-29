@@ -8,7 +8,14 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { SlackBridge } from '../src/slack.js';
 import { Logger } from '../src/log.js';
-import { REACTION, createDegradedDeps, createToolHandlers, startBridgeApp, startDegradedApp } from '../src/app.js';
+import {
+  REACTION,
+  createDegradedDeps,
+  createToolHandlers,
+  fencePreview,
+  startBridgeApp,
+  startDegradedApp,
+} from '../src/app.js';
 import { ChannelServer } from '../src/mcp.js';
 import { ACCESS, DM1, DM2, flush, makeSocket, makeWeb, platformError } from './helpers/fake-slack.js';
 import type { FakeSocket, FakeWeb } from './helpers/fake-slack.js';
@@ -291,7 +298,7 @@ describe('Slack → MCP', () => {
     expect(String(updates[0]?.args.text)).toContain('expired');
   });
 
-  it('See more は container.message_ts のスレッドに input_preview 全文をブロックで送る', async () => {
+  it('See more はスレッド外のボタンなら container.message_ts を起点に、input_preview 全文をコードブロックで送る', async () => {
     const preview = 'x'.repeat(5000);
     await sendPermissionRequest(h.client, 'abcde', preview);
     h.web.calls.length = 0;
@@ -303,12 +310,35 @@ describe('Slack → MCP', () => {
     expect(posts).toHaveLength(1);
     expect(posts[0]?.args.channel).toBe(DM1);
     expect(posts[0]?.args.thread_ts).toBe('100.1');
-    expect(posts[0]?.args.text).toBe(preview);
-    expect(posts[0]?.args.blocks).toEqual([
-      { type: 'rich_text', elements: [{ type: 'rich_text_preformatted', elements: [{ type: 'text', text: preview }] }] },
-    ]);
+    expect(posts[0]?.args.markdown_text).toBe('```\n' + preview + '\n```');
+    expect(posts[0]?.args.blocks).toBeUndefined();
     // permission 自体は保留のまま
     expect(h.notifications.some((x) => x.method === 'notifications/claude/channel/permission')).toBe(false);
+  });
+
+  it('See more はスレッド内のボタンならスレッドの親に送り、長い全文はコードブロックを保って分割する', async () => {
+    const preview = ('y'.repeat(99) + '\n').repeat(300);
+    await sendPermissionRequest(h.client, 'abcde', preview);
+    h.web.calls.length = 0;
+
+    h.socket.emit(
+      'interactive',
+      blockAction('perm_more', 'abcde', { container: { message_ts: '100.1', thread_ts: '20.0' } })
+    );
+    await flush();
+
+    const posts = h.web.calls.filter((c) => c.method === 'chat.postMessage');
+    expect(posts.length).toBeGreaterThan(1);
+    for (const p of posts) {
+      expect(p.args.thread_ts).toBe('20.0');
+      const body = String(p.args.markdown_text);
+      expect(body.startsWith('```\n')).toBe(true);
+      expect(body.endsWith('\n```')).toBe(true);
+    }
+  });
+
+  it('fencePreview は中身の行頭の ``` を無効化してからコードブロックで包む', () => {
+    expect(fencePreview('a\n```js\nb\n```')).toBe('```\na\n\u200b```js\nb\n\u200b```\n```');
   });
 
   it('期限切れの See more は定型文をスレッドに送る', async () => {
@@ -319,6 +349,14 @@ describe('Slack → MCP', () => {
     expect(posts).toHaveLength(1);
     expect(posts[0]?.args.thread_ts).toBe('55.5');
     expect(posts[0]?.args.markdown_text).toBe('⌛ permission request abcde は既に期限切れ');
+  });
+
+  it('期限切れの See more もスレッド内のボタンならスレッドの親に送る', async () => {
+    h.socket.emit('interactive', blockAction('perm_more', 'abcde', { container: { message_ts: '55.5', thread_ts: '20.0' } }));
+    await flush();
+
+    const posts = h.web.calls.filter((c) => c.method === 'chat.postMessage');
+    expect(posts[0]?.args.thread_ts).toBe('20.0');
   });
 
   it('See more の送信に失敗しても warn だけで落ちない', async () => {

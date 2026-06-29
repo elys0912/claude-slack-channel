@@ -84,6 +84,8 @@ export interface ActionContext {
   userId?: string | undefined;
   channelId?: string | undefined;
   messageTs?: string | undefined;
+  /** ボタンのメッセージがスレッド内にあるときのスレッドの親 ts */
+  threadTs?: string | undefined;
 }
 
 export interface SlackBridgeEvents {
@@ -152,6 +154,7 @@ export function toInboundMessage(body: RawEvent): InboundMessage {
 /**
  * block_actions の payload から、parseBlockAction の入力と、ボタンが押されたメッセージの位置情報を取り出す。
  * actions が配列でなければ action 無しとして扱う。messageTs は container.message_ts を優先し、無ければ message.ts。
+ * threadTs は container.thread_ts を優先し、無ければ message.thread_ts。
  */
 export function toBlockActionInput(body: RawEvent): { input: BlockActionInput; ctx: ActionContext } {
   const actions = Array.isArray(body.actions) ? body.actions : [];
@@ -160,6 +163,7 @@ export function toBlockActionInput(body: RawEvent): { input: BlockActionInput; c
   const userId = str(obj(body.user)?.id);
   const value = str(action.value);
   const messageTs = str(obj(body.container)?.message_ts) ?? str(obj(body.message)?.ts);
+  const threadTs = str(obj(body.container)?.thread_ts) ?? str(obj(body.message)?.thread_ts);
 
   return {
     input: {
@@ -170,7 +174,7 @@ export function toBlockActionInput(body: RawEvent): { input: BlockActionInput; c
       actionId: str(action.action_id),
       value,
     },
-    ctx: { userId, channelId, messageTs },
+    ctx: { userId, channelId, messageTs, threadTs },
   };
 }
 
