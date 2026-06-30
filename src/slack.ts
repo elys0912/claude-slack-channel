@@ -205,6 +205,8 @@ export class SlackBridge {
   private connecting = false;
   private backoffMs = RECONNECT_BASE_MS;
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  /** 受信イベントの処理の列（末尾） */
+  private inbound: Promise<void> = Promise.resolve();
 
   constructor(deps: SlackDeps) {
     this.access = deps.access;
@@ -327,11 +329,24 @@ export class SlackBridge {
     });
 
     on('slack_event', (arg) => {
-      void this.handleSlackEvent(arg);
+      if (str(arg.type) !== 'events_api') return;
+      this.enqueue(arg, () => this.handleSlackEvent(arg));
     });
     on('interactive', (arg) => {
-      void this.handleInteractive(arg);
+      this.enqueue(arg, () => this.handleInteractive(arg));
     });
+  }
+
+  /**
+   * 受信イベントを 1 本の Promise チェーンに積み、受け取った順に 1 件ずつ処理する。
+   * ack は列を待たずにすぐ返し、処理本体は ack の完了と前のイベントの処理の完了を待ってから始める。
+   */
+  private enqueue(arg: RawEvent, task: () => Promise<void>): void {
+    const acked = this.ackFirst(arg);
+    this.inbound = this.inbound
+      .then(() => acked)
+      .then(task)
+      .catch((e: unknown) => this.logger.error('受信イベントの処理で例外', e));
   }
 
   private scheduleReconnect(): void {
@@ -380,12 +395,9 @@ export class SlackBridge {
     }
   }
 
+  /** events_api の処理本体（ack は enqueue で済ませてある） */
   private async handleSlackEvent(arg: RawEvent): Promise<void> {
     try {
-      if (str(arg.type) !== 'events_api') return;
-      // 何よりも先に ack する
-      await this.ackFirst(arg);
-
       const body = obj(arg.body) ?? {};
       const ev = obj(body.event) ?? {};
       if (str(ev.type) !== 'message') return;
@@ -416,10 +428,9 @@ export class SlackBridge {
     this.logger.info(`受信した DM から送信先を追加 user=${user} channel=${channel}`);
   }
 
+  /** interactive の処理本体（ack は enqueue で済ませてある） */
   private async handleInteractive(arg: RawEvent): Promise<void> {
     try {
-      await this.ackFirst(arg);
-
       const { input, ctx } = toBlockActionInput(obj(arg.body) ?? {});
       const parsed = parseBlockAction(input, this.access, this.dmChannelIds);
       await this.handlers?.onAction(parsed, ctx);
