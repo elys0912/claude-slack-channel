@@ -158,6 +158,23 @@ describe('InstanceLock', () => {
     lockB.release();
   });
 
+  it('heartbeat が 5 秒を超えて未来なら不正として取得でき、5 秒以内なら取得できない', () => {
+    fs.writeFileSync(
+      file,
+      JSON.stringify({ pid: DEAD_PID, heartbeat: clock + 5000, startedAt: clock }),
+    );
+    const lockA = new InstanceLock(file, { now, pid: 222 });
+    expect(lockA.tryAcquire().acquired).toBe(false);
+
+    fs.writeFileSync(
+      file,
+      JSON.stringify({ pid: DEAD_PID, heartbeat: clock + 5001, startedAt: clock }),
+    );
+    const lockB = new InstanceLock(file, { now, pid: 222 });
+    expect(lockB.tryAcquire().acquired).toBe(true);
+    lockB.release();
+  });
+
   it('キーが欠けたファイルは壊れているものとして扱い取得できる', () => {
     fs.writeFileSync(file, JSON.stringify({ pid: DEAD_PID, heartbeat: clock }));
     const lock = new InstanceLock(file, { now, pid: 111 });
