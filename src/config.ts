@@ -10,13 +10,33 @@ function stripBom(text: string): string {
   return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
 }
 
+// 状態ディレクトリ。SLACK_CHANNEL_STATE_DIR があれば絶対パスに解決して使う
+// （相対パスのままだと、起動時のカレントディレクトリ次第で参照先が変わるため）。
 export function stateDir(env: NodeJS.ProcessEnv = process.env): string {
   const dir = env.SLACK_CHANNEL_STATE_DIR;
-  if (dir) return dir;
+  if (dir) return path.resolve(dir);
   return path.join(os.homedir(), '.claude', 'channels', 'slack');
 }
 
-// 自前の .env パーサー。KEY=VALUE / # コメント / 空行 / 前後空白 / "..." '...' の引用符 /
+// `=` より右側を値として解釈する。引用符で囲まれていれば中身を返し、閉じ引用符の後ろの ` # ...` は捨てる。
+// 引用符が無ければ、空白に続く `#` 以降を行末コメントとして捨てる（`a#b` のように空白が無い `#` は値の一部）。
+function parseValue(raw: string): string {
+  const value = raw.trim();
+  const first = value[0];
+  if (first === '"' || first === "'") {
+    const close = value.indexOf(first, 1);
+    if (close !== -1) {
+      const rest = value.slice(close + 1).trim();
+      if (rest === '' || rest.startsWith('#')) return value.slice(1, close);
+    }
+    // 途中に同じ引用符を含む `"a"b"` などは従来どおり両端の引用符だけを剥がす
+    return value.length >= 2 && value.endsWith(first) ? value.slice(1, -1) : value;
+  }
+  const comment = raw.search(/(^|\s)#/);
+  return (comment === -1 ? raw : raw.slice(0, comment)).trim();
+}
+
+// 自前の .env パーサー。KEY=VALUE / # コメント（行頭・値の後ろ）/ 空行 / 前後空白 / "..." '...' の引用符 /
 // CRLF / BOM / `export ` 接頭辞に対応する。値の展開や複数行はしない。
 export function parseDotenv(text: string): Record<string, string> {
   const stripped = stripBom(text);
@@ -34,18 +54,9 @@ export function parseDotenv(text: string): Record<string, string> {
     if (eq === -1) continue;
 
     const key = line.slice(0, eq).trim();
-    let value = line.slice(eq + 1).trim();
     if (!key) continue;
 
-    if (value.length >= 2) {
-      const first = value[0];
-      const last = value[value.length - 1];
-      if ((first === '"' && last === '"') || (first === "'" && last === "'")) {
-        value = value.slice(1, -1);
-      }
-    }
-
-    result[key] = value;
+    result[key] = parseValue(line.slice(eq + 1));
   }
 
   return result;

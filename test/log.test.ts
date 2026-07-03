@@ -13,6 +13,10 @@ describe('redact', () => {
     expect(redact('xoxp-111-222-aaa')).toBe('xox?-***');
   });
 
+  it('xoxe などその他の xox?- トークンも伏せる', () => {
+    expect(redact('refresh=xoxe-1-abcDEF user=xoxc-111-aaa')).toBe('refresh=xox?-*** user=xox?-***');
+  });
+
   it('xapp トークンを伏せる', () => {
     expect(redact('xapp-1-A123-456-xyz')).toBe('xapp-***');
   });
