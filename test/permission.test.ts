@@ -215,6 +215,27 @@ describe('buildPermissionBlocks', () => {
   });
 });
 
+describe('空の項目', () => {
+  function texts(blocks: unknown[]): string[] {
+    const out: string[] = [];
+    for (const b of blocks) {
+      const block = b as { type: string; text?: { text: string }; elements?: { elements?: { text: string }[] }[] };
+      if (block.type === 'section' && block.text) out.push(block.text.text);
+      if (block.type === 'rich_text') out.push(block.elements?.[0]?.elements?.[0]?.text ?? '');
+    }
+    return out;
+  }
+
+  it.each(['', '   ', '\n'])('tool_name / description / input_preview が空（%j）でも空の text を出さない', (empty) => {
+    const req: PermissionRequest = { request_id: 'abcde', tool_name: empty, description: empty, input_preview: empty };
+    const { blocks } = buildPermissionBlocks(req);
+    expect(texts(blocks)).toEqual(['Tool: (不明なツール)', '(説明なし)', '(入力なし)']);
+
+    const resolved = buildResolvedBlocks(req, 'allow', 'U123');
+    expect(texts(resolved.blocks)).toEqual(['Allowed: (不明なツール)']);
+  });
+});
+
 describe('buildResolvedBlocks', () => {
   it('reflects allow', () => {
     const { text } = buildResolvedBlocks(sampleReq, 'allow', 'U123');
