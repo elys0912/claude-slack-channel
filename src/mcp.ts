@@ -6,6 +6,7 @@ import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import { z } from 'zod';
 import type { Logger } from './log.js';
 import type { Verdict } from './types.js';
+import { isValidRequestId } from './permission.js';
 import type { PermissionRequest } from './permission.js';
 import { sanitizeMeta } from './format.js';
 import { errMessage } from './errors.js';
@@ -192,6 +193,13 @@ export class ChannelServer {
 
     this.server.setNotificationHandler(PermissionRequestNotificationSchema, async ({ params }) => {
       try {
+        // 想定外の形の request_id は Slack に出さず（ボタンの value や "yes xxxxx" で扱えない）、
+        // Claude Code 側で待たせ続けないよう、その場で deny を返す
+        if (!isValidRequestId(params.request_id)) {
+          this.logger.warn(`permission_request の request_id が不正なので deny を返す: ${JSON.stringify(params.request_id.slice(0, 40))}`);
+          await this.sendVerdict({ requestId: params.request_id, behavior: 'deny' });
+          return;
+        }
         // params は zod で4フィールドだけに絞られているので、そのまま PermissionRequest になる
         await this.deps.onPermissionRequest(params);
       } catch (e) {
