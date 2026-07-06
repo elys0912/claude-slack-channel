@@ -69,11 +69,74 @@ export class PendingPermissions {
 
 const PLAIN_TEXT_LIMIT = 3000;
 
-function truncatePlain(text: string, maxLen: number): { text: string; truncated: boolean } {
-  if (text.length <= maxLen) return { text, truncated: false };
-  const cut = Math.max(0, maxLen - 1);
-  return { text: text.slice(0, cut) + '…', truncated: true };
+/**
+ * 表示を偽装できる不可視文字（双方向制御 U+202A-202E / U+2066-2069、ゼロ幅 U+200B-200D、BOM U+FEFF）。
+ * 承認画面で実際と違う内容に見せられないよう、`\u{202E}` の形で見えるようにする。
+ */
+const INVISIBLE_RE = /[‪-‮⁦-⁩​-‍﻿]/;
+
+function visibleUnit(ch: string): string {
+  if (!INVISIBLE_RE.test(ch)) return ch;
+  return `\\u{${ch.codePointAt(0)!.toString(16).toUpperCase()}}`;
 }
+
+/** 表示単位（コードポイント 1 つ、または不可視文字のエスケープ 1 つ）に分ける。途中で切ってもサロゲートやエスケープが割れない */
+function toVisibleUnits(text: string): string[] {
+  return Array.from(text, visibleUnit);
+}
+
+/** 不可視文字を `\u{XXXX}` に置き換える（See more の全文表示でも使う） */
+export function revealInvisible(text: string): string {
+  return toVisibleUnits(text).join('');
+}
+
+/** units の先頭から、UTF-16 長の合計が budget 以内に収まるだけ取る */
+function takeHead(units: readonly string[], budget: number): string[] {
+  const out: string[] = [];
+  let len = 0;
+  for (const u of units) {
+    if (len + u.length > budget) break;
+    out.push(u);
+    len += u.length;
+  }
+  return out;
+}
+
+function unitsLength(units: readonly string[]): number {
+  return units.reduce((n, u) => n + u.length, 0);
+}
+
+/** 不可視文字を見えるようにしたうえで、maxLen 以内に先頭だけ残して切り詰める */
+function truncatePlain(text: string, maxLen: number): { text: string; truncated: boolean } {
+  const units = toVisibleUnits(text);
+  if (unitsLength(units) <= maxLen) return { text: units.join(''), truncated: false };
+  return { text: takeHead(units, Math.max(0, maxLen - 1)).join('') + '…', truncated: true };
+}
+
+/** 切り詰めたプレビューの末尾側に残す割合（既定 2800 なら 先頭 約 2000 + 末尾 約 600） */
+const PREVIEW_TAIL_RATIO = 0.22;
+
+/**
+ * input_preview 用: 長いときは先頭と末尾の両方を残し、間に省略した文字数を入れる。
+ * コマンドの末尾に危険な部分を置いて先頭だけ見せる、という偽装を防ぐため。
+ */
+function truncateHeadTail(text: string, maxLen: number): { text: string; truncated: boolean } {
+  const units = toVisibleUnits(text);
+  const total = unitsLength(units);
+  if (total <= maxLen) return { text: units.join(''), truncated: false };
+
+  // 省略表示の桁数は total 以下なので、total で見積もれば長さの上限を超えない
+  const marker = (n: number) => `\n…（途中 ${n} 文字省略）…\n`;
+  const budget = Math.max(0, maxLen - marker(total).length);
+  const tailBudget = Math.floor(budget * PREVIEW_TAIL_RATIO);
+  const head = takeHead(units, budget - tailBudget);
+  const tail = takeHead([...units.slice(head.length)].reverse(), tailBudget).reverse();
+  const omitted = total - unitsLength(head) - unitsLength(tail);
+  return { text: head.join('') + marker(omitted) + tail.join(''), truncated: true };
+}
+
+const PREVIEW_TRUNCATED_WARNING =
+  '⚠️ 入力が長いため途中を省略している。許可する前に See more で全文を確認すること';
 
 /** 等幅で表示するブロック（input_preview の表示用） */
 export function preformattedBlock(text: string): unknown {
@@ -98,13 +161,18 @@ function button(label: string, actionId: string, requestId: string, style?: 'pri
   };
 }
 
+/** Slack は空（空白だけ）の text を持つブロックを受け付けないので、そのときは代わりの文言にする */
+function orPlaceholder(text: string, placeholder: string): string {
+  return text.trim() === '' ? placeholder : text;
+}
+
 export function buildPermissionBlocks(
   req: PermissionRequest,
   previewLimit: number = 2800
 ): { text: string; blocks: unknown[]; truncated: boolean } {
-  const toolNameResult = truncatePlain(req.tool_name, PLAIN_TEXT_LIMIT - 'Tool: '.length);
-  const descriptionResult = truncatePlain(req.description, PLAIN_TEXT_LIMIT);
-  const previewResult = truncatePlain(req.input_preview, previewLimit);
+  const toolNameResult = truncatePlain(orPlaceholder(req.tool_name, '(不明なツール)'), PLAIN_TEXT_LIMIT - 'Tool: '.length);
+  const descriptionResult = truncatePlain(orPlaceholder(req.description, '(説明なし)'), PLAIN_TEXT_LIMIT);
+  const previewResult = truncateHeadTail(orPlaceholder(req.input_preview, '(入力なし)'), previewLimit);
 
   const truncated = toolNameResult.truncated || descriptionResult.truncated || previewResult.truncated;
 
@@ -122,6 +190,10 @@ export function buildPermissionBlocks(
       text: { type: 'plain_text', text: descriptionResult.text }
     },
     preformattedBlock(previewResult.text),
+    // 省略したときだけ警告行を足す（省略していなければ従来どおりのブロック構成）
+    ...(previewResult.truncated
+      ? [{ type: 'context', elements: [{ type: 'plain_text', text: PREVIEW_TRUNCATED_WARNING }] }]
+      : []),
     {
       type: 'context',
       elements: [
@@ -149,6 +221,8 @@ export function buildPermissionBlocks(
   };
 }
 
+const SLACK_USER_ID_RE = /^[UW][A-Z0-9]{2,}$/;
+
 export function buildResolvedBlocks(
   req: PermissionRequest,
   behavior: 'allow' | 'deny',
@@ -156,7 +230,7 @@ export function buildResolvedBlocks(
 ): { text: string; blocks: unknown[] } {
   const verb = behavior === 'allow' ? 'Allowed' : 'Denied';
   const emoji = behavior === 'allow' ? '✅' : '❌';
-  const toolNameResult = truncatePlain(req.tool_name, PLAIN_TEXT_LIMIT - (verb.length + 3));
+  const toolNameResult = truncatePlain(orPlaceholder(req.tool_name, '(不明なツール)'), PLAIN_TEXT_LIMIT - (verb.length + 3));
 
   const blocks: unknown[] = [
     {
@@ -166,10 +240,12 @@ export function buildResolvedBlocks(
     {
       type: 'context',
       elements: [
-        {
-          type: 'mrkdwn',
-          text: `ID: ${req.request_id} ・ by <@${byUserId}>`
-        }
+        // 文字列は plain_text で出す（mrkdwn として解釈させない）。
+        // メンション表示のためだけに、Slack のユーザー ID の形をしているときに限り mrkdwn の <@...> を使う
+        { type: 'plain_text', text: `ID: ${orPlaceholder(req.request_id, '-')} ・ by` },
+        SLACK_USER_ID_RE.test(byUserId)
+          ? { type: 'mrkdwn', text: `<@${byUserId}>` }
+          : { type: 'plain_text', text: orPlaceholder(byUserId, '(不明)') }
       ]
     }
   ];
