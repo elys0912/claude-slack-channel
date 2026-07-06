@@ -221,6 +221,8 @@ export function buildPermissionBlocks(
   };
 }
 
+const SLACK_USER_ID_RE = /^[UW][A-Z0-9]{2,}$/;
+
 export function buildResolvedBlocks(
   req: PermissionRequest,
   behavior: 'allow' | 'deny',
@@ -238,10 +240,12 @@ export function buildResolvedBlocks(
     {
       type: 'context',
       elements: [
-        {
-          type: 'mrkdwn',
-          text: `ID: ${req.request_id} ・ by <@${byUserId}>`
-        }
+        // 文字列は plain_text で出す（mrkdwn として解釈させない）。
+        // メンション表示のためだけに、Slack のユーザー ID の形をしているときに限り mrkdwn の <@...> を使う
+        { type: 'plain_text', text: `ID: ${orPlaceholder(req.request_id, '-')} ・ by` },
+        SLACK_USER_ID_RE.test(byUserId)
+          ? { type: 'mrkdwn', text: `<@${byUserId}>` }
+          : { type: 'plain_text', text: orPlaceholder(byUserId, '(不明)') }
       ]
     }
   ];
