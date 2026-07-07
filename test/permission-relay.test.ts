@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PermissionRelay } from '../src/permission-relay.js';
 import type { RelayClaude, RelaySlack } from '../src/permission-relay.js';
 import { PendingPermissions } from '../src/permission.js';
@@ -101,5 +101,77 @@ describe('PermissionRelay', () => {
 
     expect(updates).toHaveLength(1);
     expect(updates[0]?.text).toContain('Denied');
+  });
+
+  describe('期限切れの自動 deny', () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('TTL を過ぎたら Claude に deny を送り、投稿済みのメッセージを自動拒否の表示にして保留から消す', async () => {
+      vi.useFakeTimers();
+      const { relay, updates, verdicts } = setup();
+      await relay.request(REQ);
+      await vi.advanceTimersByTimeAsync(999);
+      expect(verdicts).toEqual([]);
+
+      await vi.advanceTimersByTimeAsync(1);
+      expect(verdicts).toEqual([{ requestId: 'abcde', behavior: 'deny' }]);
+      expect(updates).toHaveLength(1);
+      expect(updates[0]).toMatchObject({ channel: 'D1', ts: '1.0' });
+      expect(updates[0]?.text).toContain('期限切れのため自動で拒否した');
+      expect(relay.lookup('abcde')).toBeUndefined();
+
+      // 自動 deny の後のボタンは Claude に送らない
+      await relay.answerByButton({ requestId: 'abcde', behavior: 'allow' }, 'U1', { channel: 'D1', ts: '1.0' });
+      expect(verdicts).toHaveLength(1);
+    });
+
+    it('期限前に回答済みなら、期限が来ても deny を重ねて送らない', async () => {
+      vi.useFakeTimers();
+      const { relay, updates, verdicts } = setup();
+      await relay.request(REQ);
+      expect(await relay.answerByText({ requestId: 'abcde', behavior: 'allow' }, 'U1')).toBe(true);
+      await vi.advanceTimersByTimeAsync(5000);
+
+      expect(verdicts).toEqual([{ requestId: 'abcde', behavior: 'allow' }]);
+      expect(updates).toHaveLength(1);
+      expect(updates[0]?.text).toContain('Allowed');
+    });
+
+    it('期限切れ後・タイマー前に押されたボタンは送らず、その後のタイマーで deny を 1 回だけ送る', async () => {
+      vi.useFakeTimers();
+      let t = 0;
+      const { relay, verdicts } = setup(() => t);
+      await relay.request(REQ);
+      t = 5000;
+      await relay.answerByButton({ requestId: 'abcde', behavior: 'allow' }, 'U1', { channel: 'D1', ts: '1.0' });
+      expect(verdicts).toEqual([]);
+
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(verdicts).toEqual([{ requestId: 'abcde', behavior: 'deny' }]);
+    });
+
+    it('deny の送信に失敗しても投げず、メッセージの書き換えは行う', async () => {
+      vi.useFakeTimers();
+      const updates: string[] = [];
+      const relay = new PermissionRelay(
+        {
+          postToAll: async () => [{ channel: 'D1', ts: '1.0' }],
+          updateBlocks: async (_channel, _ts, text) => void updates.push(text),
+        },
+        {
+          sendVerdict: async () => {
+            throw new Error('not connected');
+          },
+        },
+        new Logger({ stderr: false }),
+        new PendingPermissions(1000, () => 0)
+      );
+      await relay.request(REQ);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(updates).toHaveLength(1);
+      expect(updates[0]).toContain('自動で拒否した');
+    });
   });
 });
