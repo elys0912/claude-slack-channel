@@ -1,4 +1,4 @@
-// MCP channel サーバー側。Slack のことは知らない（結合は main.ts の役目）。
+// MCP channel サーバー側。Slack のことは知らない（結合は app.ts の役目）。
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';

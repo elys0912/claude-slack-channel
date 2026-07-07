@@ -41,6 +41,7 @@ export class PendingPermissions {
     this.store.set(req.request_id, { req, expiresAt: this.now() + this.ttlMs });
   }
 
+  /** 期限内なら返すだけで残す（See more 用）。期限切れならここで消して undefined */
   get(id: string): PermissionRequest | undefined {
     const entry = this.store.get(id);
     if (!entry) return undefined;
@@ -51,6 +52,7 @@ export class PendingPermissions {
     return entry.req;
   }
 
+  /** 取り出して消す（回答用。同じ ID に二度答えさせない）。期限切れなら消したうえで undefined */
   take(id: string): PermissionRequest | undefined {
     const entry = this.store.get(id);
     if (!entry) return undefined;
@@ -113,7 +115,7 @@ function truncatePlain(text: string, maxLen: number): { text: string; truncated:
   return { text: takeHead(units, Math.max(0, maxLen - 1)).join('') + '…', truncated: true };
 }
 
-/** 切り詰めたプレビューの末尾側に残す割合（既定 2800 なら 先頭 約 2000 + 末尾 約 600） */
+/** 切り詰めたプレビューの末尾側に残す割合（既定 2800 なら 省略表示を除いて 先頭 約 2200 + 末尾 約 600） */
 const PREVIEW_TAIL_RATIO = 0.22;
 
 /**
@@ -166,6 +168,13 @@ function orPlaceholder(text: string, placeholder: string): string {
   return text.trim() === '' ? placeholder : text;
 }
 
+/**
+ * 実行許可を求めるメッセージのブロックを組み立てる。不可視文字はどの欄も `\u{XXXX}` にして表示する。
+ * - tool_name / description: plain_text の上限（3000）に収まるよう先頭だけ残し、末尾を … にする
+ * - input_preview: previewLimit（既定 2800）を超えたら先頭と末尾を残し、間に省略した文字数を入れ、警告行を足す
+ * - どれかを省略したときだけ See more ボタンを付ける（戻り値の truncated も同じ条件）
+ * 空（空白だけ）の欄は代わりの文言にする。
+ */
 export function buildPermissionBlocks(
   req: PermissionRequest,
   previewLimit: number = 2800
@@ -283,6 +292,12 @@ export type ActionParse =
   | { ok: true; kind: 'see_more'; requestId: string }
   | { ok: false; reason: string };
 
+/**
+ * block_actions のボタン操作を検証して解釈する。次の順に調べ、最初に外れた理由で ok: false を返す:
+ * type が block_actions → team が access.teamId → 押した人が allowFrom → チャンネルが許可ユーザーの DM
+ * → value が request_id の形 → action_id（perm_allow / perm_deny / perm_more）。
+ * 保留中の ID かどうかはここでは見ない（呼び出し側の PermissionRelay が判断する）。
+ */
 export function parseBlockAction(
   input: BlockActionInput,
   access: ParsedAccess,

@@ -10,8 +10,11 @@ function stripBom(text: string): string {
   return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
 }
 
-// 状態ディレクトリ。SLACK_CHANNEL_STATE_DIR があれば絶対パスに解決して使う
-// （相対パスのままだと、起動時のカレントディレクトリ次第で参照先が変わるため）。
+/**
+ * 状態ディレクトリ（.env / access.json / logs / instance.lock の置き場所）を返す。
+ * SLACK_CHANNEL_STATE_DIR があれば path.resolve で絶対パスにして使う（相対パスはこのプロセスのカレントディレクトリ基準）。
+ * 無ければ `~/.claude/channels/slack`。
+ */
 export function stateDir(env: NodeJS.ProcessEnv = process.env): string {
   const dir = env.SLACK_CHANNEL_STATE_DIR;
   if (dir) return path.resolve(dir);
@@ -67,6 +70,10 @@ export interface Tokens {
   appToken: string;
 }
 
+/**
+ * dir/.env から SLACK_BOT_TOKEN（xoxb-）と SLACK_APP_TOKEN（xapp-）を読む。環境変数は見ない。
+ * ファイルが読めない・キーが無い・接頭辞が違うときは投げる（メッセージにトークンの値は含めない）。
+ */
 export function loadTokens(dir: string): Tokens {
   const file = path.join(dir, '.env');
   let text: string;
@@ -98,8 +105,11 @@ export function loadTokens(dir: string): Tokens {
   return { botToken, appToken };
 }
 
-// teamId はワークスペース ID（T...）、allowFrom はユーザー ID（U...）のみ受け付ける。
-// Enterprise Grid の組織 ID（E...）やグリッドのユーザー ID（W...）は受信イベントの team_id / user と一致しないため不可。
+/**
+ * access.json のスキーマ。未知のキーはエラー（strictObject）。
+ * teamId はワークスペース ID（T...）、allowFrom はユーザー ID（U...）のみで、1 件以上・重複不可。
+ * Enterprise Grid の組織 ID（E...）やグリッドのユーザー ID（W...）は受信イベントの team_id / user と一致しないため不可。
+ */
 export const AccessSchema = z.strictObject({
   teamId: z.string().regex(/^T[A-Z0-9]{2,}$/, 'teamId の形式が不正（T で始まるワークスペース ID）'),
   allowFrom: z
@@ -112,6 +122,11 @@ export const AccessSchema = z.strictObject({
 
 export type ParsedAccess = z.infer<typeof AccessSchema>;
 
+/**
+ * dir/access.json を読み、AccessSchema で検証して返す。先頭の BOM は取り除いてから JSON として解釈する。
+ * 次の場合は投げる: ファイルが読めない（`access.json が見つからない`）、JSON 構文エラー（`JSON 構文が不正`）、
+ * スキーマ違反（`access.json の検証に失敗: <パス>: <理由>; ...`）。
+ */
 export function loadAccess(dir: string): ParsedAccess {
   const file = path.join(dir, 'access.json');
   let text: string;

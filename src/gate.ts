@@ -94,7 +94,16 @@ function attachmentPlaceholder(files: FileInfo[] | undefined): string {
 }
 
 /**
- * Slack からの受信イベントを判定する。判定順は仕様書のとおり最初に当てはまったもので決まる。
+ * Slack からの受信イベントを判定する。次の順に調べ、最初に当てはまったもので決まる。
+ *   1. team_id が access.teamId と違う → drop(team_mismatch)
+ *   2. user_team があり access.teamId と違う → drop(user_team_mismatch)
+ *   3. channel_type が im でない → drop(not_im)
+ *   4. bot のメッセージ・user 無し・自分自身 → drop(bot_or_self)
+ *   5. subtype が file_share 以外 → drop(unsupported_subtype)
+ *   6. user が allowFrom に無い → drop(user_not_allowed)
+ *   7. event_id が既出 → drop(duplicate_event)
+ *   8. `yes xxxxx` / `no xxxxx` の形（かつ保留中の ID） → verdict
+ *   9. それ以外 → deliver（本文が空なら添付の代わりの文言）
  * isKnownRequest を渡すと、`yes xxxxx` の形でも保留中の request_id でなければ verdict にせず通常のメッセージとして扱う。
  */
 export function gate(

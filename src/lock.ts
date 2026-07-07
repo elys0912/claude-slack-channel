@@ -76,6 +76,13 @@ export class InstanceLock {
     fs.renameSync(tmp, this.file);
   }
 
+  /**
+   * ロックを取る。既存のロックが次のどちらかなら上書きして取る（どちらでもなければ holder を返して諦める）:
+   * - isSelf: 記録された pid が自分の pid と同じ
+   * - stale: heartbeat が staleMs（既定 30 秒）より古い、または現在時刻より 5 秒を超えて未来
+   * 記録された pid のプロセスが生きているかは確認しない（heartbeat の新しさだけで判断する）。
+   * 読めない・形の違うロックファイルは無いものとして扱う。取れたら intervalMs ごとの heartbeat 更新を始める。
+   */
   tryAcquire(): { acquired: true } | { acquired: false; holder: LockInfo } {
     const existing = this.readInfo();
 

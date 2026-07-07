@@ -151,7 +151,8 @@ export function fencePreview(preview: string): string {
 
 /**
  * See more: ボタンのメッセージでは省略した input_preview の全文をスレッドに送る。
- * 長いときは postText がコードブロックを保ったまま複数メッセージに分ける。
+ * 不可視文字（双方向制御・ゼロ幅・BOM）は revealInvisible で `\u{XXXX}` に置き換えてから送る。
+ * 長いときは postText がコードブロックを保ったまま複数メッセージに分ける。期限切れならその旨だけ送る。
  * 送り先はボタンのメッセージが属するスレッド（スレッド外ならボタンのメッセージ自身を起点にする）。
  */
 async function sendFullPreview({ bridge, relay, logger }: Wiring, requestId: string, ctx: ActionContext): Promise<void> {
