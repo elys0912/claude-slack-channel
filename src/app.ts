@@ -174,7 +174,7 @@ async function sendFullPreview({ bridge, relay, logger }: Wiring, requestId: str
 // --- 起動 ---------------------------------------------------------------------
 
 export interface RunningApp {
-  /** 後片付け（lock.release → bridge.stop → server.close の順。2 回目以降の呼び出しは 1 回目と同じ Promise を返す） */
+  /** 後片付け（lock.release → 保留中の permission request を deny（通常モードのみ） → bridge.stop → server.close の順。2 回目以降の呼び出しは 1 回目と同じ Promise を返す） */
   stop: () => Promise<void>;
 }
 
@@ -195,7 +195,7 @@ export interface BridgeAppOptions {
 
 /**
  * 通常モード: Slack と Claude Code（MCP）をつないで中継を始める。
- * MCP の接続か Socket Mode の開始に失敗したら、後片付け（lock.release → bridge.stop → server.close）をしてから投げ直す。
+ * MCP の接続か Socket Mode の開始に失敗したら、後片付け（lock.release → relay.denyAll → bridge.stop → server.close）をしてから投げ直す。
  */
 export async function startBridgeApp(opts: BridgeAppOptions): Promise<RunningApp> {
   const { bridge, logger } = opts;
@@ -214,6 +214,8 @@ export async function startBridgeApp(opts: BridgeAppOptions): Promise<RunningApp
     (stopped ??= (async () => {
       opts.lock?.release();
       try {
+        // Slack の書き換えと Claude への通知が届くよう、切断より前に行う（denyAll は投げない）
+        await relay.denyAll('ブリッジ終了');
         await bridge.stop();
       } finally {
         await server.close();

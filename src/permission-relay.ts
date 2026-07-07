@@ -130,6 +130,16 @@ export class PermissionRelay {
     await this.markResolved(req, verdict.behavior, byUserId);
   }
 
+  /**
+   * まだ回答を送っていない全リクエストに deny を返し、配信済みのメッセージを自動拒否の表示に書き換える（終了時用）。
+   * 1 件ずつベストエフォートで、失敗はログに残して続ける。投げない。
+   */
+  async denyAll(reason: string): Promise<void> {
+    for (const requestId of [...this.expiryTimers.keys()]) {
+      await this.autoDeny(requestId, reason);
+    }
+  }
+
   private startExpiryTimer(requestId: string): void {
     this.clearExpiryTimer(requestId);
     const timer = setTimeout(() => {

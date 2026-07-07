@@ -103,6 +103,57 @@ describe('PermissionRelay', () => {
     expect(updates[0]?.text).toContain('Denied');
   });
 
+  describe('denyAll', () => {
+    it('保留中の全件に deny を送り、メッセージを書き換え、回答済みのものには送らない', async () => {
+      const { relay, updates, verdicts } = setup();
+      await relay.request(REQ);
+      await relay.request({ ...REQ, request_id: 'fghij' });
+      await relay.request({ ...REQ, request_id: 'kmnop' });
+      await relay.answerByText({ requestId: 'kmnop', behavior: 'allow' }, 'U1');
+      updates.length = 0;
+      verdicts.length = 0;
+
+      await relay.denyAll('ブリッジ終了');
+      expect(verdicts).toEqual([
+        { requestId: 'abcde', behavior: 'deny' },
+        { requestId: 'fghij', behavior: 'deny' },
+      ]);
+      expect(updates.map((u) => u.text)).toEqual([
+        expect.stringContaining('ブリッジ終了のため自動で拒否した'),
+        expect.stringContaining('ブリッジ終了のため自動で拒否した'),
+      ]);
+      expect(relay.lookup('abcde')).toBeUndefined();
+
+      // 2 回目は何も送らない
+      await relay.denyAll('ブリッジ終了');
+      expect(verdicts).toHaveLength(2);
+    });
+
+    it('deny の送信や書き換えに失敗しても、残りを続けて投げない', async () => {
+      const verdicts: string[] = [];
+      const relay = new PermissionRelay(
+        {
+          postToAll: async () => [{ channel: 'D1', ts: '1.0' }],
+          updateBlocks: async () => {
+            throw new Error('slack down');
+          },
+        },
+        {
+          sendVerdict: async (v) => {
+            verdicts.push(v.requestId);
+            if (v.requestId === 'abcde') throw new Error('not connected');
+          },
+        },
+        new Logger({ stderr: false }),
+        new PendingPermissions(1000, () => 0)
+      );
+      await relay.request(REQ);
+      await relay.request({ ...REQ, request_id: 'fghij' });
+      await expect(relay.denyAll('ブリッジ終了')).resolves.toBeUndefined();
+      expect(verdicts).toEqual(['abcde', 'fghij']);
+    });
+  });
+
   describe('配信先が 0 件', () => {
     function relayWith(results: { channel: string; ts: string }[]) {
       const verdicts: Verdict[] = [];
