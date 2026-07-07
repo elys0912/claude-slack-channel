@@ -103,6 +103,55 @@ describe('PermissionRelay', () => {
     expect(updates[0]?.text).toContain('Denied');
   });
 
+  describe('配信先が 0 件', () => {
+    function relayWith(results: { channel: string; ts: string }[]) {
+      const verdicts: Verdict[] = [];
+      const logger = new Logger({ stderr: false });
+      const errorSpy = vi.spyOn(logger, 'error');
+      const relay = new PermissionRelay(
+        { postToAll: async () => results, updateBlocks: async () => undefined },
+        { sendVerdict: async (v) => void verdicts.push(v) },
+        logger,
+        new PendingPermissions(1000, () => 0)
+      );
+      return { relay, verdicts, errorSpy };
+    }
+
+    it.each([
+      ['全チャンネルで失敗', [{ channel: 'D1', ts: '' }, { channel: 'D2', ts: '' }]],
+      ['DM チャンネルが無い', []],
+    ])('%s なら、その場で deny を送って保留から消し、error を残す', async (_label, results) => {
+      vi.useFakeTimers();
+      const { relay, verdicts, errorSpy } = relayWith(results);
+      await expect(relay.request(REQ)).resolves.toBeUndefined();
+
+      expect(verdicts).toEqual([{ requestId: 'abcde', behavior: 'deny' }]);
+      expect(relay.lookup('abcde')).toBeUndefined();
+      expect(errorSpy).toHaveBeenCalled();
+      // 期限が来ても重ねて送らない
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(verdicts).toHaveLength(1);
+      vi.useRealTimers();
+    });
+
+    it('postToAll が投げても、deny を送って投げない', async () => {
+      const verdicts: Verdict[] = [];
+      const relay = new PermissionRelay(
+        {
+          postToAll: async () => {
+            throw new Error('boom');
+          },
+          updateBlocks: async () => undefined,
+        },
+        { sendVerdict: async (v) => void verdicts.push(v) },
+        new Logger({ stderr: false }),
+        new PendingPermissions(1000, () => 0)
+      );
+      await expect(relay.request(REQ)).resolves.toBeUndefined();
+      expect(verdicts).toEqual([{ requestId: 'abcde', behavior: 'deny' }]);
+    });
+  });
+
   describe('期限切れの自動 deny', () => {
     afterEach(() => {
       vi.useRealTimers();
