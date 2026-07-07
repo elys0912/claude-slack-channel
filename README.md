@@ -25,10 +25,10 @@ Claude Code（claude.exe、手元のセッション）
 
 - Windows と Windows Terminal（VS Code の統合ターミナルは動作確認していないので対象外）
 - Node.js 22.12 以上。`node` と `npm` に **PATH が通っていること**（Claude Code は `node` コマンドでこのサーバーを起動する）
-- Claude Code v2.1.234 以上（Slack 側での実行許可承認に必要）。`claude.exe` は次の順に探す
+- Claude Code（channels 機能と、channel 経由の実行許可確認に対応した版。必要な最低バージョンはこのリポジトリでは未確認）。`claude.exe` は次の順に探す
   1. PATH 上の `claude`
-  2. VS Code 拡張の同梱版 `%USERPROFILE%\.vscode\extensions\anthropic.claude-code-<版>-win32-x64\resources\native-binary\claude.exe`（複数あれば最新版）
-- Claude の Pro 以上のサブスクリプション
+  2. VS Code 拡張の同梱版 `%USERPROFILE%\.vscode\extensions\anthropic.claude-code-<版>-win32-x64\resources\native-binary\claude.exe`（複数あればバージョン番号が最大のもの）
+- Claude のサブスクリプション（必要なプランは未確認）
 - Slack ワークスペースの管理権限（アプリのインストールに必要）
 
 ## セットアップ
@@ -80,7 +80,9 @@ SLACK_BOT_TOKEN=xoxb-...
 SLACK_APP_TOKEN=xapp-...
 ```
 
-`KEY=VALUE` 形式。`#` で始まる行と、引用符の外の ` #` 以降はコメントとして無視される。
+`KEY=VALUE` 形式（`export ` 接頭辞、`"..."` / `'...'` の引用符、CRLF も可）。`#` で始まる行はコメント。
+値の後ろのコメントは、引用符なしなら空白に続く `#` 以降、引用符付きなら閉じ引用符の後ろの `#` 以降が無視される
+（`a#b` のように空白の無い `#` は値の一部）。
 
 `access.json`（ひな形: [config/access.example.json](config/access.example.json)）:
 
@@ -104,12 +106,14 @@ SLACK_APP_TOKEN=xapp-...
 npm run check
 ```
 
-ビルドしてから、次を表示する。トークンそのものは出ない（`xoxb-***` のように接頭辞だけ）。
+`precheck` でビルドしてから、次を表示する。トークンそのものは出ない（`xoxb-***` のように接頭辞だけ）。
 
 - 状態ディレクトリの場所
 - ワークスペース名・`team_id`・ボットの user ID
 - `access.json` の `teamId` が実際の `team_id` と食い違っていれば警告
 - `allowFrom` に書いた ID の表示名
+
+`access.json` がまだ無い・読めない場合はその旨を表示して続行する（`teamId` の突き合わせと表示名の確認だけ省く）。
 
 ### 4. 起動するプロジェクトを登録する
 
@@ -134,9 +138,9 @@ Windows Terminal から実行する。
 | `scripts\start.cmd my-app` | `projects.json` の name で指定して起動 |
 | `scripts\start.cmd C:\path\to\app` | パスで直接指定して起動 |
 | `scripts\start.cmd my-app -PermissionMode auto` | 実行許可のモードを変える（[権限の設計](#権限の設計)） |
-| `scripts\start.cmd -DryRun` | 起動せず、実行されるコマンドラインだけ表示 |
+| `scripts\start.cmd -DryRun` | 起動せず、実行されるコマンドラインだけ表示（ビルドは省き、`.env` / `access.json` が無くても警告だけ出す） |
 
-- 起動のたびに experimental channels の警告ダイアログが出るので、**「1」（I am using this for local development）** を選ぶ。
+- 起動時に experimental channels の警告ダイアログが出たら、**「1」（I am using this for local development）** を選ぶ（起動スクリプトもその旨を表示する。ダイアログ自体は Claude Code 側の挙動で未確認）。
 - `dist` が無いときだけ自動でビルドする。**`git pull` で更新したあとは `npm run build` を手で実行する**（古い `dist` のまま起動してしまうため）。
 - 起動後は Slack でこのボットに DM を送ればよい。
 
@@ -144,34 +148,44 @@ Windows Terminal から実行する。
 
 ### メッセージ
 
-- ボットに DM を送ると手元のセッションに届き、届いた印に :eyes: が付く。Claude の返信は元のメッセージのスレッドに返る。
+- ボットに DM を送ると手元のセッションに届き、届いた印に :eyes: が付く。Claude には元のメッセージのスレッドへ返信するよう指示している（MCP の instructions）。
 - 受け付けるのは **ボットとの DM だけ**。チャンネルやグループ DM、編集・削除などのイベントは無視する。
-- **添付ファイルは中身を渡さない**。ファイル名・種類・サイズの要約だけが Claude に届く（本文が無ければ `(attachment)`）。
-- 受信したメッセージは届いた順に1件ずつ処理する。
+- **添付ファイルは中身を渡さない**。ファイル名・種類・サイズの要約だけが Claude に届く（本文が無ければ `(attachment)`、複数なら `(N attachments)`）。
+- 受信したメッセージとボタン操作は、届いた順に1件ずつ処理する（前の処理が終わるまで次を始めない）。
 - 長い返信は自動で複数のメッセージに分割される。途中で送信に失敗した場合、Claude には何件目まで送れたか（`sent=N`）付きのエラーが返る。
 - 投稿したリンクのプレビュー（unfurl）は展開しない。
 - セッションは1つだけで、Slack 側の会話はすべて同じ文脈を共有する。
-- **Slack からは `/clear` できない**（ローカルのターミナルで操作する）。
+- Slack の DM は本文として Claude に届くだけで、`/clear` などの Claude Code のコマンドを Slack から実行する機能は無い（ローカルのターミナルで操作する）。
 
 ### 実行許可
 
-許可リストに無い操作を Claude が行おうとすると、ボタン付きのメッセージが届く
-（直前に会話していたスレッドがあればそこに、無ければ DM のトップレベルに出る）。
+許可リストに無い操作を Claude が行おうとすると、ボタン付きのメッセージが許可ユーザー全員の DM に届く
+（その DM で最後に Claude へ中継したメッセージのスレッドに出る。スレッド外のメッセージならそのメッセージを起点にスレッドを作る。
+起動後にまだ中継したメッセージが無い DM ではトップレベルに出る）。
 
 - **Allow / Deny** ボタンで答えるか、`yes xxxxx` / `no xxxxx` と返信する。
   `xxxxx` はメッセージに表示された5文字の ID。`y` / `n` でもよく、大文字小文字は問わない。
-- 答えると、メッセージは `Allowed` / `Denied` と回答者の表示に書き換わる。テキストで答えた場合は、
-  その返信に :white_check_mark: / :x: が付く。
+- 答えると、配信した全員分のメッセージが `Allowed` / `Denied` と回答者の表示に書き換わる。
+  ID は plain_text で表示し、回答者は Slack のユーザー ID の形のときだけメンション（`<@U...>`）で、それ以外は plain_text で表示する。
+  テキストで答えた場合は、その返信に :white_check_mark: / :x: が付く。
 - 保留中でない ID への `yes xxxxx` は回答として扱わず、通常のメッセージとして Claude に届く。
 - 有効期限は **30分**。期限切れのボタンを押すと、メッセージが期限切れ表示に変わるだけで Claude には送らない。
-- 入力内容（コマンドや差分）が長いときは先頭と末尾だけを表示し、省略した旨を示す。
-  **See more** ボタンで全文をスレッドに送る（長ければ複数メッセージに分割）。
-- 文字の向きを変える制御文字やゼロ幅文字は、見えない形で紛れ込まないよう記号に置き換えて表示する。
-- ターミナル側でも同じ確認が出ている。どちらで答えてもよい。
+- 入力内容（コマンドや差分）は合計約 2800 文字まで表示する。超えるときは先頭（約 2200 文字）と末尾（約 600 文字）を残し、
+  間に `…（途中 N 文字省略）…` を入れ、その下に「See more で全文を確認すること」という警告行を出す（省略しないときは警告行も出ない）。
+- ツール名・説明・入力内容のどれかを省略したときだけ **See more** ボタンが付き、押すと入力内容の全文をコードブロックでスレッドに送る
+  （長ければ複数メッセージに分割。期限切れならその旨だけ送る）。
+- 文字の向きを変える制御文字（U+202A〜202E、U+2066〜2069）、ゼロ幅文字（U+200B〜200D）、BOM（U+FEFF）は、
+  見えない形で紛れ込まないよう `\u{202E}` のような表記に置き換えて表示する（See more の全文でも同じ）。
+- Claude から届いた確認の ID が想定外の形（`l` を除く英小文字5文字でない）のときは、Slack には出さず、ログに警告を残して自動で deny を返す。
+- ターミナル側にも同じ確認が出ていて、どちらで答えてもよい（Claude Code 側の挙動で未確認）。
 
 ## 権限の設計
 
 起動スクリプトは `claude.exe` を次のフラグで起動する。
+
+> この節に書いたフラグ・設定・モードの効果（評価順や制限を含む）は Claude Code 側の仕様に基づく説明で、
+> このリポジトリのコードやテストでは確認していない（未確認）。コードで確かめられるのは、
+> 起動スクリプトがこれらのフラグを渡すことと、`channel-settings.json` の中身まで。
 
 | フラグ | 目的 |
 |---|---|
@@ -202,18 +216,22 @@ Windows Terminal から実行する。
 ### [config/channel-settings.json](config/channel-settings.json)
 
 - **allow**: プロジェクト内の読み取り（`Read(./**)`）、`Glob` / `Grep`、このサーバーの3ツール。
-  git コマンドは allow に入れていない（`git diff --no-index` などでプロジェクト外のファイルを読めるため）。
-- **deny**（読み取り・書き込みを禁止）:
-  - Claude Code の設定と状態: `~/.claude/**`（状態ディレクトリを含む）、`~/.claude.json`、プロジェクトの `.claude/**` の編集
-  - 認証情報: `~/.ssh/**`、`~/.git-credentials`、`~/.aws/**`、`~/.config/gh/**`、`~/.npmrc`、`~/.docker/**`
-  - 秘密ファイル: どこにあっても `.env*`、`*.pem`、`*.key`
+  git コマンドは `git status` も含めて allow に入れていない（`git diff --no-index` などでプロジェクト外のファイルを読めるため）。
+- **deny**:
+  - 読み取りの禁止（`Read(...)`）:
+    - Claude Code の設定と状態: `~/.claude/**`（状態ディレクトリ `~/.claude/channels/**` を含む）、`~/.claude.json`
+    - 認証情報: `~/.ssh/**`、`~/.git-credentials`、`~/.aws/**`、`~/.config/gh/**`、`~/.npmrc`、`~/.docker/**`
+    - 秘密ファイル: どこにあっても `.env*`、`*.pem`、`*.key`
+  - 編集の禁止（`Edit(...)`）: 状態ディレクトリ `~/.claude/channels/**`、プロジェクトの `./.claude/**`
   - 破壊的な git 操作: `git push --force` / `-f`、`git reset --hard`（Bash・PowerShell の両方）
+- **`defaultMode`**: `default`（起動スクリプトの `--permission-mode` でも指定する）
 - **`disableBypassPermissionsMode`**: `bypassPermissions` モードへの切り替えを禁止
 - **`disableClaudeAiConnectors`**: claude.ai 側の connector を読み込まない
+- **`language`**: `japanese`
 
 deny は allow より必ず優先される（評価順は deny → ask → allow）。
 
-> **状態ディレクトリを移したとき**: 既定の場所は `Read(~/.claude/**)` で守られているが、
+> **状態ディレクトリを移したとき**: 既定の場所は `Read(~/.claude/channels/**)` / `Edit(~/.claude/channels/**)` で守られているが、
 > `SLACK_CHANNEL_STATE_DIR` で別の場所にした場合は、そのパスの `Read(...)` / `Edit(...)` を deny に自分で追加する。
 
 > **制限**: `Bash(git push --force:*)` の deny は、`sh -c 'git push --force ...'` のような
@@ -222,9 +240,10 @@ deny は allow より必ず優先される（評価順は deny → ask → allow
 
 ## セキュリティ
 
-- 送信者は Slack のユーザー ID（`allowFrom`）とワークスペース ID（`teamId`）で判定する。表示名やメールアドレスでは判定しない。
+- 送信者は Slack のユーザー ID（`allowFrom`）とワークスペース ID（`teamId`、送信者の所属ワークスペースを含む）で判定する。表示名やメールアドレスでは判定しない。
+  ボタン操作はさらに、押されたのが許可ユーザーとの DM であることも確認する。
 - トークンは状態ディレクトリの `.env` だけに置く。環境変数からは読まず、MCP 設定ファイルにも書かない。
-- ログに出るトークン（`xox?-` / `xapp-` / `Bearer`）は伏せ字にする。
+- ログに出るトークン（`xox` + 英小文字1字 + `-` で始まるもの全般、`xapp-`、`Bearer ...`）は伏せ字にする。
 - 送信するテキストの `@channel` / `@here` / `@everyone` / ユーザーグループへのメンションは無効化する。
 - Slack から届くメッセージは信頼できない入力として扱い、上記の権限設計で実行できる範囲を絞っている。
 
@@ -273,14 +292,14 @@ deny は allow より必ず優先される（評価順は deny → ask → allow
 
 | 変数 | 用途 |
 |---|---|
-| `SLACK_CHANNEL_STATE_DIR` | 状態ディレクトリを変える（既定 `%USERPROFILE%\.claude\channels\slack`）。**絶対パスで指定する**（相対パスはサーバーの作業ディレクトリ＝プロジェクト基準で解決される）。変えたら deny も書き換える |
+| `SLACK_CHANNEL_STATE_DIR` | 状態ディレクトリを変える（既定 `%USERPROFILE%\.claude\channels\slack`）。**絶対パスで指定する**。相対パスはプロセスごとのカレントディレクトリ基準で絶対パスに解決されるため、参照先がずれうる（サーバーは起動されたときの作業ディレクトリ基準、`start.ps1` の存在確認は実行したシェルのカレントディレクトリ基準）。変えたら deny も書き換える |
 | `ENABLE_CLAUDEAI_MCP_SERVERS` | 起動スクリプトが `false` を設定する（手で設定する必要はない） |
 
 トークンは環境変数からは読まない。
 
 ### ログ
 
-- 出力先は `logs\bridge.log` と stderr（Claude Code の `/mcp` から見える）。
+- 出力先は `logs\bridge.log` と stderr（stderr が Claude Code の `/mcp` から見えるかは未確認）。
 - レベルは info 固定（変更する設定は無い）。
 - 5MB を超えると `bridge.log.1` に退避する（1世代だけ保持し、古い `.1` は上書き）。
 
@@ -289,7 +308,7 @@ deny は allow より必ず優先される（評価順は deny → ask → allow
 | 項目 | 値 |
 |---|---|
 | 実行許可の有効期限 | 30分 |
-| ロックのハートビート / 失効 | 10秒ごとに更新 / 30秒更新が無ければ失効 |
+| ロックのハートビート / 失効 | 10秒ごとに更新 / 30秒更新が無ければ失効。ハートビートが現在時刻より5秒を超えて未来でも失効扱い（プロセスが生きているかは見ない） |
 | 再接続の待ち時間 | 1秒から倍々で最大60秒 |
 
 ## トラブルシューティング
@@ -297,7 +316,7 @@ deny は allow より必ず優先される（評価順は deny → ask → allow
 | 症状 | 対処 |
 |---|---|
 | 何が起きたか知りたい | `logs\bridge.log` を見る（トークンはマスク済み） |
-| 接続状態を知りたい | セッション内で `/mcp` を実行し、`slackbridge` の状態を見る |
+| 接続状態を知りたい | セッション内で `/mcp` を実行し、`slackbridge` の状態を見る。`socket: connected` / `disconnected` はログにも出る |
 | 起動スクリプトが `claude.exe が見つからない` | PATH に `claude` を通すか、VS Code の Claude Code 拡張を入れる |
 | `/mcp` で `slackbridge` が failed | `node` に PATH が通っているか、`npm run build` 済みかを確認。理由は stderr とログに出る |
 | `.env が見つからない` / `access.json の検証に失敗` | 状態ディレクトリの場所とファイル名（`.env.txt` になっていないか）、JSON の形式、ID の先頭文字（`T` / `U`）を確認 |
@@ -305,19 +324,20 @@ deny は allow より必ず優先される（評価順は deny → ask → allow
 | `許可ユーザーの DM チャンネルを 1 件も開けなかった` | `allowFrom` の ID と `im:write` スコープを確認 |
 | `invalid_auth` | `SLACK_BOT_TOKEN` が無効。`npm run check` で確認し、トークンを取り直す |
 | `missing_scope` | **OAuth & Permissions** で5スコープが揃っているか確認し、足りなければ再インストール |
-| ツールが「別のインスタンスが動いている」エラーを返す | 別のセッションが Slack ブリッジを使用中。2つ目以降は Slack に接続しない縮退モードで動き、ツールはすべてエラー、実行許可は Slack に出ない（ターミナルで答える）。先のセッションを終了してから起動し直す |
+| ツールが「別のインスタンスが動いている」エラーを返す | 別のセッションが Slack ブリッジを使用中。2つ目以降は Slack に接続しない縮退モードで動き、ツールはすべてエラー、実行許可は Slack に出ない（ターミナル側で答える想定。Claude Code 側の挙動は未確認）。先のセッションを終了してから起動し直す |
 | 直前のセッションを落とした直後に起動したら縮退モードになった | 前のプロセスのロックが残っている。30秒待ってから起動し直す |
 | DM を送っても :eyes: が付かない | `allowFrom` に自分の ID があるか、DM の相手がこのボットかを確認。ログの `受信を破棄 reason=...` は debug なので出ない。起動時に DM を開けなかったユーザーは、そのユーザーから DM が届いた時点で送信先に加わる |
-| 実行許可のメッセージが Slack に来ない | 縮退モードでないか確認。ターミナル側の確認は常に出ている |
+| 実行許可のメッセージが Slack に来ない | 縮退モードでないか確認。ログに `permission_request の request_id が不正なので deny を返す` があれば、Slack に出さず自動で deny している |
 | スリープ復帰後に反応しない | 自動で再接続する（最大60秒間隔で繰り返す）。しばらく経っても駄目ならログを確認して起動し直す |
 | 更新したのに挙動が変わらない | `npm run build` を実行してから起動し直す |
 
 ## 開発
 
 ```powershell
-npm test             # vitest
-npm run typecheck    # tsc --noEmit（本体とテストの両方）
-npm run build        # dist へ出力
+npm test             # vitest run
+npm run typecheck    # tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json（本体とテストの両方）
+npm run build        # tsc -p tsconfig.json で dist へ出力
+npm run check        # precheck（npm run build）のあと dist/scripts/check.js を実行
 ```
 
 ### ファイル構成
@@ -325,7 +345,7 @@ npm run build        # dist へ出力
 | パス | 役割 |
 |---|---|
 | `src/main.ts` | エントリポイント。ロガー・ロック・設定の読み込み、終了処理 |
-| `src/app.ts` | Slack・MCP・permission リレーの配線（通常モードと縮退モード） |
+| `src/app.ts` | Slack・MCP・permission リレーの配線（通常モードと縮退モード）、MCP ツールと受信イベントの処理 |
 | `src/slack.ts` | Slack の Socket Mode 受信と Web API 送信 |
 | `src/mcp.ts` | MCP channel サーバー（`reply` / `react` / `edit_message` ツール） |
 | `src/permission-relay.ts` | 実行許可リレーの状態管理（配信・回答・結果表示への書き換え） |
@@ -345,7 +365,12 @@ npm run build        # dist へ出力
 | `config/channel-settings.json` | channel セッション専用の権限設定 |
 | `config/*.example*` | `projects.json` / `access.json` / `.env` のひな形 |
 | `slack-app-manifest.yaml` | Slack アプリの manifest |
-| `test/` | vitest のテスト |
+| `test/*.test.ts` | vitest のテスト |
+| `test/helpers/fake-slack.ts` | Slack の Web API / Socket Mode の差し替え（`slack.test.ts` / `app.test.ts` で共用） |
+| `test/fixtures/chunk-legacy.ts` | 分割前の `chunkText` 実装。`chunk-legacy.test.ts` で出力の一致を確かめる |
+| `tsconfig.json` | 本体（`src` / `scripts`）のビルド設定 |
+| `tsconfig.test.json` | テストを含めた型検査用の設定（出力なし） |
+| `vitest.config.ts` | vitest の設定 |
 
 ## ライセンス
 
