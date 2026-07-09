@@ -169,6 +169,7 @@ $mcpConfig = Write-McpConfig -FileName 'mcp.json' -ServerName 'slackbridge' -Scr
 $claudeArgs = @(
     '--mcp-config', $mcpConfig,
     '--strict-mcp-config',
+    '--no-chrome',
     '--setting-sources', 'project,local',
     '--settings', $settingsFile,
     '--permission-mode', $PermissionMode,
