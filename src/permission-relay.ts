@@ -1,5 +1,6 @@
 // 実行許可（permission）リレーの状態管理。
-// Claude からの permission_request を Slack の DM に配信し、Slack 側の回答（ボタン / yes・no 返信）を
+// Claude からの permission_request を、最後に話しかけられたスレッド（DM でもチャンネルでも）に返信として投稿し
+// （まだ話しかけられていない・返信に失敗したときは DM に配信し）、Slack 側の回答（ボタン / yes・no 返信）を
 // Claude へ返して、ボタン付きメッセージを結果表示に書き換える。
 // 回答が無いまま有効期限を過ぎたものは、Claude Code を待たせ続けないよう自動で deny を返す。
 import type { Logger } from './log.js';
@@ -25,6 +26,7 @@ export interface RelaySlack {
     blocks?: unknown[],
     threadFor?: (channel: string) => string | undefined
   ): Promise<MessageRef[]>;
+  postBlocks(channel: string, text: string, blocks: unknown[], threadTs?: string): Promise<{ ts: string }>;
   updateBlocks(channel: string, ts: string, text: string, blocks: unknown[]): Promise<void>;
 }
 
@@ -40,8 +42,10 @@ export class PermissionRelay {
   private readonly pending: PendingPermissions;
   /** request_id → ボタンを出したメッセージ（回答が決まったら結果表示に書き換える） */
   private readonly posted = new Map<string, MessageRef[]>();
-  /** DM チャンネル → 最後にメッセージを受け取ったスレッド（確認はそのスレッドに出す） */
+  /** チャンネル → 最後にメッセージを受け取ったスレッド（DM に配信するときはそのスレッドに出す） */
   private readonly activeThread = new Map<string, string>();
+  /** 最後にメッセージを受け取ったスレッド。permission request はまずここに返信する */
+  private lastThread: { channel: string; threadTs: string } | undefined;
   /**
    * request_id → 期限切れで自動 deny するタイマー。ここにある ID はまだ Claude に回答を送っていない。
    * 回答を送ったら消す（期限切れのあとに押されたボタンなど、送らなかった回答では消さない）。
@@ -55,9 +59,10 @@ export class PermissionRelay {
     this.pending = pending;
   }
 
-  /** 会話中のスレッドを覚えておく。次の permission request はそこに投稿される */
+  /** 会話中のスレッドを覚えておく。次の permission request はそこに返信される */
   rememberThread(channel: string, threadTs: string): void {
     this.activeThread.set(channel, threadTs);
+    this.lastThread = { channel, threadTs };
   }
 
   /** 期限内の保留中リクエストを返す（See more ボタン用） */
@@ -66,7 +71,8 @@ export class PermissionRelay {
   }
 
   /**
-   * Claude からの permission_request を、許可ユーザー全員の DM にボタン付きで配信する。
+   * Claude からの permission_request を、最後に話しかけられたスレッドにボタン付きで返信する。
+   * まだ話しかけられていない・返信に失敗したときは、許可ユーザー全員の DM に配信する。
    * 1 件も届かなかった（全チャンネルで失敗・DM チャンネルが無い）ときは、誰も答えられないので
    * その場で Claude に deny を返す。投げない。
    */
@@ -76,6 +82,22 @@ export class PermissionRelay {
     this.startExpiryTimer(req.request_id);
 
     const { text, blocks } = buildPermissionBlocks(req);
+    const target = this.lastThread;
+    if (target) {
+      try {
+        const res = await this.slack.postBlocks(target.channel, text, blocks, target.threadTs);
+        if (res.ts !== '') {
+          this.posted.set(req.request_id, [{ channel: target.channel, ts: res.ts }]);
+          this.logger.info(
+            `permission_request をスレッドに返信 id=${req.request_id} tool=${req.tool_name} channel=${target.channel}`
+          );
+          return;
+        }
+      } catch (e) {
+        this.logger.warn(`permission_request のスレッド返信に失敗、DM に配信する channel=${target.channel}`, e);
+      }
+    }
+
     let results: MessageRef[] = [];
     try {
       results = await this.slack.postToAll(text, blocks, (channel) => this.activeThread.get(channel));

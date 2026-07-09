@@ -15,11 +15,11 @@ export const SERVER_NAME = 'slackbridge';
 export const SERVER_VERSION = '0.1.0';
 
 export const INSTRUCTIONS = [
-  'このチャンネルは Slack の DM を中継する。メッセージは <channel source="slackbridge" ...> の形で届く。',
+  'このチャンネルは Slack の DM と許可されたチャンネルを中継する。メッセージは <channel source="slackbridge" ...> の形で届く。',
   '',
   '返信の仕方:',
   '- 返事は必ず reply ツールで送る。ターミナルに書いた文章は相手には届かない。',
-  '- chat_id は返信先の Slack DM チャンネル ID。届いたタグの chat_id をそのまま渡す。',
+  '- chat_id は返信先の Slack チャンネル ID（DM またはチャンネル）。届いたタグの chat_id をそのまま渡す。',
   '- thread_ts は元メッセージのスレッド。返信は必ず元のスレッドに返す（届いたタグの thread_ts を渡す）。',
   '- message_id は個々のメッセージの ts。react / edit_message で対象を指定するのに使う。',
   '- 長い出力はそのまま流さず、要約してから送る。コードやログは必要な部分だけにする。',
@@ -34,19 +34,19 @@ export const INSTRUCTIONS = [
 // --- ツールの入力スキーマ（zod が唯一の定義。JSON Schema はここから生成する） ---
 
 const ReplySchema = z.object({
-  chat_id: z.string().describe('返信先の Slack DM チャンネル ID'),
+  chat_id: z.string().describe('返信先の Slack チャンネル ID（DM またはチャンネル）'),
   text: z.string().describe('送信する本文'),
   thread_ts: z.string().optional().describe('返信先スレッドの ts（元メッセージの thread_ts）'),
 });
 
 const ReactSchema = z.object({
-  chat_id: z.string().describe('対象メッセージのある Slack DM チャンネル ID'),
+  chat_id: z.string().describe('対象メッセージのある Slack チャンネル ID（DM またはチャンネル）'),
   message_id: z.string().describe('対象メッセージの ts'),
   emoji: z.string().describe('絵文字名（コロン無し。例: eyes）'),
 });
 
 const EditSchema = z.object({
-  chat_id: z.string().describe('対象メッセージのある Slack DM チャンネル ID'),
+  chat_id: z.string().describe('対象メッセージのある Slack チャンネル ID（DM またはチャンネル）'),
   message_id: z.string().describe('編集するメッセージの ts'),
   text: z.string().describe('新しい本文'),
 });
@@ -99,7 +99,7 @@ function defineTool<S extends z.ZodType>(
 const TOOLS: ToolDefinition[] = [
   defineTool(
     'reply',
-    'Slack の DM にメッセージを返信する（長文は自動で分割される）',
+    'Slack にメッセージを返信する（長文は自動で分割される）',
     ReplySchema,
     (deps, args) => deps.onReply(args)
   ),

@@ -13,8 +13,12 @@ const REQ: PermissionRequest = {
   input_preview: '{"file_path":"hello.txt"}',
 };
 
-function setup(now: () => number = () => 0) {
+/** スレッド返信（postBlocks）を使わないテスト用の実装 */
+const noReply = async (): Promise<{ ts: string }> => ({ ts: '' });
+
+function setup(now: () => number = () => 0, opts: { reply?: 'ok' | 'throw' | 'empty' } = {}) {
   const posts: { text: string; threadFor: (ch: string) => string | undefined }[] = [];
+  const replies: { channel: string; threadTs: string | undefined }[] = [];
   const updates: { channel: string; ts: string; text: string }[] = [];
   const verdicts: Verdict[] = [];
 
@@ -25,6 +29,11 @@ function setup(now: () => number = () => 0) {
         { channel: 'D1', ts: '1.0' },
         { channel: 'D2', ts: '' }, // 送信に失敗したチャンネル
       ];
+    },
+    postBlocks: async (channel, _text, _blocks, threadTs) => {
+      if (opts.reply === 'throw') throw new Error('not_in_channel');
+      replies.push({ channel, threadTs });
+      return { ts: opts.reply === 'empty' ? '' : '2.0' };
     },
     updateBlocks: async (channel, ts, text) => {
       updates.push({ channel, ts, text });
@@ -38,19 +47,52 @@ function setup(now: () => number = () => 0) {
 
   const pending = new PendingPermissions(1000, now);
   const relay = new PermissionRelay(slack, claude, new Logger({ stderr: false }), pending);
-  return { relay, posts, updates, verdicts };
+  return { relay, posts, replies, updates, verdicts };
 }
 
 describe('PermissionRelay', () => {
-  it('request は覚えておいたスレッドに投稿する', async () => {
-    const { relay, posts } = setup();
+  it('request は最後に話しかけられたスレッドにだけ返信する（DM には配らない）', async () => {
+    const { relay, posts, replies } = setup();
     relay.rememberThread('D1', '9.9');
+    relay.rememberThread('C1', '7.7');
+    await relay.request(REQ);
+
+    expect(replies).toEqual([{ channel: 'C1', threadTs: '7.7' }]);
+    expect(posts).toHaveLength(0);
+    expect(relay.lookup('abcde')).toEqual(REQ);
+  });
+
+  it('スレッドに返信した request は、回答後にその 1 通だけを書き換える', async () => {
+    const { relay, updates } = setup();
+    relay.rememberThread('C1', '7.7');
+    await relay.request(REQ);
+    await relay.answerByButton({ requestId: 'abcde', behavior: 'allow' }, 'U1', { channel: 'C1', ts: '2.0' });
+
+    expect(updates).toEqual([expect.objectContaining({ channel: 'C1', ts: '2.0' })]);
+  });
+
+  it('まだ話しかけられていなければ、DM 全体に配信する', async () => {
+    const { relay, posts, replies } = setup();
+    await relay.request(REQ);
+
+    expect(replies).toHaveLength(0);
+    expect(posts).toHaveLength(1);
+  });
+
+  it.each([
+    ['投げた', 'throw' as const],
+    ['ts が返らなかった', 'empty' as const],
+  ])('スレッドへの返信が%sら、覚えておいた DM のスレッドを使って DM 全体に配信する', async (_label, reply) => {
+    const { relay, posts, verdicts } = setup(() => 0, { reply });
+    relay.rememberThread('D1', '9.9');
+    relay.rememberThread('C1', '7.7');
     await relay.request(REQ);
 
     expect(posts).toHaveLength(1);
     expect(posts[0]?.threadFor('D1')).toBe('9.9');
     expect(posts[0]?.threadFor('D2')).toBeUndefined();
-    expect(relay.lookup('abcde')).toEqual(REQ);
+    // DM に届いたので自動 deny はしない
+    expect(verdicts).toEqual([]);
   });
 
   it('ボタンで回答すると Claude に送り、投稿済みのメッセージだけを書き換える', async () => {
@@ -134,6 +176,7 @@ describe('PermissionRelay', () => {
       const relay = new PermissionRelay(
         {
           postToAll: async () => [{ channel: 'D1', ts: '1.0' }],
+          postBlocks: noReply,
           updateBlocks: async () => {
             throw new Error('slack down');
           },
@@ -160,7 +203,7 @@ describe('PermissionRelay', () => {
       const logger = new Logger({ stderr: false });
       const errorSpy = vi.spyOn(logger, 'error');
       const relay = new PermissionRelay(
-        { postToAll: async () => results, updateBlocks: async () => undefined },
+        { postToAll: async () => results, postBlocks: noReply, updateBlocks: async () => undefined },
         { sendVerdict: async (v) => void verdicts.push(v) },
         logger,
         new PendingPermissions(1000, () => 0)
@@ -192,6 +235,7 @@ describe('PermissionRelay', () => {
           postToAll: async () => {
             throw new Error('boom');
           },
+          postBlocks: noReply,
           updateBlocks: async () => undefined,
         },
         { sendVerdict: async (v) => void verdicts.push(v) },
@@ -258,6 +302,7 @@ describe('PermissionRelay', () => {
       const relay = new PermissionRelay(
         {
           postToAll: async () => [{ channel: 'D1', ts: '1.0' }],
+          postBlocks: noReply,
           updateBlocks: async (_channel, _ts, text) => void updates.push(text),
         },
         {

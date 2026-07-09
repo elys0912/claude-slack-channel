@@ -322,7 +322,7 @@ export type ActionParse =
 export function parseBlockAction(
   input: BlockActionInput,
   access: ParsedAccess,
-  allowedDmChannels: ReadonlySet<string>
+  allowedChannels: ReadonlySet<string>
 ): ActionParse {
   if (input.type !== 'block_actions') {
     return { ok: false, reason: 'not_block_actions' };
@@ -333,7 +333,7 @@ export function parseBlockAction(
   if (input.userId === undefined || !access.allowFrom.includes(input.userId)) {
     return { ok: false, reason: 'user_not_allowed' };
   }
-  if (input.channelId === undefined || !allowedDmChannels.has(input.channelId)) {
+  if (input.channelId === undefined || !allowedChannels.has(input.channelId)) {
     return { ok: false, reason: 'channel_not_allowed' };
   }
   if (input.value === undefined || !isValidRequestId(input.value)) {

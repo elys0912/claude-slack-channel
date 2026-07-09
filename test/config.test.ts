@@ -176,6 +176,25 @@ describe('loadAccess', () => {
     expect(loadAccess(dir)).toEqual({ teamId: 'T12345', allowFrom: ['U12345', 'U67890'] });
   });
 
+  it('channels を読み込める（C と、古い非公開チャンネルの G）', () => {
+    fs.writeFileSync(
+      path.join(dir, 'access.json'),
+      JSON.stringify({ teamId: 'T12345', allowFrom: ['U12345'], channels: ['C12345', 'G12345'] }),
+    );
+    expect(loadAccess(dir).channels).toEqual(['C12345', 'G12345']);
+  });
+
+  it.each([
+    ['DM の ID', ['D12345'], /channels のID形式が不正/],
+    ['重複', ['C12345', 'C12345'], /channels に重複がある/],
+  ])('channels に%sがあれば拒否する', (_label, channels, message) => {
+    fs.writeFileSync(
+      path.join(dir, 'access.json'),
+      JSON.stringify({ teamId: 'T12345', allowFrom: ['U12345'], channels }),
+    );
+    expect(() => loadAccess(dir)).toThrow(message);
+  });
+
   it('teamId は T で始まるものだけ、allowFrom は U で始まるものだけ受け付ける', () => {
     const write = (v: unknown): void => fs.writeFileSync(path.join(dir, 'access.json'), JSON.stringify(v));
     write({ teamId: 'E12345', allowFrom: ['U12345'] });

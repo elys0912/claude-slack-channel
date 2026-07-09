@@ -97,7 +97,8 @@ function attachmentPlaceholder(files: FileInfo[] | undefined): string {
  * Slack からの受信イベントを判定する。次の順に調べ、最初に当てはまったもので決まる。
  *   1. team_id が access.teamId と違う → drop(team_mismatch)
  *   2. user_team があり access.teamId と違う → drop(user_team_mismatch)
- *   3. channel_type が im でない → drop(not_im)
+ *   3. channel_type が channel / group（公開・非公開チャンネル）で、access.channels に無い → drop(channel_not_allowed)
+ *      channel_type がそれ以外で im でない（グループ DM など） → drop(not_im)
  *   4. bot のメッセージ・user 無し・自分自身 → drop(bot_or_self)
  *   5. subtype が file_share 以外 → drop(unsupported_subtype)
  *   6. user が allowFrom に無い → drop(user_not_allowed)
@@ -119,7 +120,11 @@ export function gate(
   if (msg.userTeam !== undefined && msg.userTeam !== access.teamId) {
     return { kind: 'drop', reason: 'user_team_mismatch' };
   }
-  if (msg.channelType !== 'im') {
+  if (msg.channelType === 'channel' || msg.channelType === 'group') {
+    if (msg.channel === undefined || !(access.channels ?? []).includes(msg.channel)) {
+      return { kind: 'drop', reason: 'channel_not_allowed' };
+    }
+  } else if (msg.channelType !== 'im') {
     return { kind: 'drop', reason: 'not_im' };
   }
   if (msg.botId !== undefined || msg.user === undefined || msg.user === '' || msg.user === selfBotUserId) {

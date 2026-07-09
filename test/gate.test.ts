@@ -62,9 +62,51 @@ describe('gate', () => {
     expect(result).toEqual({ kind: 'drop', reason: 'user_team_mismatch' });
   });
 
-  it('drops channelType "channel"', () => {
+  it('drops channelType "channel" when channels is not configured', () => {
     const dedupe = new EventDedupe();
-    const result = gate(baseMsg({ channelType: 'channel' }), access, selfBotUserId, dedupe);
+    const result = gate(baseMsg({ channelType: 'channel', channel: 'C1' }), access, selfBotUserId, dedupe);
+    expect(result).toEqual({ kind: 'drop', reason: 'channel_not_allowed' });
+  });
+
+  it.each(['channel', 'group'])('delivers a "%s" message when the channel is in channels', (channelType) => {
+    const dedupe = new EventDedupe();
+    const withChannels = { ...access, channels: ['C1'] };
+    const result = gate(
+      baseMsg({ channelType, channel: 'C1', ts: '200.1', threadTs: '150.0' }),
+      withChannels,
+      selfBotUserId,
+      dedupe
+    );
+    expect(result.kind).toBe('deliver');
+    if (result.kind === 'deliver') {
+      expect(result.meta.chat_id).toBe('C1');
+      expect(result.meta.thread_ts).toBe('150.0');
+    }
+  });
+
+  it('drops a channel message whose channel is not in channels', () => {
+    const dedupe = new EventDedupe();
+    const withChannels = { ...access, channels: ['C1'] };
+    const result = gate(baseMsg({ channelType: 'group', channel: 'C2' }), withChannels, selfBotUserId, dedupe);
+    expect(result).toEqual({ kind: 'drop', reason: 'channel_not_allowed' });
+  });
+
+  it('drops a message in an allowed channel from a user not in allowFrom', () => {
+    const dedupe = new EventDedupe();
+    const withChannels = { ...access, channels: ['C1'] };
+    const result = gate(
+      baseMsg({ channelType: 'channel', channel: 'C1', user: 'U999' }),
+      withChannels,
+      selfBotUserId,
+      dedupe
+    );
+    expect(result).toEqual({ kind: 'drop', reason: 'user_not_allowed' });
+  });
+
+  it('drops mpim as not_im even if its channel ID is in channels', () => {
+    const dedupe = new EventDedupe();
+    const withChannels = { ...access, channels: ['C1'] };
+    const result = gate(baseMsg({ channelType: 'mpim', channel: 'C1' }), withChannels, selfBotUserId, dedupe);
     expect(result).toEqual({ kind: 'drop', reason: 'not_im' });
   });
 
@@ -361,10 +403,14 @@ describe('gate の現状固定', () => {
       kind: 'drop',
       reason: 'team_mismatch',
     });
-    // channelType 不一致かつ bot → not_im が先
-    expect(gate(baseMsg({ channelType: 'channel', botId: 'B1' }), access, selfBotUserId, dedupe)).toEqual({
+    // channelType 不一致かつ bot → not_im / channel_not_allowed が先
+    expect(gate(baseMsg({ channelType: 'mpim', botId: 'B1' }), access, selfBotUserId, dedupe)).toEqual({
       kind: 'drop',
       reason: 'not_im',
+    });
+    expect(gate(baseMsg({ channelType: 'channel', botId: 'B1' }), access, selfBotUserId, dedupe)).toEqual({
+      kind: 'drop',
+      reason: 'channel_not_allowed',
     });
     // subtype 不一致かつ許可外ユーザー → unsupported_subtype が先
     expect(gate(baseMsg({ subtype: 'bot_message', user: 'U999' }), access, selfBotUserId, dedupe)).toEqual({
