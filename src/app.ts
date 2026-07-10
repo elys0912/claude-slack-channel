@@ -10,6 +10,7 @@ import { PermissionRelay } from './permission-relay.js';
 import { revealInvisible } from './permission.js';
 import type { ActionParse } from './permission.js';
 import type { GateResult } from './gate.js';
+import { ResponseWatchdog, buildNoResponseText } from './watchdog.js';
 
 // Slack 側で「読んだ」「許可した」「拒否した」を示すリアクション
 export const REACTION = {
@@ -35,20 +36,28 @@ export type AppServer = Pick<ChannelServer, 'pushMessage'>;
 /** 受信処理が使う permission relay の操作 */
 export type AppRelay = Pick<PermissionRelay, 'answerByText' | 'answerByButton' | 'rememberThread' | 'lookup'>;
 
+/** 無応答の見張りのうち、受信処理が使う操作 */
+export type AppWatchdog = Pick<ResponseWatchdog, 'delivered'>;
+
 export interface Wiring {
   bridge: AppBridge;
   server: AppServer;
   relay: AppRelay;
   logger: Logger;
+  watchdog?: AppWatchdog | undefined;
 }
 
 // --- Claude → Slack（MCP ツールの実体） ----------------------------------------
 
 export type ToolHandlers = Pick<McpDeps, 'onReply' | 'onReact' | 'onEdit'>;
 
-/** reply / react / edit_message の実体。失敗しても投げず、Claude が読めるエラー文を返す */
-export function createToolHandlers(bridge: ToolBridge, logger: Logger): ToolHandlers {
+/**
+ * reply / react / edit_message の実体。失敗しても投げず、Claude が読めるエラー文を返す。
+ * onActivity はツールが呼ばれるたびに（成否によらず）呼ぶ。無応答の見張りを解くのに使う。
+ */
+export function createToolHandlers(bridge: ToolBridge, logger: Logger, onActivity?: () => void): ToolHandlers {
   const run = async (tool: string, action: () => Promise<string>): Promise<string> => {
+    onActivity?.();
     try {
       return await action();
     } catch (e) {
@@ -99,7 +108,7 @@ export function createDegradedDeps(logger: Logger): McpDeps {
 
 /** DM か許可チャンネルで届いたメッセージ。保留中の ID への `yes xxxxx` / `no xxxxx` なら許可の回答、それ以外は Claude へ中継する */
 export async function handleMessage(
-  { bridge, server, relay, logger }: Wiring,
+  { bridge, server, relay, logger, watchdog }: Wiring,
   result: GateResult,
   raw: InboundRef
 ): Promise<void> {
@@ -120,6 +129,7 @@ export async function handleMessage(
     case 'deliver':
       if (raw.channel && raw.threadTs) relay.rememberThread(raw.channel, raw.threadTs);
       await server.pushMessage(result.content, result.meta);
+      if (raw.channel && raw.threadTs) watchdog?.delivered({ channel: raw.channel, threadTs: raw.threadTs });
       if (raw.channel && raw.ts) await bridge.addReaction(raw.channel, raw.ts, REACTION.SEEN);
       return;
   }
@@ -174,7 +184,7 @@ async function sendFullPreview({ bridge, relay, logger }: Wiring, requestId: str
 // --- 起動 ---------------------------------------------------------------------
 
 export interface RunningApp {
-  /** 後片付け（lock.release → 保留中の permission request を deny（通常モードのみ） → bridge.stop → server.close の順。2 回目以降の呼び出しは 1 回目と同じ Promise を返す） */
+  /** 後片付け（lock.release → 無応答の見張りを解く → 保留中の permission request を deny（通常モードのみ） → bridge.stop → server.close の順。2 回目以降の呼び出しは 1 回目と同じ Promise を返す） */
   stop: () => Promise<void>;
 }
 
@@ -191,6 +201,11 @@ export interface BridgeAppOptions {
    * Socket Mode の接続待ちの最中に Claude Code が終了しても後片付けされるようにする。
    */
   onCleanupReady?: ((stop: () => Promise<void>) => void) | undefined;
+  /**
+   * Claude に渡したメッセージへの応答（reply / react / edit_message / permission_request）を待つ時間（ミリ秒）。
+   * 過ぎたらそのスレッドに無応答の警告を投稿する。0 以下なら見張らない。省略時は見張らない
+   */
+  replyTimeoutMs?: number | undefined;
 }
 
 /**
@@ -200,19 +215,31 @@ export interface BridgeAppOptions {
 export async function startBridgeApp(opts: BridgeAppOptions): Promise<RunningApp> {
   const { bridge, logger } = opts;
 
+  const watchdog = new ResponseWatchdog({
+    timeoutMs: opts.replyTimeoutMs ?? 0,
+    logger,
+    notify: async ({ channel, threadTs }, minutes) => {
+      await bridge.postText(channel, buildNoResponseText(minutes), threadTs);
+    },
+  });
+
   // server と relay は互いを参照する。relay を使うのは接続後なので、宣言順はこれでよい
   const server: ChannelServer = new ChannelServer({
     logger,
-    ...createToolHandlers(bridge, logger),
-    onPermissionRequest: (req) => relay.request(req),
+    ...createToolHandlers(bridge, logger, () => watchdog.activity()),
+    onPermissionRequest: (req) => {
+      watchdog.activity();
+      return relay.request(req);
+    },
   });
   const relay: PermissionRelay = new PermissionRelay(bridge, server, logger);
-  const wiring: Wiring = { bridge, server, relay, logger };
+  const wiring: Wiring = { bridge, server, relay, logger, watchdog };
 
   let stopped: Promise<void> | undefined;
   const stop = (): Promise<void> =>
     (stopped ??= (async () => {
       opts.lock?.release();
+      watchdog.stop();
       try {
         // Slack の書き換えと Claude への通知が届くよう、切断より前に行う（denyAll は投げない）
         await relay.denyAll('ブリッジ終了');

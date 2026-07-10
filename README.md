@@ -160,6 +160,10 @@ Windows Terminal から実行する。
 - 受信したメッセージとボタン操作は、届いた順に1件ずつ処理する（前の処理が終わるまで次を始めない）。
 - 長い返信は自動で複数のメッセージに分割される。途中で送信に失敗した場合、Claude には何件目まで送れたか（`sent=N`）付きのエラーが返る。
 - 投稿したリンクのプレビュー（unfurl）は展開しない。
+- Claude に渡したメッセージから5分たっても、Claude が何も返さない（`reply` / `react` / `edit_message` も実行許可の確認も無い）ときは、
+  そのスレッドに「⚠️ Claude から 5 分応答が無い」と投稿する。ターミナル側の選択画面（Slack には中継されない）、使用量の上限、
+  セッションの停止などで止まっているのに、Slack からは気付けないのを防ぐため。見張るのは最後に渡したメッセージ1件だけで、
+  待ち時間は `SLACK_CHANNEL_REPLY_TIMEOUT_MIN` で変えられる。
 - セッションは1つだけで、Slack 側の会話はすべて同じ文脈を共有する。
 - Slack の DM は本文として Claude に届くだけで、`/clear` などの Claude Code のコマンドを Slack から実行する機能は無い（ローカルのターミナルで操作する）。
 
@@ -202,6 +206,7 @@ Windows Terminal から実行する。
 |---|---|
 | `--mcp-config %TEMP%\claude-slack-channel\mcp.json` | `slackbridge` サーバーを読み込む。clone 先の絶対パスを含むので、起動のたびに生成する |
 | `--strict-mcp-config` | `--mcp-config` 以外の MCP サーバー（ユーザー設定やプロジェクトの `.mcp.json`）を読み込まない |
+| `--no-chrome` | Claude in Chrome 連携を無効にする。有効だと、ブラウザ操作が必要になったときに「Claude wants to use your browser」の選択画面がターミナルに出て、Slack には中継されないまま止まる |
 | `--setting-sources project,local` | ユーザー設定（`~/.claude/settings.json`）を読まない。便利さのために入れた緩い許可（`Bash(*)` など）に乗って、Slack からの指示が無確認で実行されるのを防ぐ |
 | `--settings config\channel-settings.json` | channel セッション専用の設定を重ねる。managed（組織の管理設定）を除き、どの設定よりも上位 |
 | `--permission-mode default` | 許可リストに無い操作は毎回確認する（`-PermissionMode` で変更可、下記） |
@@ -306,6 +311,7 @@ deny は allow より必ず優先される（評価順は deny → ask → allow
 |---|---|
 | `SLACK_CHANNEL_STATE_DIR` | 状態ディレクトリを変える（既定 `%USERPROFILE%\.claude\channels\slack`）。**絶対パスで指定する**。相対パスはプロセスごとのカレントディレクトリ基準で絶対パスに解決されるため、参照先がずれうる（サーバーは起動されたときの作業ディレクトリ基準、`start.ps1` の存在確認は実行したシェルのカレントディレクトリ基準）。変えたら deny も書き換える |
 | `ENABLE_CLAUDEAI_MCP_SERVERS` | 起動スクリプトが `false` を設定する（手で設定する必要はない） |
+| `SLACK_CHANNEL_REPLY_TIMEOUT_MIN` | 無応答の警告を出すまでの分数（既定 5、小数可）。`0` で無効 |
 
 トークンは環境変数からは読まない。
 
