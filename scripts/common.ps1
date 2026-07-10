@@ -52,17 +52,19 @@ function Write-McpConfig {
     param(
         [Parameter(Mandatory)][string]$FileName,
         [Parameter(Mandatory)][string]$ServerName,
-        [Parameter(Mandatory)][string]$ScriptPath
+        [Parameter(Mandatory)][string]$ScriptPath,
+        # 一緒に読み込ませる MCP サーバー（名前 → 定義）。$ServerName と同名のものは無視する
+        [hashtable]$ExtraServers = @{}
     )
 
     $path = Join-Path $env:TEMP "claude-slack-channel\$FileName"
     New-Item -ItemType Directory -Path (Split-Path -Parent $path) -Force | Out-Null
 
-    $json = @{
-        mcpServers = @{
-            $ServerName = @{ command = 'node'; args = @($ScriptPath) }
-        }
-    } | ConvertTo-Json -Depth 5
+    $servers = @{ $ServerName = @{ command = 'node'; args = @($ScriptPath) } }
+    foreach ($name in $ExtraServers.Keys) {
+        if ($name -ne $ServerName) { $servers[$name] = $ExtraServers[$name] }
+    }
+    $json = @{ mcpServers = $servers } | ConvertTo-Json -Depth 10
     [System.IO.File]::WriteAllText($path, $json, [System.Text.UTF8Encoding]::new($false))
 
     return $path
