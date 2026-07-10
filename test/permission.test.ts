@@ -306,6 +306,31 @@ describe('parseBlockAction', () => {
     value: 'abcde'
   };
 
+  it.each([
+    [{ actionId: 'perm_always', value: 'abcde' }, { ok: true, kind: 'allow_always', requestId: 'abcde' }],
+    [{ actionId: 'screen_show', value: 'show' }, { ok: true, kind: 'screen_show' }],
+    [{ actionId: 'screen_pick_2', value: 'k3x9ab2q.2' }, { ok: true, kind: 'screen_pick', snapshotId: 'k3x9ab2q', index: 2 }],
+    [{ actionId: 'rule_add', value: 'k3x9ab2q' }, { ok: true, kind: 'rule_confirm', proposalId: 'k3x9ab2q', accept: true }],
+    [{ actionId: 'rule_cancel', value: 'k3x9ab2q' }, { ok: true, kind: 'rule_confirm', proposalId: 'k3x9ab2q', accept: false }],
+    [{ actionId: 'rule_remove_0', value: 'Bash(git status:*)' }, { ok: true, kind: 'rule_remove', rule: 'Bash(git status:*)' }],
+    [{ actionId: 'screen_pick_0', value: 'bad' }, { ok: false, reason: 'invalid_value' }],
+    [{ actionId: 'rule_add', value: 'UPPER123' }, { ok: false, reason: 'invalid_value' }],
+    [{ actionId: 'rule_remove_1', value: '' }, { ok: false, reason: 'invalid_value' }],
+  ])('画面・許可リスト操作のボタン %o', (overrides, expected) => {
+    expect(parseBlockAction({ ...validInput, ...overrides }, access, allowedChannels)).toEqual(expected);
+  });
+
+  it('画面・許可リスト操作のボタンも、許可外のユーザー・チャンネルなら先に弾く', () => {
+    expect(parseBlockAction({ ...validInput, actionId: 'screen_show', userId: 'U999' }, access, allowedChannels)).toEqual({
+      ok: false,
+      reason: 'user_not_allowed',
+    });
+    expect(parseBlockAction({ ...validInput, actionId: 'screen_show', channelId: 'D9' }, access, allowedChannels)).toEqual({
+      ok: false,
+      reason: 'channel_not_allowed',
+    });
+  });
+
   it('parses a valid Allow action', () => {
     const result = parseBlockAction(validInput, access, allowedChannels);
     expect(result).toEqual({ ok: true, kind: 'verdict', verdict: { requestId: 'abcde', behavior: 'allow' } });

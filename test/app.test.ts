@@ -21,6 +21,8 @@ import { PermissionRelay } from '../src/permission-relay.js';
 import { ACCESS, DM1, DM2, flush, makeSocket, makeWeb, platformError } from './helpers/fake-slack.js';
 import type { FakeSocket, FakeWeb } from './helpers/fake-slack.js';
 import type { ParsedAccess } from '../src/config.js';
+import type { BridgeAppOptions } from '../src/app.js';
+import type { ConsoleKey } from '../src/console.js';
 
 interface Notification {
   method: string;
@@ -38,7 +40,11 @@ interface Harness {
   order: string[];
 }
 
-async function startHarness(access: ParsedAccess = ACCESS, replyTimeoutMs?: number): Promise<Harness> {
+async function startHarness(
+  access: ParsedAccess = ACCESS,
+  replyTimeoutMs?: number,
+  extra: Pick<BridgeAppOptions, 'console' | 'allowExtraFile' | 'denyFiles'> = {}
+): Promise<Harness> {
   const web = makeWeb();
   const socket = makeSocket();
   const logger = new Logger({ stderr: false });
@@ -83,7 +89,7 @@ async function startHarness(access: ParsedAccess = ACCESS, replyTimeoutMs?: numb
     },
   };
 
-  const app = await startBridgeApp({ bridge, logger, transport: serverTransport, lock, replyTimeoutMs });
+  const app = await startBridgeApp({ bridge, logger, transport: serverTransport, lock, replyTimeoutMs, ...extra });
   await client.connect(clientTransport);
   harness.stop = app.stop;
   return harness;
@@ -709,7 +715,7 @@ describe('無応答の見張り（replyTimeoutMs）', () => {
   let h: Harness;
   const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
   const warnings = () =>
-    h.web.calls.filter((c) => c.method === 'chat.postMessage' && String(c.args.markdown_text).includes('応答が無い'));
+    h.web.calls.filter((c) => c.method === 'chat.postMessage' && String(c.args.text).includes('応答が無い'));
 
   beforeEach(async () => {
     h = await startHarness(ACCESS, 60);
@@ -747,3 +753,111 @@ describe('無応答の見張り（replyTimeoutMs）', () => {
     expect(warnings()).toHaveLength(0);
   });
 });
+
+describe('ターミナル画面と許可リスト（!screen / 今後も許可 / !rules）', () => {
+  const CHROME = [
+    ' Claude wants to use your browser',
+    '    Install extension  Opens the install page in Chrome',
+    '  > Not now            Continue without browser tools',
+    "    Don't ask again    Revisit anytime with /chrome",
+  ].join('\n');
+  let h: Harness;
+  let dir: string;
+  let sent: ConsoleKey[][];
+
+  beforeEach(async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'app-rules-'));
+    const denyFile = path.join(dir, 'settings.json');
+    fs.writeFileSync(denyFile, JSON.stringify({ permissions: { deny: ['Bash(git log --all:*)'] } }));
+    sent = [];
+    h = await startHarness(ACCESS, undefined, {
+      console: { read: async () => CHROME, sendKeys: async (keys) => void sent.push(keys) },
+      allowExtraFile: path.join(dir, 'allow-extra.json'),
+      denyFiles: [denyFile],
+    });
+  });
+
+  afterEach(async () => {
+    await h.client.close();
+    await h.stop();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  const posts = () => h.web.calls.filter((c) => c.method === 'chat.postMessage');
+
+  it('!screen は Claude に渡さず、選択肢のボタンを出し、押すと選択キーを送る', async () => {
+    h.socket.emit('slack_event', dmEnvelope('!screen', { ts: '50.1' }));
+    await flush();
+
+    expect(h.notifications.filter((x) => x.method === 'notifications/claude/channel')).toEqual([]);
+    const blocks = posts()[0]?.args.blocks as { type: string; elements?: { action_id: string; value: string }[] }[];
+    const pick = blocks.find((b) => b.type === 'actions')?.elements?.[2];
+    expect(pick?.action_id).toBe('screen_pick_2');
+
+    h.socket.emit(
+      'interactive',
+      blockAction(pick?.action_id ?? '', pick?.value ?? '', { container: { message_ts: '100.1', thread_ts: '50.1' } })
+    );
+    await flush();
+    await flush();
+    expect(sent).toEqual([['Down', 'Enter']]);
+  });
+
+  it('今後も許可: 今回は許可し、確認のうえ allow-extra.json に書き込む', async () => {
+    await client_sendBash(h, 'git status');
+    h.web.calls.length = 0;
+
+    h.socket.emit('interactive', blockAction('perm_always', 'abcde', { container: { message_ts: '100.1' } }));
+    await flush();
+    await flush();
+
+    const verdict = h.notifications.find((x) => x.method === 'notifications/claude/channel/permission');
+    expect(verdict?.params).toEqual({ request_id: 'abcde', behavior: 'allow' });
+    const proposal = posts().find((p) => String(p.args.text).includes('Bash(git status:*)'));
+    const add = (proposal?.args.blocks as { type: string; elements?: { action_id: string; value: string }[] }[])
+      .find((b) => b.type === 'actions')
+      ?.elements?.find((e) => e.action_id === 'rule_add');
+
+    h.socket.emit('interactive', blockAction('rule_add', add?.value ?? '', { container: { message_ts: '100.2' } }));
+    await flush();
+    await flush();
+    expect(JSON.parse(fs.readFileSync(path.join(dir, 'allow-extra.json'), 'utf8'))).toEqual({ allow: ['Bash(git status:*)'] });
+  });
+
+  it('今後も許可: deny に当たるなら、今回は許可したうえで追加しない旨と当たった deny を知らせる', async () => {
+    // 候補は Bash(git log:*)。deny の Bash(git log --all:*) と範囲が重なる
+    await client_sendBash(h, 'git log -1');
+    h.web.calls.length = 0;
+
+    h.socket.emit('interactive', blockAction('perm_always', 'abcde', { container: { message_ts: '100.1' } }));
+    await flush();
+    await flush();
+
+    const verdict = h.notifications.find((x) => x.method === 'notifications/claude/channel/permission');
+    expect(verdict?.params).toEqual({ request_id: 'abcde', behavior: 'allow' });
+    const notice = posts().find((p) => String(p.args.markdown_text).includes('deny に当たる'));
+    expect(String(notice?.args.markdown_text)).toContain('Bash(git log --all:*)');
+    expect(fs.existsSync(path.join(dir, 'allow-extra.json'))).toBe(false);
+  });
+
+  it('!rules で追加分を一覧できる', async () => {
+    fs.writeFileSync(path.join(dir, 'allow-extra.json'), JSON.stringify({ allow: ['WebFetch'] }));
+    h.socket.emit('slack_event', dmEnvelope('!rules', { ts: '60.1' }));
+    await flush();
+    expect(String(posts()[0]?.args.text)).toContain('1 件');
+  });
+});
+
+/** Bash の permission_request を Claude 側から送る */
+async function client_sendBash(h: Harness, command: string): Promise<void> {
+  await h.client.notification({
+    method: 'notifications/claude/channel/permission_request',
+    params: {
+      request_id: 'abcde',
+      tool_name: 'Bash',
+      description: 'run',
+      input_preview: JSON.stringify({ command }),
+    },
+  });
+  await flush();
+}
