@@ -19,7 +19,7 @@ describe('deriveRule', () => {
     ['Bash', 'git status --short', 'Bash(git status:*)'],
     ['PowerShell', 'Get-ChildItem -Force', 'PowerShell(Get-ChildItem:*)'],
     ['Bash', 'ls -la', 'Bash(ls:*)'],
-    ['PowerShell', 'npm test', 'PowerShell(npm test:*)'],
+    ['PowerShell', 'npm view react version', 'PowerShell(npm view:*)'],
   ])('%s の "%s" から %s を作る', (tool, command, rule) => {
     expect(deriveRule(req(tool, { command }))).toMatchObject({ ok: true, rule });
   });
@@ -34,6 +34,11 @@ describe('deriveRule', () => {
     ['git push origin main', '危険な操作'],
     ['npm install left-pad', '危険な操作'],
     ['node script.js', '危険なコマンド'],
+    ['claude -p "do it" --dangerously-skip-permissions', '危険なコマンド'],
+    ['codex exec fix', '危険なコマンド'],
+    ['uvx some-tool', '危険なコマンド'],
+    ['npm test', '危険な操作'],
+    ['dotnet run', '危険な操作'],
     ['curl https://example.com', '危険なコマンド'],
     ['git status && rm -rf /', '複数のコマンド'],
     ['echo hi > out.txt', 'リダイレクト'],
