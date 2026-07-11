@@ -54,13 +54,17 @@ function Write-McpConfig {
         [Parameter(Mandatory)][string]$ServerName,
         [Parameter(Mandatory)][string]$ScriptPath,
         # 一緒に読み込ませる MCP サーバー（名前 → 定義）。$ServerName と同名のものは無視する
-        [hashtable]$ExtraServers = @{}
+        [hashtable]$ExtraServers = @{},
+        # $ServerName のサーバーに渡す環境変数
+        [hashtable]$Env = @{}
     )
 
     $path = Join-Path $env:TEMP "claude-slack-channel\$FileName"
     New-Item -ItemType Directory -Path (Split-Path -Parent $path) -Force | Out-Null
 
-    $servers = @{ $ServerName = @{ command = 'node'; args = @($ScriptPath) } }
+    $main = @{ command = 'node'; args = @($ScriptPath) }
+    if ($Env.Count -gt 0) { $main.env = $Env }
+    $servers = @{ $ServerName = $main }
     foreach ($name in $ExtraServers.Keys) {
         if ($name -ne $ServerName) { $servers[$name] = $ExtraServers[$name] }
     }
