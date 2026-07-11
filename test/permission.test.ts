@@ -361,7 +361,7 @@ describe('parseBlockAction', () => {
     expect(result.ok).toBe(false);
   });
 
-  it('rejects a channel not in allowedDmChannels', () => {
+  it('rejects a channel not in allowedChannels', () => {
     const result = parseBlockAction({ ...validInput, channelId: 'DOTHER' }, access, allowedChannels);
     expect(result.ok).toBe(false);
   });

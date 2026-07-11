@@ -262,7 +262,7 @@ Claude Code がターミナル側の選択画面（Slack に中継されない�
 | `--strict-mcp-config` | `--mcp-config` 以外の MCP サーバー（ユーザー設定やプロジェクトの `.mcp.json`）を読み込まない。Slack セッションでも使うサーバーは `config\extra-mcp.json` に書く（下記） |
 | `--no-chrome` | Claude in Chrome 連携を無効にする。有効だと、ブラウザ操作が必要になったときに「Claude wants to use your browser」の選択画面がターミナルに出て、Slack には中継されないまま止まる |
 | `--setting-sources project,local` | ユーザー設定（`~/.claude/settings.json`）を読まない。便利さのために入れた緩い許可（`Bash(*)` など）に乗って、Slack からの指示が無確認で実行されるのを防ぐ |
-| `--settings config\channel-settings.json` | channel セッション専用の設定を重ねる。managed（組織の管理設定）を除き、どの設定よりも上位 |
+| `--settings config\channel-settings.json` | channel セッション専用の設定を重ねる。managed（組織の管理設定）を除き、どの設定よりも上位。`extra-mcp.json` のサーバーや「今後も許可」で足したルールがあるときは、それを allow に足したもの（`%TEMP%\claude-slack-channel\channel-settings.merged.json`）を渡す |
 | `--permission-mode default` | 許可リストに無い操作は毎回確認する（`-PermissionMode` で変更可、下記） |
 | `--dangerously-load-development-channels server:slackbridge` | experimental の channels 機能を有効にする |
 
@@ -405,6 +405,7 @@ deny は allow より必ず優先される（評価順は deny → ask → allow
 | ツールが「別のインスタンスが動いている」エラーを返す | 別のセッションが Slack ブリッジを使用中。2つ目以降は Slack に接続しない縮退モードで動き、ツールはすべてエラー、実行許可は Slack に出ない（ターミナル側で答える想定。Claude Code 側の挙動は未確認）。先のセッションを終了してから起動し直す |
 | 直前のセッションを落とした直後に起動したら縮退モードになった | 前のプロセスのロックが残っている。30秒待ってから起動し直す |
 | DM を送っても :eyes: が付かない | `allowFrom` に自分の ID があるか、DM の相手がこのボットかを確認。ログの `受信を破棄 reason=...` は debug なので出ない。起動時に DM を開けなかったユーザーは、そのユーザーから DM が届いた時点で送信先に加わる |
+| チャンネルで話しかけても :eyes: が付かない | ボットにメンションしたか（スレッドの続きは、ボットが関わっているスレッドならメンション不要。起動し直した後はもう一度メンションする）、`access.json` の `channels` にそのチャンネルの ID があるか、ボットを招待したか、Slack アプリの bot events に `message.channels`（公開）/ `message.groups`（非公開）があり再インストール済みかを確認 |
 | 実行許可のメッセージが Slack に来ない | 縮退モードでないか確認。ログに `permission_request の request_id が不正なので deny を返す` があれば、Slack に出さず自動で deny している |
 | 実行許可が勝手に拒否された | 30分答えが無かった（期限切れ）、どの DM にも投稿できなかった（ログに `permission_request をどの DM にも配信できなかった`）、またはブリッジが終了した、のいずれかで自動 deny している。投稿失敗なら直前の `DM への送信に失敗` の理由（スコープ・DM チャンネル）を確認する |
 | スリープ復帰後に反応しない | 自動で再接続する（最大60秒間隔で繰り返す）。しばらく経っても駄目ならログを確認して起動し直す |
