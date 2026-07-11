@@ -1,129 +1,25 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { SlackBridge, isMarkdownRejection, toInboundMessage } from '../src/slack.js';
-import type { SlackWebApiLike, SocketClientLike } from '../src/slack.js';
+import { SlackBridge, isMarkdownRejection, toBlockActionInput, toInboundMessage } from '../src/slack.js';
+import type { ActionContext } from '../src/slack.js';
 import { Logger } from '../src/log.js';
-import type { ParsedAccess } from '../src/config.js';
 import type { GateResult } from '../src/gate.js';
 import type { ActionParse } from '../src/permission.js';
+import { ACCESS, BOT, DM1, DM2, flush, makeSocket, makeWeb, platformError } from './helpers/fake-slack.js';
+import type { FakeSocket, FakeWeb } from './helpers/fake-slack.js';
 
-const ACCESS: ParsedAccess = { teamId: 'T123ABC', allowFrom: ['U111AAA', 'U222BBB'] };
-const DM1 = 'D111AAA';
-const DM2 = 'D222BBB';
-const BOT = 'UBOT000';
-
-interface ApiCall {
-  method: string;
-  args: Record<string, unknown>;
-}
-
-interface FakeWeb extends SlackWebApiLike {
-  calls: ApiCall[];
-  /** postMessage が markdown_text を含むとき投げるエラー */
-  rejectMarkdown: unknown;
-  reactionError: unknown;
-}
-
-function makeWeb(): FakeWeb {
-  const calls: ApiCall[] = [];
-  let seq = 0;
-  const web: FakeWeb = {
-    calls,
-    rejectMarkdown: undefined,
-    reactionError: undefined,
-    auth: {
-      test: async () => {
-        calls.push({ method: 'auth.test', args: {} });
-        return { ok: true, team_id: 'T123ABC', user_id: BOT };
-      },
-    },
-    conversations: {
-      open: async (args) => {
-        calls.push({ method: 'conversations.open', args });
-        return { ok: true, channel: { id: args.users === 'U111AAA' ? DM1 : DM2 } };
-      },
-    },
-    chat: {
-      postMessage: async (args) => {
-        if (args.markdown_text !== undefined && web.rejectMarkdown !== undefined) {
-          calls.push({ method: 'chat.postMessage:rejected', args });
-          throw web.rejectMarkdown;
-        }
-        calls.push({ method: 'chat.postMessage', args });
-        seq += 1;
-        return { ok: true, ts: `100.${seq}` };
-      },
-      update: async (args) => {
-        calls.push({ method: 'chat.update', args });
-        return { ok: true, ts: String(args.ts) };
-      },
-    },
-    reactions: {
-      add: async (args) => {
-        calls.push({ method: 'reactions.add', args });
-        if (web.reactionError !== undefined) throw web.reactionError;
-        return { ok: true };
-      },
-    },
-  };
-  return web;
-}
-
-interface FakeSocket extends SocketClientLike {
-  listeners: Map<string, ((arg: unknown) => void)[]>;
-  started: number;
-  disconnected: number;
-  emit(event: string, arg: unknown): void;
-}
-
-function makeSocket(): FakeSocket {
-  const listeners = new Map<string, ((arg: unknown) => void)[]>();
-  return {
-    listeners,
-    started: 0,
-    disconnected: 0,
-    on(event: string, listener: (...args: never[]) => void) {
-      const list = listeners.get(event) ?? [];
-      list.push(listener as unknown as (arg: unknown) => void);
-      listeners.set(event, list);
-      return this;
-    },
-    async start() {
-      this.started += 1;
-      return {};
-    },
-    async disconnect() {
-      this.disconnected += 1;
-    },
-    emit(event: string, arg: unknown) {
-      for (const l of listeners.get(event) ?? []) l(arg);
-    },
-  };
-}
-
-function makeBridge(): { bridge: SlackBridge; web: FakeWeb; socket: FakeSocket } {
+function makeBridge(): { bridge: SlackBridge; web: FakeWeb; socket: FakeSocket; logger: Logger } {
   const web = makeWeb();
   const socket = makeSocket();
+  const logger = new Logger({ stderr: false });
   const bridge = new SlackBridge({
     botToken: 'xoxb-TEST-DUMMY',
     appToken: 'xapp-TEST-DUMMY',
     access: ACCESS,
-    logger: new Logger({ stderr: false }),
+    logger,
     web,
     socket,
   });
-  return { bridge, web, socket };
-}
-
-function platformError(code: string): Error & { data: { error: string } } {
-  const e = new Error(`An API error occurred: ${code}`) as Error & { data: { error: string } };
-  e.data = { error: code };
-  return e;
-}
-
-/** マイクロタスクを吐き出して非同期ハンドラの完了を待つ */
-async function flush(): Promise<void> {
-  for (let i = 0; i < 10; i++) await Promise.resolve();
-  await new Promise((r) => setTimeout(r, 0));
+  return { bridge, web, socket, logger };
 }
 
 describe('isMarkdownRejection', () => {
@@ -167,7 +63,7 @@ describe('SlackBridge.init', () => {
     const res = await bridge.init();
     expect(res.botUserId).toBe(BOT);
     expect(res.teamId).toBe('T123ABC');
-    expect(res.dmChannels.get('U111AAA')).toBe(DM1);
+    expect(res.dmChannelCount).toBe(2);
     expect(bridge.allowedDmChannels.has(DM2)).toBe(true);
     expect(web.calls[0]?.method).toBe('auth.test');
   });
@@ -235,6 +131,17 @@ describe('SlackBridge.postText', () => {
     await expect(bridge.postText(DM1, 'hi')).rejects.toThrow(/channel_not_found/);
   });
 
+  it('markdown_text / text のどちらで送ってもリンクとメディアを展開させない', async () => {
+    await bridge.postText(DM1, 'https://example.invalid/');
+    web.rejectMarkdown = platformError('invalid_arguments');
+    await bridge.postText(DM1, 'https://example.invalid/');
+    const sent = web.calls.filter((c) => c.method === 'chat.postMessage');
+    expect(sent.map((p) => [p.args.markdown_text !== undefined, p.args.unfurl_links, p.args.unfurl_media])).toEqual([
+      [true, false, false],
+      [false, false, false],
+    ]);
+  });
+
   it('一斉メンションを無効化する', async () => {
     await bridge.postText(DM1, '<!channel> みんな見て @here');
     const sent = String(web.calls[0]?.args.markdown_text);
@@ -261,6 +168,7 @@ describe('SlackBridge の送信系', () => {
 
     const r = await bridge.postBlocks(DM1, '<!here> perm', [{ type: 'section' }]);
     expect(r.ts).toBe('100.1');
+    expect(web.calls[0]?.args).toMatchObject({ unfurl_links: false, unfurl_media: false });
     expect(String(web.calls[0]?.args.text)).toContain('@​here');
 
     await bridge.updateBlocks(DM1, '100.1', '<!channel> done', []);
@@ -390,8 +298,88 @@ describe('SlackBridge の受信', () => {
     expect(seen.length).toBe(0);
   });
 
-  it('onMessage が例外を投げても落ちない', async () => {
+  it('init で DM を開けなかった許可ユーザーも、gate を通った受信の channel を送信先に加える', async () => {
+    const { bridge, web, socket } = makeBridge();
+    const open = web.conversations.open;
+    web.conversations.open = async (args) => {
+      if (args.users === 'U222BBB') throw platformError('ratelimited');
+      return open(args);
+    };
+    await bridge.init();
+    expect(bridge.allowedDmChannels.has(DM2)).toBe(false);
+
+    const allowedAtHandler: boolean[] = [];
+    await bridge.start({
+      onMessage: () => void allowedAtHandler.push(bridge.allowedDmChannels.has(DM2)),
+      onAction: () => undefined,
+    });
+    // gate で落ちる受信（許可外ユーザー）では加えない
+    socket.emit('slack_event', {
+      ...messageEnvelope({ user: 'U999ZZZ', channel: 'D999ZZZ' }),
+      ack: async () => undefined,
+    });
+    await flush();
+    expect(bridge.allowedDmChannels.has('D999ZZZ')).toBe(false);
+
+    socket.emit('slack_event', {
+      ...messageEnvelope({ user: 'U222BBB', channel: DM2 }),
+      body: { ...(messageEnvelope({ user: 'U222BBB', channel: DM2 }).body as object), event_id: 'Ev2' },
+      ack: async () => undefined,
+    });
+    await flush();
+    expect(allowedAtHandler).toEqual([false, true]); // onMessage より前に加わっている
+    expect(bridge.allowedDmChannels.has(DM2)).toBe(true);
+
+    web.calls.length = 0;
+    const res = await bridge.postToAll('perm', [{ type: 'section' }]);
+    expect(res.map((r) => r.channel)).toEqual([DM1, DM2]);
+  });
+
+  it('受信イベントは 1 本の列で順に処理する。ack は前のイベントの処理を待たない', async () => {
     const { bridge, socket } = makeBridge();
+    await bridge.init();
+    const order: string[] = [];
+    let release: () => void = () => undefined;
+    const gateOpen = new Promise<void>((r) => {
+      release = r;
+    });
+    await bridge.start({
+      onMessage: async (r) => {
+        const text = r.kind === 'deliver' ? r.content : r.kind;
+        order.push(`start:${text}`);
+        if (text === 'first') await gateOpen;
+        order.push(`end:${text}`);
+      },
+      onAction: () => void order.push('action'),
+    });
+
+    const env = (text: string, eventId: string): Record<string, unknown> => {
+      const e = messageEnvelope({ text });
+      return { ...e, body: { ...(e.body as object), event_id: eventId } };
+    };
+    socket.emit('slack_event', { ...env('first', 'Ev1'), ack: async () => void order.push('ack:first') });
+    socket.emit('slack_event', { ...env('second', 'Ev2'), ack: async () => void order.push('ack:second') });
+    socket.emit('interactive', { type: 'interactive', body: {}, ack: async () => void order.push('ack:action') });
+    await flush();
+    expect(order).toEqual(['ack:first', 'ack:second', 'ack:action', 'start:first']);
+
+    release();
+    await flush();
+    expect(order).toEqual([
+      'ack:first',
+      'ack:second',
+      'ack:action',
+      'start:first',
+      'end:first',
+      'start:second',
+      'end:second',
+      'action',
+    ]);
+  });
+
+  it('onMessage が例外を投げても落ちず、logger.error に記録される', async () => {
+    const { bridge, socket, logger } = makeBridge();
+    const errorSpy = vi.spyOn(logger, 'error');
     await bridge.init();
     await bridge.start({
       onMessage: () => {
@@ -401,8 +389,9 @@ describe('SlackBridge の受信', () => {
     });
     socket.emit('slack_event', { ...messageEnvelope(), ack: async () => undefined });
     await flush();
-    // 例外が外に漏れなければここに到達する
-    expect(true).toBe(true);
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+    expect(errorSpy.mock.calls[0]?.[0]).toContain('slack_event');
+    expect((errorSpy.mock.calls[0]?.[1] as Error).message).toBe('boom');
   });
 
   it('block_actions を parseBlockAction に通す。ack が先', async () => {
@@ -410,7 +399,7 @@ describe('SlackBridge の受信', () => {
     await bridge.init();
     const order: string[] = [];
     const seen: ActionParse[] = [];
-    const ctxs: { userId?: string; channelId?: string; messageTs?: string; value?: string }[] = [];
+    const ctxs: ActionContext[] = [];
     await bridge.start({
       onMessage: () => undefined,
       onAction: (p, ctx) => {
@@ -438,7 +427,7 @@ describe('SlackBridge の受信', () => {
 
     expect(order).toEqual(['ack', 'handler']);
     expect(seen[0]).toEqual({ ok: true, kind: 'verdict', verdict: { requestId: 'abcde', behavior: 'allow' } });
-    expect(ctxs[0]).toEqual({ userId: 'U111AAA', channelId: DM1, messageTs: '55.5', value: 'abcde' });
+    expect(ctxs[0]).toEqual({ userId: 'U111AAA', channelId: DM1, messageTs: '55.5' });
   });
 
   it('許可外チャンネルの block_actions は ok:false になる', async () => {
@@ -462,8 +451,9 @@ describe('SlackBridge の受信', () => {
     expect(seen[0]).toEqual({ ok: false, reason: 'channel_not_allowed' });
   });
 
-  it('onAction が例外を投げても落ちない', async () => {
-    const { bridge, socket } = makeBridge();
+  it('onAction が例外を投げても落ちず、logger.error に記録される', async () => {
+    const { bridge, socket, logger } = makeBridge();
+    const errorSpy = vi.spyOn(logger, 'error');
     await bridge.init();
     await bridge.start({
       onMessage: () => undefined,
@@ -473,7 +463,9 @@ describe('SlackBridge の受信', () => {
     });
     socket.emit('interactive', { type: 'interactive', body: {}, ack: async () => undefined });
     await flush();
-    expect(true).toBe(true);
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+    expect(errorSpy.mock.calls[0]?.[0]).toContain('interactive');
+    expect((errorSpy.mock.calls[0]?.[1] as Error).message).toBe('boom');
   });
 
   it('stop すると disconnect される', async () => {
@@ -484,7 +476,7 @@ describe('SlackBridge の受信', () => {
     expect(socket.disconnected).toBe(1);
   });
 
-  it('disconnected が続くとバックオフして start をやり直す', async () => {
+  it('切断されたら、古い接続を disconnect してから start し直す', async () => {
     vi.useFakeTimers();
     try {
       const { bridge, socket } = makeBridge();
@@ -492,40 +484,461 @@ describe('SlackBridge の受信', () => {
       await bridge.start({ onMessage: () => undefined, onAction: () => undefined });
       expect(socket.started).toBe(1);
 
-      socket.emit('disconnected', {});
-      await vi.advanceTimersByTimeAsync(1000);
+      socket.drop();
+      await vi.advanceTimersByTimeAsync(999);
+      expect(socket.started).toBe(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(socket.disconnected).toBe(1);
+      expect(socket.started).toBe(2);
+      expect(socket.leaked).toBe(0);
+      expect(socket.open).toBe(1);
+
+      // 張り直しの disconnect() が出す disconnected で、さらに再接続を予約しない
+      await vi.advanceTimersByTimeAsync(120000);
       expect(socket.started).toBe(2);
 
-      // 再接続後も繋がらないままなら、待ち時間が伸びる
-      socket.emit('disconnected', {});
-      await vi.advanceTimersByTimeAsync(1000);
-      expect(socket.started).toBe(2);
+      // 繋がったのでバックオフは初期値に戻っている
+      socket.drop();
       await vi.advanceTimersByTimeAsync(1000);
       expect(socket.started).toBe(3);
-
-      // connected が来たらバックオフがリセットされる
-      socket.emit('connected', {});
-      socket.emit('disconnected', {});
-      await vi.advanceTimersByTimeAsync(1000);
-      expect(socket.started).toBe(4);
-
+      expect(socket.leaked).toBe(0);
       await bridge.stop();
-      socket.emit('disconnected', {});
-      await vi.advanceTimersByTimeAsync(60000);
-      expect(socket.started).toBe(4); // stop 後は再接続しない
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it('接続状態のイベントで落ちない', async () => {
-    const { bridge, socket } = makeBridge();
+  it('start() が失敗したらバックオフを伸ばしてやり直し、繋がったら初期値に戻す', async () => {
+    vi.useFakeTimers();
+    try {
+      const { bridge, socket, logger } = makeBridge();
+      const errorSpy = vi.spyOn(logger, 'error');
+      await bridge.init();
+      await bridge.start({ onMessage: () => undefined, onAction: () => undefined });
+
+      socket.failStart = ['auth', 'closed'];
+      socket.drop();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(socket.started).toBe(2); // 1 回目: apps.connections.open の失敗
+      await vi.advanceTimersByTimeAsync(1999);
+      expect(socket.started).toBe(2);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(socket.started).toBe(3); // 2 回目: hello 前に切断
+      await vi.advanceTimersByTimeAsync(3999);
+      expect(socket.started).toBe(3);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(socket.started).toBe(4); // 3 回目で成功
+      expect(socket.open).toBe(1);
+      expect(socket.leaked).toBe(0);
+      expect(errorSpy.mock.calls.filter((c) => String(c[0]).includes('再接続に失敗'))).toHaveLength(2);
+
+      socket.drop();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(socket.started).toBe(5);
+      await bridge.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('stop 後は再接続しない（予約済みの再接続も取り消す）', async () => {
+    vi.useFakeTimers();
+    try {
+      const { bridge, socket } = makeBridge();
+      await bridge.init();
+      await bridge.start({ onMessage: () => undefined, onAction: () => undefined });
+
+      socket.drop();
+      await bridge.stop();
+      socket.drop();
+      await vi.advanceTimersByTimeAsync(120000);
+      expect(socket.started).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('最初の start() の途中で切断されても、別途再接続を予約しない', async () => {
+    vi.useFakeTimers();
+    try {
+      const { bridge, socket } = makeBridge();
+      await bridge.init();
+      socket.failStart = ['closed'];
+      await expect(bridge.start({ onMessage: () => undefined, onAction: () => undefined })).rejects.toThrow();
+      await vi.advanceTimersByTimeAsync(120000);
+      expect(socket.started).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('接続状態のイベントは info ログに残り、error は出ない', async () => {
+    const { bridge, socket, logger } = makeBridge();
+    const infoSpy = vi.spyOn(logger, 'info');
+    const errorSpy = vi.spyOn(logger, 'error');
     await bridge.init();
     await bridge.start({ onMessage: () => undefined, onAction: () => undefined });
+    infoSpy.mockClear();
     for (const s of ['connecting', 'connected', 'reconnecting', 'disconnecting']) {
       socket.emit(s, {});
     }
-    expect(true).toBe(true);
+    expect(infoSpy.mock.calls.map((c) => c[0])).toEqual([
+      'socket: connecting',
+      'socket: connected',
+      'socket: reconnecting',
+      'socket: disconnecting',
+    ]);
+    expect(errorSpy).not.toHaveBeenCalled();
     await bridge.stop();
+  });
+});
+
+// --- 現状固定（受信 payload の詰め替えと送信エラーの扱い） ---
+describe('toBlockActionInput', () => {
+  it('block_actions の payload から parseBlockAction の入力と位置情報を取り出す', () => {
+    const { input, ctx } = toBlockActionInput({
+      type: 'block_actions',
+      team: { id: 'T123ABC' },
+      user: { id: 'U111AAA' },
+      channel: { id: DM1 },
+      container: { message_ts: '55.5' },
+      message: { ts: '77.7' },
+      actions: [{ action_id: 'perm_allow', value: 'abcde' }, { action_id: 'ignored', value: 'zzzzz' }],
+    });
+    expect(input).toEqual({
+      type: 'block_actions',
+      teamId: 'T123ABC',
+      userId: 'U111AAA',
+      channelId: DM1,
+      actionId: 'perm_allow',
+      value: 'abcde',
+    });
+    expect(ctx).toEqual({ userId: 'U111AAA', channelId: DM1, messageTs: '55.5' });
+  });
+
+  it('container.message_ts が無ければ message.ts を使う', () => {
+    const { ctx } = toBlockActionInput({ message: { ts: '77.7' } });
+    expect(ctx.messageTs).toBe('77.7');
+  });
+
+  it('threadTs は container.thread_ts を優先し、無ければ message.thread_ts を使う', () => {
+    expect(
+      toBlockActionInput({ container: { message_ts: '55.5', thread_ts: '20.0' }, message: { thread_ts: '30.0' } }).ctx
+        .threadTs
+    ).toBe('20.0');
+    expect(toBlockActionInput({ message: { ts: '77.7', thread_ts: '30.0' } }).ctx.threadTs).toBe('30.0');
+    expect(toBlockActionInput({ container: { message_ts: '55.5' } }).ctx).toEqual({
+      userId: undefined,
+      channelId: undefined,
+      messageTs: '55.5',
+      threadTs: undefined,
+    });
+  });
+
+  it('actions が配列でない／要素がオブジェクトでない場合は action 無し', () => {
+    expect(toBlockActionInput({ actions: { action_id: 'perm_allow' } }).input.actionId).toBeUndefined();
+    expect(toBlockActionInput({ actions: ['perm_allow'] }).input.actionId).toBeUndefined();
+  });
+
+  it('文字列でない値は undefined になる', () => {
+    const { input, ctx } = toBlockActionInput({
+      type: 1,
+      team: { id: null },
+      user: 'U111AAA',
+      channel: { id: ['D'] },
+      container: { message_ts: 55.5 },
+      actions: [{ action_id: {}, value: 5 }],
+    });
+    expect(input).toEqual({
+      type: undefined,
+      teamId: undefined,
+      userId: undefined,
+      channelId: undefined,
+      actionId: undefined,
+      value: undefined,
+    });
+    expect(ctx).toEqual({ userId: undefined, channelId: undefined, messageTs: undefined });
+  });
+});
+
+describe('toInboundMessage の現状固定', () => {
+  it('user_team が無ければ event.team を userTeam に使う', () => {
+    const msg = toInboundMessage({ team_id: 'T123ABC', event: { team: 'TFALLBACK' } });
+    expect(msg.userTeam).toBe('TFALLBACK');
+  });
+
+  it('user_team があれば event.team より優先する', () => {
+    const msg = toInboundMessage({ team_id: 'T123ABC', event: { user_team: 'TUSER', team: 'TFALLBACK' } });
+    expect(msg.userTeam).toBe('TUSER');
+  });
+
+  it('files が配列でなければ undefined になる', () => {
+    const msg = toInboundMessage({ event: { files: 'not-an-array' } });
+    expect(msg.files).toBeUndefined();
+  });
+
+  it('files の size が数値でなければ undefined、name/mimetype が文字列でなければ undefined', () => {
+    const msg = toInboundMessage({ event: { files: [{ name: 1, mimetype: null, size: '10' }, 'junk'] } });
+    expect(msg.files).toEqual([
+      { name: undefined, mimetype: undefined, size: undefined },
+      { name: undefined, mimetype: undefined, size: undefined },
+    ]);
+  });
+
+  it('event が無ければ全項目 undefined', () => {
+    const msg = toInboundMessage({});
+    expect(msg).toEqual({
+      teamId: undefined,
+      eventId: undefined,
+      channelType: undefined,
+      channel: undefined,
+      user: undefined,
+      userTeam: undefined,
+      botId: undefined,
+      subtype: undefined,
+      text: undefined,
+      ts: undefined,
+      threadTs: undefined,
+      files: undefined,
+    });
+  });
+});
+
+describe('SlackBridge の受信（現状固定）', () => {
+  async function startWithActionCapture() {
+    const made = makeBridge();
+    await made.bridge.init();
+    const seen: ActionParse[] = [];
+    const ctxs: ActionContext[] = [];
+    await made.bridge.start({
+      onMessage: () => undefined,
+      onAction: (p, ctx) => {
+        seen.push(p);
+        ctxs.push(ctx);
+      },
+    });
+    return { ...made, seen, ctxs };
+  }
+
+  it('container.message_ts が無ければ message.ts を messageTs に使う', async () => {
+    const { socket, ctxs } = await startWithActionCapture();
+    socket.emit('interactive', {
+      type: 'interactive',
+      body: {
+        type: 'block_actions',
+        team: { id: 'T123ABC' },
+        user: { id: 'U111AAA' },
+        channel: { id: DM1 },
+        message: { ts: '77.7' },
+        actions: [{ action_id: 'perm_deny', value: 'abcde' }],
+      },
+      ack: async () => undefined,
+    });
+    await flush();
+    expect(ctxs[0]?.messageTs).toBe('77.7');
+  });
+
+  it('container.message_ts があれば message.ts より優先する', async () => {
+    const { socket, ctxs } = await startWithActionCapture();
+    socket.emit('interactive', {
+      type: 'interactive',
+      body: {
+        type: 'block_actions',
+        team: { id: 'T123ABC' },
+        user: { id: 'U111AAA' },
+        channel: { id: DM1 },
+        container: { message_ts: '55.5' },
+        message: { ts: '77.7' },
+        actions: [{ action_id: 'perm_deny', value: 'abcde' }],
+      },
+      ack: async () => undefined,
+    });
+    await flush();
+    expect(ctxs[0]?.messageTs).toBe('55.5');
+  });
+
+  it('actions が配列でなければ action 無しとして invalid_request_id になる', async () => {
+    const { socket, seen, ctxs } = await startWithActionCapture();
+    socket.emit('interactive', {
+      type: 'interactive',
+      body: {
+        type: 'block_actions',
+        team: { id: 'T123ABC' },
+        user: { id: 'U111AAA' },
+        channel: { id: DM1 },
+        actions: { action_id: 'perm_allow', value: 'abcde' },
+      },
+      ack: async () => undefined,
+    });
+    await flush();
+    expect(seen[0]).toEqual({ ok: false, reason: 'invalid_request_id' });
+    expect(ctxs[0]).toEqual({ userId: 'U111AAA', channelId: DM1, messageTs: undefined });
+  });
+
+  it('body が空でも onAction は呼ばれる（not_block_actions）', async () => {
+    const { socket, seen, ctxs } = await startWithActionCapture();
+    socket.emit('interactive', { type: 'interactive', body: {}, ack: async () => undefined });
+    await flush();
+    expect(seen[0]).toEqual({ ok: false, reason: 'not_block_actions' });
+    expect(ctxs[0]).toEqual({ userId: undefined, channelId: undefined, messageTs: undefined });
+  });
+
+  it('ack が例外を投げても処理は続く（warn に記録）', async () => {
+    const made = makeBridge();
+    const warnSpy = vi.spyOn(made.logger, 'warn');
+    await made.bridge.init();
+    const seen: GateResult[] = [];
+    await made.bridge.start({ onMessage: (r) => void seen.push(r), onAction: () => undefined });
+    made.socket.emit('slack_event', {
+      type: 'events_api',
+      body: {
+        team_id: 'T123ABC',
+        event_id: 'Ev9',
+        event: { type: 'message', channel_type: 'im', channel: DM1, user: 'U111AAA', text: 'hi', ts: '9.9' },
+      },
+      ack: async () => {
+        throw new Error('ack failed');
+      },
+    });
+    await flush();
+    expect(seen[0]?.kind).toBe('deliver');
+    expect(warnSpy.mock.calls[0]?.[0]).toContain('ack');
+  });
+
+  it('event.type が message 以外なら ack だけして onMessage は呼ばない', async () => {
+    const made = makeBridge();
+    await made.bridge.init();
+    let acked = 0;
+    const seen: GateResult[] = [];
+    await made.bridge.start({ onMessage: (r) => void seen.push(r), onAction: () => undefined });
+    made.socket.emit('slack_event', {
+      type: 'events_api',
+      body: { team_id: 'T123ABC', event: { type: 'reaction_added' } },
+      ack: async () => {
+        acked += 1;
+      },
+    });
+    await flush();
+    expect(acked).toBe(1);
+    expect(seen).toEqual([]);
+  });
+
+  it('onMessage に渡る raw は threadTs が無ければ ts で埋まる', async () => {
+    const made = makeBridge();
+    await made.bridge.init();
+    const raws: unknown[] = [];
+    await made.bridge.start({ onMessage: (_r, raw) => void raws.push(raw), onAction: () => undefined });
+    made.socket.emit('slack_event', {
+      type: 'events_api',
+      body: {
+        team_id: 'T123ABC',
+        event_id: 'Ev1',
+        event: { type: 'message', channel_type: 'im', channel: DM1, user: 'U111AAA', text: 'hi', ts: '1.1' },
+      },
+      ack: async () => undefined,
+    });
+    await flush();
+    expect(raws[0]).toEqual({ channel: DM1, ts: '1.1', threadTs: '1.1', user: 'U111AAA' });
+  });
+});
+
+describe('SlackBridge の送信（現状固定）', () => {
+  it('ratelimited（SDK のリトライ枯渇）はそのままの例外として投げる', async () => {
+    const { bridge, web } = makeBridge();
+    await bridge.init();
+    const err = platformError('ratelimited');
+    web.rejectMarkdown = err;
+    await expect(bridge.postText(DM1, 'hi')).rejects.toBe(err);
+    // text へのフォールバックはしない
+    expect(web.calls.filter((c) => c.method === 'chat.postMessage').length).toBe(0);
+  });
+
+  it('コードが無い汎用 Error（リトライ枯渇時）もそのまま投げる', async () => {
+    const { bridge, web } = makeBridge();
+    await bridge.init();
+    const err = new Error('A rate limit was exceeded (retries exhausted)');
+    web.rejectMarkdown = err;
+    await expect(bridge.postText(DM1, 'hi')).rejects.toBe(err);
+  });
+
+  it('途中のチャンクで失敗すると、送れた件数 sent=N を付けた例外になる', async () => {
+    const { bridge, web } = makeBridge();
+    await bridge.init();
+    web.calls.length = 0;
+    const original = web.chat.postMessage;
+    let n = 0;
+    web.chat.postMessage = async (args) => {
+      n += 1;
+      if (n === 2) throw platformError('internal_error');
+      return original(args);
+    };
+    const text = ('あ'.repeat(99) + '\n').repeat(300);
+    const err = (await bridge.postText(DM1, text).catch((e: unknown) => e)) as Error;
+    expect(err.message).toBe('An API error occurred: internal_error (sent=1)');
+    expect((err.cause as Error).message).toBe('An API error occurred: internal_error');
+    expect(web.calls.filter((c) => c.method === 'chat.postMessage').length).toBe(1);
+  });
+
+  it('空文字の postText は何も送らず ts:[] を返す', async () => {
+    const { bridge, web } = makeBridge();
+    await bridge.init();
+    web.calls.length = 0;
+    await expect(bridge.postText(DM1, '')).resolves.toEqual({ ts: [] });
+    expect(web.calls).toEqual([]);
+  });
+
+  it('updateText は blocks を空にして escapeMrkdwn した text で更新する', async () => {
+    const { bridge, web } = makeBridge();
+    await bridge.init();
+    web.calls.length = 0;
+    await bridge.updateText(DM1, '1.0', '<b> & <!here>');
+    expect(web.calls[0]?.method).toBe('chat.update');
+    expect(web.calls[0]?.args.blocks).toEqual([]);
+    expect(web.calls[0]?.args.text).toBe('&lt;b&gt; &amp; @​here');
+  });
+
+  it('postToAll は失敗したチャンネルを結果から除いて続行する', async () => {
+    const { bridge, web, logger } = makeBridge();
+    const errorSpy = vi.spyOn(logger, 'error');
+    await bridge.init();
+    const original = web.chat.postMessage;
+    web.chat.postMessage = async (args) => {
+      if (args.channel === DM1) throw platformError('channel_not_found');
+      return original(args);
+    };
+    const res = await bridge.postToAll('hello');
+    expect(res).toEqual([{ channel: DM2, ts: '100.1' }]);
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('init は conversations.open が channel.id を返さないユーザーを飛ばす', async () => {
+    const { bridge, web, logger } = makeBridge();
+    const warnSpy = vi.spyOn(logger, 'warn');
+    web.conversations.open = async (args) =>
+      args.users === 'U111AAA' ? { ok: true } : { ok: true, channel: { id: DM2 } };
+    const res = await bridge.init();
+    expect(res.dmChannelCount).toBe(1);
+    expect(bridge.allowedDmChannels.has(DM1)).toBe(false);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('init は DM を 1 件も開けなければ Error', async () => {
+    const { bridge, web } = makeBridge();
+    web.conversations.open = async () => {
+      throw platformError('user_not_found');
+    };
+    await expect(bridge.init()).rejects.toThrow(/1 件も/);
+  });
+
+  it('init は team_id が無ければ Error（enterprise_id では代用しない）', async () => {
+    const { bridge, web } = makeBridge();
+    web.auth.test = async () => ({ ok: true, user_id: BOT });
+    await expect(bridge.init()).rejects.toThrow(/team_id/);
+  });
+
+  it('init は user_id が無ければ Error', async () => {
+    const { bridge, web } = makeBridge();
+    web.auth.test = async () => ({ ok: true, team_id: 'T123ABC' });
+    await expect(bridge.init()).rejects.toThrow(/user_id/);
   });
 });

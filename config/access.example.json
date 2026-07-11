@@ -1,4 +1,5 @@
 {
   "teamId": "T00000000",
-  "allowFrom": ["U00000000"]
+  "allowFrom": ["U00000000"],
+  "channels": []
 }

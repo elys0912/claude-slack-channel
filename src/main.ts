@@ -8,18 +8,12 @@ import { errMessage } from './errors.js';
 import { Logger } from './log.js';
 import { InstanceLock } from './lock.js';
 import { SlackBridge } from './slack.js';
-import type { ActionContext, InboundRef } from './slack.js';
-import { ChannelServer } from './mcp.js';
-import type { McpDeps } from './mcp.js';
-import { PermissionRelay } from './permission-relay.js';
-import { preformattedBlock } from './permission.js';
-import type { ActionParse } from './permission.js';
-import type { GateResult } from './gate.js';
+import { startBridgeApp, startDegradedApp } from './app.js';
+import { replyTimeoutMs } from './watchdog.js';
+import { PowerShellConsole, findConsoleScript } from './console.js';
 
-// Slack 側で「読んだ」「許可した」「拒否した」を示すリアクション
-const REACTION_SEEN = 'eyes';
-const REACTION_ALLOW = 'white_check_mark';
-const REACTION_DENY = 'x';
+/** リポジトリのルート（dist/src/main.js の 2 つ上） */
+const repoRoot = path.resolve(import.meta.dirname, '..', '..');
 
 function createLogger(dir: string): Logger {
   const logger = new Logger({ file: path.join(dir, 'logs', 'bridge.log') });
@@ -46,10 +40,7 @@ async function abort(logger: Logger, what: string, e: unknown, cleanup: () => Pr
 
 // --- 起動 ---------------------------------------------------------------------
 
-async function main(): Promise<void> {
-  const dir = stateDir();
-  const logger = createLogger(dir);
-
+async function main(dir: string, logger: Logger): Promise<void> {
   // 同時に動く Slack ブリッジは1つだけ。2つ目は Slack に繋がず縮退モードで動く
   const lock = new InstanceLock(path.join(dir, 'instance.lock'));
   const lockResult = lock.tryAcquire();
@@ -72,171 +63,54 @@ async function main(): Promise<void> {
 
   logger.info(
     `起動 pid=${process.pid} node=${process.version} stateDir=${dir} ` +
-      `allowFrom=${access.allowFrom.length}人 degraded=${degraded}`
+      `allowFrom=${access.allowFrom.length}人 channels=${access.channels?.length ?? 0}件 degraded=${degraded}`
   );
 
   if (degraded) {
-    await runDegraded(logger);
-  } else {
-    await runBridge(tokens, access, logger, lock);
+    const app = await startDegradedApp({ logger });
+    installShutdown(logger, app.stop);
+    return;
   }
-}
 
-/** 縮退モード: MCP サーバーだけ起動し、ツールはすべてエラーを返す */
-async function runDegraded(logger: Logger): Promise<void> {
-  const busy = async (): Promise<string> =>
-    'error: 別のインスタンスが動いているため、この Slack ブリッジは送信できない';
-
-  const server = new ChannelServer({
-    logger,
-    onReply: busy,
-    onReact: busy,
-    onEdit: busy,
-    onPermissionRequest: () => {
-      logger.warn('縮退モードのため permission_request を無視する');
-    },
-  });
-  await server.connectStdio();
-
-  installShutdown(logger, () => server.close());
-}
-
-/** 通常モード: Slack と Claude Code（MCP）をつないで中継を始める */
-async function runBridge(tokens: Tokens, access: ParsedAccess, logger: Logger, lock: InstanceLock): Promise<void> {
   const bridge = new SlackBridge({ botToken: tokens.botToken, appToken: tokens.appToken, access, logger });
-
   try {
     const init = await bridge.init();
-    logger.info(`Slack 接続確認 OK bot=${init.botUserId} team=${init.teamId} dm=${init.dmChannels.size}件`);
+    logger.info(`Slack 接続確認 OK bot=${init.botUserId} team=${init.teamId} dm=${init.dmChannelCount}件`);
   } catch (e) {
     return abort(logger, 'Slack への接続確認に失敗', e, async () => {
-      await bridge.stop();
       lock.release();
+      await bridge.stop();
     });
   }
 
-  // server と relay は互いを参照する。relay を使うのは接続後なので、宣言順はこれでよい
-  const server: ChannelServer = new ChannelServer({
+  // 終了処理は Socket Mode の接続を待つ前に登録する。開始に失敗したら startBridgeApp が後片付けしてから投げる
+  await startBridgeApp({
+    bridge,
     logger,
-    ...createToolHandlers(bridge, logger),
-    onPermissionRequest: (req) => relay.request(req),
-  });
-  const relay: PermissionRelay = new PermissionRelay(bridge, server, logger);
-  const wiring: Wiring = { bridge, server, relay, logger };
-
-  await server.connectStdio();
-  await bridge.start({
-    onMessage: (result, raw) => handleMessage(wiring, result, raw),
-    onAction: (parsed, ctx) => handleAction(wiring, parsed, ctx),
-  });
-  logger.info('Slack ブリッジ稼働中');
-
-  installShutdown(logger, async () => {
-    await bridge.stop();
-    await server.close();
-    lock.release();
+    lock,
+    onCleanupReady: (stop) => installShutdown(logger, stop),
+    replyTimeoutMs: replyTimeoutMs(),
+    console: consoleAccess(logger),
+    home: { users: access.allowFrom, workDir: process.cwd(), channelCount: access.channels?.length ?? 0 },
+    allowExtraFile: path.join(dir, 'allow-extra.json'),
+    // 起動スクリプトは作業フォルダーで claude.exe を起動し、MCP サーバーも同じ作業フォルダーで動く
+    denyFiles: [
+      path.join(repoRoot, 'config', 'channel-settings.json'),
+      path.join(process.cwd(), '.claude', 'settings.json'),
+      path.join(process.cwd(), '.claude', 'settings.local.json'),
+    ],
   });
 }
 
-// --- Claude → Slack（MCP ツールの実体） ----------------------------------------
-
-type ToolHandlers = Pick<McpDeps, 'onReply' | 'onReact' | 'onEdit'>;
-
-/** reply / react / edit_message の実体。失敗しても投げず、Claude が読めるエラー文を返す */
-function createToolHandlers(bridge: SlackBridge, logger: Logger): ToolHandlers {
-  const run = async (tool: string, action: () => Promise<string>): Promise<string> => {
-    try {
-      return await action();
-    } catch (e) {
-      logger.error(`${tool} に失敗`, e);
-      return `error: ${errMessage(e)}`;
-    }
-  };
-
-  return {
-    onReply: ({ chat_id, text, thread_ts }) =>
-      run('reply', async () => {
-        const res = await bridge.postText(chat_id, text, thread_ts);
-        return `sent (${res.ts.length} message(s))`;
-      }),
-
-    onReact: ({ chat_id, message_id, emoji }) =>
-      run('react', async () => {
-        // Claude が `:eyes:` のようにコロン付きで渡してきても受け付ける
-        await bridge.addReaction(chat_id, message_id, emoji.replace(/^:|:$/g, ''));
-        return 'reacted';
-      }),
-
-    onEdit: ({ chat_id, message_id, text }) =>
-      run('edit_message', async () => {
-        await bridge.updateText(chat_id, message_id, text);
-        return 'edited';
-      }),
-  };
-}
-
-// --- Slack → Claude（受信イベントの処理） --------------------------------------
-
-interface Wiring {
-  bridge: SlackBridge;
-  server: ChannelServer;
-  relay: PermissionRelay;
-  logger: Logger;
-}
-
-/** DM で届いたメッセージ。`yes xxxxx` / `no xxxxx` なら許可の回答、それ以外は Claude へ中継する */
-async function handleMessage({ bridge, server, relay, logger }: Wiring, result: GateResult, raw: InboundRef): Promise<void> {
-  switch (result.kind) {
-    case 'drop':
-      logger.debug(`受信を破棄 reason=${result.reason}`);
-      return;
-
-    case 'verdict':
-      await relay.answerByText(result.verdict, raw.user ?? '');
-      if (raw.channel && raw.ts) {
-        const reaction = result.verdict.behavior === 'allow' ? REACTION_ALLOW : REACTION_DENY;
-        await bridge.addReaction(raw.channel, raw.ts, reaction);
-      }
-      return;
-
-    case 'deliver':
-      if (raw.channel && raw.threadTs) relay.rememberThread(raw.channel, raw.threadTs);
-      await server.pushMessage(result.content, result.meta);
-      if (raw.channel && raw.ts) await bridge.addReaction(raw.channel, raw.ts, REACTION_SEEN);
-      return;
+/** 画面の読み取りに使う console.ps1 が見つかれば、その実装を返す。Windows 以外・見つからなければ undefined */
+function consoleAccess(logger: Logger): PowerShellConsole | undefined {
+  if (process.platform !== 'win32') return undefined;
+  const script = findConsoleScript();
+  if (!script) {
+    logger.warn('scripts/console.ps1 が見つからないので、!screen と画面のボタンは使えない');
+    return undefined;
   }
-}
-
-/** permission request のボタン（Allow / Deny / See more）が押されたとき */
-async function handleAction(wiring: Wiring, parsed: ActionParse, ctx: ActionContext): Promise<void> {
-  if (!parsed.ok) {
-    wiring.logger.warn(`block_actions を無視 reason=${parsed.reason}`);
-    return;
-  }
-
-  if (parsed.kind === 'verdict') {
-    const pressed = ctx.channelId && ctx.messageTs ? { channel: ctx.channelId, ts: ctx.messageTs } : undefined;
-    await wiring.relay.answerByButton(parsed.verdict, ctx.userId ?? '', pressed);
-    return;
-  }
-
-  await sendFullPreview(wiring, parsed.requestId, ctx);
-}
-
-/** See more: ボタンのメッセージでは省略した input_preview の全文をスレッドに送る */
-async function sendFullPreview({ bridge, relay, logger }: Wiring, requestId: string, ctx: ActionContext): Promise<void> {
-  if (!ctx.channelId || !ctx.messageTs) return;
-
-  const req = relay.lookup(requestId);
-  try {
-    if (req) {
-      await bridge.postBlocks(ctx.channelId, req.input_preview, [preformattedBlock(req.input_preview)], ctx.messageTs);
-    } else {
-      await bridge.postText(ctx.channelId, `⌛ permission request ${requestId} は既に期限切れ`, ctx.messageTs);
-    }
-  } catch (e) {
-    logger.warn('see_more の送信に失敗', e);
-  }
+  return new PowerShellConsole(script);
 }
 
 // --- 終了処理 -------------------------------------------------------------------
@@ -279,17 +153,19 @@ function installShutdown(logger: Logger, cleanup: () => Promise<void>): void {
 
 // --- 予期しない例外でもプロセスを落とさない ---------------------------------------
 
-const bootLogger = createLogger(stateDir());
+// Logger はプロセスで 1 つ。起動前の例外も main() 内も同じものに書く
+const stateDirectory = stateDir();
+const logger = createLogger(stateDirectory);
 
 process.on('unhandledRejection', (reason: unknown) => {
-  bootLogger.error('unhandledRejection', reason);
+  logger.error('unhandledRejection', reason);
 });
 process.on('uncaughtException', (e: unknown) => {
-  bootLogger.error('uncaughtException', e);
+  logger.error('uncaughtException', e);
 });
 
-main().catch((e: unknown) => {
+main(stateDirectory, logger).catch((e: unknown) => {
   process.stderr.write(`[slackbridge] 起動に失敗: ${errMessage(e)}\n`);
-  bootLogger.error('起動に失敗', e);
+  logger.error('起動に失敗', e);
   void exitWithError(1);
 });

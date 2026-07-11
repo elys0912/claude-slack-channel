@@ -15,7 +15,7 @@ interface Captured {
 
 async function connect(
   overrides: Partial<{
-    onReply: (a: { chat_id: string; text: string; thread_ts?: string }) => Promise<string>;
+    onReply: (a: { chat_id: string; text: string; thread_ts?: string | undefined }) => Promise<string>;
   }> = {}
 ): Promise<{ client: Client; server: ChannelServer; captured: Captured }> {
   const captured: Captured = {
@@ -203,4 +203,24 @@ describe('ChannelServer の通知', () => {
     await client.close();
     await server.close();
   });
+
+  it.each(['ABCDE', 'abcdl', 'abcd', 'abcdef', '<!here>'])(
+    'request_id が不正（%s）なら Slack 側に渡さず、warn して deny を返す',
+    async (requestId) => {
+      const { client, server, captured } = await connect();
+      await client.notification({
+        method: 'notifications/claude/channel/permission_request',
+        params: { request_id: requestId, tool_name: 'Bash', description: 'd', input_preview: 'p' },
+      });
+      await new Promise((r) => setTimeout(r, 20));
+
+      expect(captured.permissionRequests).toHaveLength(0);
+      const verdicts = captured.notifications.filter(
+        (x) => x.method === 'notifications/claude/channel/permission'
+      );
+      expect(verdicts.map((v) => v.params)).toEqual([{ request_id: requestId, behavior: 'deny' }]);
+      await client.close();
+      await server.close();
+    }
+  );
 });

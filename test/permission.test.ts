@@ -1,17 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import {
   PendingPermissions,
+  PERMISSION_ID_BODY,
   PERMISSION_ID_RE,
   isValidRequestId,
   buildPermissionBlocks,
   buildResolvedBlocks,
   buildExpiredBlocks,
+  buildAutoDeniedBlocks,
   parseBlockAction,
   type PermissionRequest
 } from '../src/permission.js';
-import type { AccessConfig } from '../src/types.js';
+import type { ParsedAccess } from '../src/config.js';
 
-const access: AccessConfig = { teamId: 'T123', allowFrom: ['U123'] };
+const access: ParsedAccess = { teamId: 'T123', allowFrom: ['U123'] };
 
 const sampleReq: PermissionRequest = {
   request_id: 'abcde',
@@ -38,6 +40,11 @@ describe('PERMISSION_ID_RE / isValidRequestId', () => {
   it('rejects wrong lengths', () => {
     expect(isValidRequestId('abcd')).toBe(false);
     expect(isValidRequestId('abcdef')).toBe(false);
+  });
+
+  it('PERMISSION_ID_RE は PERMISSION_ID_BODY を前後アンカーで包んだもの', () => {
+    expect(PERMISSION_ID_RE.source).toBe(`^${PERMISSION_ID_BODY}$`);
+    expect(PERMISSION_ID_RE.flags).toBe('');
   });
 });
 
@@ -105,10 +112,72 @@ describe('buildPermissionBlocks', () => {
     ) as { elements: { elements: { text: string }[] }[] };
     const previewText = preformatted.elements[0]?.elements[0]?.text ?? '';
     expect(previewText.length).toBeLessThanOrEqual(100);
-    expect(previewText.endsWith('…')).toBe(true);
+    expect(previewText).toContain('文字省略');
 
     const actions = blocks.find((b) => (b as { type: string }).type === 'actions') as { elements: { action_id: string }[] };
     expect(actions.elements.some((e) => e.action_id === 'perm_more')).toBe(true);
+  });
+
+  function previewOf(blocks: unknown[]): string {
+    const rich = blocks.find((b) => (b as { type: string }).type === 'rich_text') as {
+      elements: { elements: { text: string }[] }[];
+    };
+    return rich.elements[0]?.elements[0]?.text ?? '';
+  }
+
+  it('長い input_preview は先頭と末尾を残し、省略した文字数を間に入れる（既定で先頭約 2000 + 末尾約 600）', () => {
+    const preview = 'H'.repeat(3000) + 'M'.repeat(3000) + 'T'.repeat(3000);
+    const { blocks } = buildPermissionBlocks({ ...sampleReq, input_preview: preview });
+    const text = previewOf(blocks);
+    expect(text.length).toBeLessThanOrEqual(2800);
+    const m = /^(H+)\n…（途中 (\d+) 文字省略）…\n(T+)$/.exec(text);
+    expect(m).not.toBeNull();
+    const [, head = '', omitted = '0', tail = ''] = m ?? [];
+    expect(head.length).toBeGreaterThanOrEqual(2000);
+    expect(tail.length).toBeGreaterThanOrEqual(550);
+    expect(head.length + Number(omitted) + tail.length).toBe(preview.length);
+  });
+
+  it('input_preview を省略したときだけ警告行（context）を preview の直後に足す', () => {
+    const long = buildPermissionBlocks({ ...sampleReq, input_preview: 'x'.repeat(5000) });
+    const types = long.blocks.map((b) => (b as { type: string }).type);
+    expect(types).toEqual(['header', 'section', 'section', 'rich_text', 'context', 'context', 'actions']);
+    expect(JSON.stringify(long.blocks[4])).toContain('See more');
+
+    const short = buildPermissionBlocks(sampleReq);
+    expect(short.blocks.map((b) => (b as { type: string }).type)).toEqual([
+      'header',
+      'section',
+      'section',
+      'rich_text',
+      'context',
+      'actions'
+    ]);
+  });
+
+  it('双方向制御文字・ゼロ幅文字・BOM を \\u{XXXX} の形で見えるようにする', () => {
+    const invisible = '‪‫‬‭‮⁦⁧⁨⁩​‌‍﻿';
+    const { blocks } = buildPermissionBlocks({
+      ...sampleReq,
+      description: `desc‮gnp.exe`,
+      input_preview: `rm${invisible}x`
+    });
+    expect(previewOf(blocks)).toBe(
+      'rm\\u{202A}\\u{202B}\\u{202C}\\u{202D}\\u{202E}\\u{2066}\\u{2067}\\u{2068}\\u{2069}\\u{200B}\\u{200C}\\u{200D}\\u{FEFF}x'
+    );
+    expect(JSON.stringify(blocks)).not.toMatch(/[‪-‮⁦-⁩​-‍﻿]/);
+    expect((blocks[2] as { text: { text: string } }).text.text).toBe('desc\\u{202E}gnp.exe');
+  });
+
+  it('切り詰めの境目でサロゲートペアや可視化したエスケープを割らない', () => {
+    const preview = ('😀‮').repeat(2000);
+    const { blocks } = buildPermissionBlocks({ ...sampleReq, input_preview: preview }, 101);
+    const text = previewOf(blocks);
+    expect(text.length).toBeLessThanOrEqual(101);
+    const [head = '', tail = ''] = text.split(/\n…（途中 \d+ 文字省略）…\n/);
+    expect(head).toMatch(/^(😀\\u\{202E\}|😀)*$/);
+    expect(tail).toMatch(/^(\\u\{202E\}|😀)*$/);
+    expect(text).not.toMatch(/[\ud800-\udbff](?![\udc00-\udfff])/);
   });
 
   it('does not add a See more button when nothing is truncated', () => {
@@ -147,10 +216,48 @@ describe('buildPermissionBlocks', () => {
   });
 });
 
+describe('空の項目', () => {
+  function texts(blocks: unknown[]): string[] {
+    const out: string[] = [];
+    for (const b of blocks) {
+      const block = b as { type: string; text?: { text: string }; elements?: { elements?: { text: string }[] }[] };
+      if (block.type === 'section' && block.text) out.push(block.text.text);
+      if (block.type === 'rich_text') out.push(block.elements?.[0]?.elements?.[0]?.text ?? '');
+    }
+    return out;
+  }
+
+  it.each(['', '   ', '\n'])('tool_name / description / input_preview が空（%j）でも空の text を出さない', (empty) => {
+    const req: PermissionRequest = { request_id: 'abcde', tool_name: empty, description: empty, input_preview: empty };
+    const { blocks } = buildPermissionBlocks(req);
+    expect(texts(blocks)).toEqual(['Tool: (不明なツール)', '(説明なし)', '(入力なし)']);
+
+    const resolved = buildResolvedBlocks(req, 'allow', 'U123');
+    expect(texts(resolved.blocks)).toEqual(['Allowed: (不明なツール)']);
+  });
+});
+
 describe('buildResolvedBlocks', () => {
   it('reflects allow', () => {
     const { text } = buildResolvedBlocks(sampleReq, 'allow', 'U123');
     expect(text).toContain('Allowed');
+  });
+
+  it('ID は plain_text で出し、mrkdwn はユーザー ID の形のメンションだけに使う', () => {
+    const { blocks } = buildResolvedBlocks(sampleReq, 'allow', 'U123');
+    const context = blocks[1] as { type: string; elements: { type: string; text: string }[] };
+    expect(context.type).toBe('context');
+    expect(context.elements).toEqual([
+      { type: 'plain_text', text: 'ID: abcde ・ by' },
+      { type: 'mrkdwn', text: '<@U123>' }
+    ]);
+  });
+
+  it('ユーザー ID の形でない byUserId は mrkdwn に入れない', () => {
+    const { blocks } = buildResolvedBlocks({ ...sampleReq, request_id: '*x* <!here>' }, 'deny', '<!channel>');
+    const context = blocks[1] as { elements: { type: string; text: string }[] };
+    expect(context.elements.every((e) => e.type === 'plain_text')).toBe(true);
+    expect(context.elements.map((e) => e.text)).toEqual(['ID: *x* <!here> ・ by', '<!channel>']);
   });
 
   it('reflects deny', () => {
@@ -167,6 +274,27 @@ describe('buildExpiredBlocks', () => {
   });
 });
 
+describe('buildAutoDeniedBlocks', () => {
+  it('ID と自動で拒否した理由を plain_text で出す', () => {
+    const { text, blocks } = buildAutoDeniedBlocks('abcde', '期限切れ');
+    expect(text).toContain('abcde');
+    expect(text).toContain('期限切れのため自動で拒否した');
+    expect(blocks).toEqual([{ type: 'section', text: { type: 'plain_text', text } }]);
+  });
+});
+
+describe('PendingPermissions.remove', () => {
+  it('期限に関係なく取り出して消す', () => {
+    let now = 1000;
+    const pending = new PendingPermissions(1000, () => now);
+    pending.add(sampleReq);
+    now = 5000;
+    expect(pending.remove('abcde')).toEqual(sampleReq);
+    expect(pending.remove('abcde')).toBeUndefined();
+    expect(pending.ttl).toBe(1000);
+  });
+});
+
 describe('parseBlockAction', () => {
   const allowedChannels = new Set(['D1']);
   const validInput = {
@@ -177,6 +305,31 @@ describe('parseBlockAction', () => {
     actionId: 'perm_allow',
     value: 'abcde'
   };
+
+  it.each([
+    [{ actionId: 'perm_always', value: 'abcde' }, { ok: true, kind: 'allow_always', requestId: 'abcde' }],
+    [{ actionId: 'screen_show', value: 'show' }, { ok: true, kind: 'screen_show' }],
+    [{ actionId: 'screen_pick_2', value: 'k3x9ab2q.2' }, { ok: true, kind: 'screen_pick', snapshotId: 'k3x9ab2q', index: 2 }],
+    [{ actionId: 'rule_add', value: 'k3x9ab2q' }, { ok: true, kind: 'rule_confirm', proposalId: 'k3x9ab2q', accept: true }],
+    [{ actionId: 'rule_cancel', value: 'k3x9ab2q' }, { ok: true, kind: 'rule_confirm', proposalId: 'k3x9ab2q', accept: false }],
+    [{ actionId: 'rule_remove_0', value: 'Bash(git status:*)' }, { ok: true, kind: 'rule_remove', rule: 'Bash(git status:*)' }],
+    [{ actionId: 'screen_pick_0', value: 'bad' }, { ok: false, reason: 'invalid_value' }],
+    [{ actionId: 'rule_add', value: 'UPPER123' }, { ok: false, reason: 'invalid_value' }],
+    [{ actionId: 'rule_remove_1', value: '' }, { ok: false, reason: 'invalid_value' }],
+  ])('画面・許可リスト操作のボタン %o', (overrides, expected) => {
+    expect(parseBlockAction({ ...validInput, ...overrides }, access, allowedChannels)).toEqual(expected);
+  });
+
+  it('画面・許可リスト操作のボタンも、許可外のユーザー・チャンネルなら先に弾く', () => {
+    expect(parseBlockAction({ ...validInput, actionId: 'screen_show', userId: 'U999' }, access, allowedChannels)).toEqual({
+      ok: false,
+      reason: 'user_not_allowed',
+    });
+    expect(parseBlockAction({ ...validInput, actionId: 'screen_show', channelId: 'D9' }, access, allowedChannels)).toEqual({
+      ok: false,
+      reason: 'channel_not_allowed',
+    });
+  });
 
   it('parses a valid Allow action', () => {
     const result = parseBlockAction(validInput, access, allowedChannels);
@@ -208,7 +361,7 @@ describe('parseBlockAction', () => {
     expect(result.ok).toBe(false);
   });
 
-  it('rejects a channel not in allowedDmChannels', () => {
+  it('rejects a channel not in allowedChannels', () => {
     const result = parseBlockAction({ ...validInput, channelId: 'DOTHER' }, access, allowedChannels);
     expect(result.ok).toBe(false);
   });

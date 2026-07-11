@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "my-server": {
+      "command": "node",
+      "args": ["C:\\path\\to\\my-server\\dist\\index.js"]
+    }
+  }
+}

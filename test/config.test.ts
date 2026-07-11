@@ -6,9 +6,14 @@ import { loadAccess, loadTokens, parseDotenv, stateDir } from '../src/config.js'
 
 describe('stateDir', () => {
   it('環境変数があればそれを使う', () => {
-    expect(stateDir({ SLACK_CHANNEL_STATE_DIR: 'C:\\custom\\dir' } as NodeJS.ProcessEnv)).toBe(
-      'C:\\custom\\dir',
-    );
+    const abs = path.resolve(os.tmpdir(), 'custom', 'dir');
+    expect(stateDir({ SLACK_CHANNEL_STATE_DIR: abs } as NodeJS.ProcessEnv)).toBe(abs);
+  });
+
+  it('環境変数が相対パスなら絶対パスに解決する', () => {
+    const result = stateDir({ SLACK_CHANNEL_STATE_DIR: 'rel/state' } as NodeJS.ProcessEnv);
+    expect(path.isAbsolute(result)).toBe(true);
+    expect(result).toBe(path.resolve('rel/state'));
   });
 
   it('環境変数がなければ既定パスを使う', () => {
@@ -52,6 +57,29 @@ describe('parseDotenv', () => {
 
   it('値に = を含む場合も最初の = で分割する', () => {
     expect(parseDotenv('FOO=a=b=c')).toEqual({ FOO: 'a=b=c' });
+  });
+
+  it('引用符の無い値の後ろの " # ..." は行末コメントとして捨てる', () => {
+    expect(parseDotenv('FOO=bar # comment\nBAZ=qux\t# tab')).toEqual({ FOO: 'bar', BAZ: 'qux' });
+  });
+
+  it('値が空で行末コメントだけなら空値にする', () => {
+    expect(parseDotenv('FOO= # comment')).toEqual({ FOO: '' });
+  });
+
+  it('空白の無い # は値の一部として残す', () => {
+    expect(parseDotenv('FOO=a#b')).toEqual({ FOO: 'a#b' });
+  });
+
+  it('引用符の中の # は残し、閉じ引用符の後ろのコメントは捨てる', () => {
+    expect(parseDotenv('FOO="a # b" # comment\nBAZ=\'c # d\'')).toEqual({
+      FOO: 'a # b',
+      BAZ: 'c # d',
+    });
+  });
+
+  it('途中に同じ引用符を含む値は両端の引用符だけを剥がす', () => {
+    expect(parseDotenv('FOO="a"b"')).toEqual({ FOO: 'a"b' });
   });
 
   it('展開や複数行はしない', () => {
@@ -143,9 +171,36 @@ describe('loadAccess', () => {
   it('正常系', () => {
     fs.writeFileSync(
       path.join(dir, 'access.json'),
-      JSON.stringify({ teamId: 'T12345', allowFrom: ['U12345', 'W12345'] }),
+      JSON.stringify({ teamId: 'T12345', allowFrom: ['U12345', 'U67890'] }),
     );
-    expect(loadAccess(dir)).toEqual({ teamId: 'T12345', allowFrom: ['U12345', 'W12345'] });
+    expect(loadAccess(dir)).toEqual({ teamId: 'T12345', allowFrom: ['U12345', 'U67890'] });
+  });
+
+  it('channels を読み込める（C と、古い非公開チャンネルの G）', () => {
+    fs.writeFileSync(
+      path.join(dir, 'access.json'),
+      JSON.stringify({ teamId: 'T12345', allowFrom: ['U12345'], channels: ['C12345', 'G12345'] }),
+    );
+    expect(loadAccess(dir).channels).toEqual(['C12345', 'G12345']);
+  });
+
+  it.each([
+    ['DM の ID', ['D12345'], /channels のID形式が不正/],
+    ['重複', ['C12345', 'C12345'], /channels に重複がある/],
+  ])('channels に%sがあれば拒否する', (_label, channels, message) => {
+    fs.writeFileSync(
+      path.join(dir, 'access.json'),
+      JSON.stringify({ teamId: 'T12345', allowFrom: ['U12345'], channels }),
+    );
+    expect(() => loadAccess(dir)).toThrow(message);
+  });
+
+  it('teamId は T で始まるものだけ、allowFrom は U で始まるものだけ受け付ける', () => {
+    const write = (v: unknown): void => fs.writeFileSync(path.join(dir, 'access.json'), JSON.stringify(v));
+    write({ teamId: 'E12345', allowFrom: ['U12345'] });
+    expect(() => loadAccess(dir)).toThrow(/teamId/);
+    write({ teamId: 'T12345', allowFrom: ['W12345'] });
+    expect(() => loadAccess(dir)).toThrow(/allowFrom/);
   });
 
   it('未知のキーは拒否する', () => {
@@ -170,6 +225,14 @@ describe('loadAccess', () => {
       JSON.stringify({ teamId: 'bad-id', allowFrom: ['U12345'] }),
     );
     expect(() => loadAccess(dir)).toThrow();
+  });
+
+  it('BOM 付きの UTF-8 でも読み込める', () => {
+    fs.writeFileSync(
+      path.join(dir, 'access.json'),
+      '\uFEFF' + JSON.stringify({ teamId: 'T12345', allowFrom: ['U12345'] }),
+    );
+    expect(loadAccess(dir)).toEqual({ teamId: 'T12345', allowFrom: ['U12345'] });
   });
 
   it('JSON の構文エラーなら拒否する', () => {

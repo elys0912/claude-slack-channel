@@ -5,6 +5,7 @@ dist/
 *.log
 coverage/
 config/projects.json
+config/extra-mcp.json
 
 # ローカル専用の開発メモ・スパイク（公開リポジトリには入れない）
 .local/
