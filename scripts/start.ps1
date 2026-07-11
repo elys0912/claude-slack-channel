@@ -203,7 +203,7 @@ function Read-ExtraMcpServers {
 $extraServers = Read-ExtraMcpServers
 # ブリッジには状態ディレクトリを環境変数で明示して渡す（claude.exe の環境の引き継ぎに頼らない）
 $mcpConfig = Write-McpConfig -FileName "$sessionName\mcp.json" -ServerName 'slackbridge' -ScriptPath $mainJs `
-    -ExtraServers $extraServers -Env @{ SLACK_CHANNEL_STATE_DIR = $stateDir }
+    -ExtraServers $extraServers -Env @{ SLACK_CHANNEL_STATE_DIR = $stateDir; SLACK_CHANNEL_SETTINGS_FILE = $settingsFile }
 
 # Slack の「今後も許可」で足したルール（状態ディレクトリの allow-extra.json）を読む。
 # ブリッジが deny と照合してから書き込んだものだけが入っている。読めなければ警告だけ出して使わない

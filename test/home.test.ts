@@ -45,6 +45,18 @@ describe('buildHomeView', () => {
     expect(t).not.toContain('返事が無いとき');
   });
 
+  it('使い方のメンションはボット自身の ID で出し、アプリ名は埋め込まない', () => {
+    const t = text(buildHomeView({ ...base, botUserId: 'U0C3MSN3MND' }));
+    expect(t).toContain('<@U0C3MSN3MND> にメンションして');
+    expect(t).not.toContain('fox3-local');
+    expect(t).not.toContain('FOX3 Local Bridge');
+  });
+
+  it('ボットの ID が分からない・形が違うときは「ボット」と書く', () => {
+    expect(text(buildHomeView(base))).toContain('チャンネルで ボット にメンションして');
+    expect(text(buildHomeView({ ...base, botUserId: '<!here>' }))).toContain('チャンネルで ボット にメンションして');
+  });
+
   it('作業フォルダーの & < > はエスケープする', () => {
     expect(text(buildHomeView({ ...base, workDir: 'C:\\a<b>&c' }))).toContain('a&lt;b&gt;&amp;c');
   });
