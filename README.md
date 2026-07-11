@@ -204,7 +204,10 @@ Windows Terminal から実行する。
   起動時に `追加の MCP サーバー: ...` と表示される。
 - `.mcp.json` をそのまま読ませないのは、新しいサーバーを見つけたときの承認の確認画面がターミナルに出て、
   隠しウィンドウで動かしていると Slack から気付けないまま止まるため。`extra-mcp.json` に書いたサーバーには確認画面は出ない。
-- 追加したサーバーのツールも、実行は通常どおり実行許可の確認に掛かる（Slack から答えられる）。
+- 追加したサーバーのツールは、**確認なしで実行される**（起動スクリプトが `mcp__<サーバー名>` を allow に足す）。
+  MCP のツールは1操作ごとに確認が出て、ブラウザ操作などが確認のたびに止まるため。
+  使う人が承知して入れたサーバーとして扱うので、ツールの中身（任意のスクリプト実行ができるものなど）を理解したうえで登録すること。
+  個別のツールを確認させたいときは `channel-settings.json` の `ask` に書く（allow より優先される）。
 - OAuth の認証が要るサーバー（HTTP 型など）は、一度ターミナルで `/mcp` から認証しておく。Slack からは認証できない。
 - claude.ai のコネクター（Gmail など）は起動スクリプトが無効にしている（`ENABLE_CLAUDEAI_MCP_SERVERS=false`）。
 
@@ -219,8 +222,10 @@ Windows Terminal から実行する。
   - それ以外のツール: ツール名だけ（例: `WebFetch`）
 - 次のものは作らず、理由をスレッドで知らせる。
   - 複数のコマンドをつないだもの・リダイレクトを含むもの
-  - 削除・移動・ネットワーク・プロセス起動・任意のコード実行（`node` / `python` / `npx` など）・権限やシステムの変更に当たるコマンド、
-    `git push` / `reset` / `clean` などの破壊的な操作、読み取り系（`Get` / `Test` / `Select` など）以外の PowerShell コマンドレット
+  - 削除・移動・ネットワーク・プロセス起動・任意のコード実行（`node` / `python` / `npx` / `uvx` など）・権限やシステムの変更に当たるコマンド、
+    エージェントの CLI（`claude` / `codex` / `gemini` など。別のエージェントに確認なしで操作させられるため）、
+    `git push` / `reset` / `clean` などの破壊的な操作、スクリプトを実行する操作（`npm test` / `npm run` / `dotnet run` など。
+    ファイル編集が確認なしだと、スクリプトを書き換えてから実行できるため）、読み取り系（`Get` / `Test` / `Select` など）以外の PowerShell コマンドレット
   - ファイル編集（Write / Edit など。許可モードで扱う）
 - **deny に当たるものは追加しない**。`channel-settings.json` と作業フォルダーの `.claude/settings.json` / `settings.local.json` の deny と
   範囲が重なる（どちらかがもう一方を含む）ときは、「deny に当たるので追加しない」と当たった deny をスレッドで知らせる。
@@ -349,7 +354,7 @@ deny は allow より必ず優先される（評価順は deny → ask → allow
 |---|---|---|
 | `.env` | 状態ディレクトリ | `SLACK_BOT_TOKEN`（`xoxb-`）、`SLACK_APP_TOKEN`（`xapp-`） |
 | `access.json` | 状態ディレクトリ | `teamId`（`T...`）、`allowFrom`（`U...` の配列）、`channels`（`C...` / `G...` の配列、省略可）。これ以外のキーはエラー |
-| `extra-mcp.json` | `config\`（git 管理外） | Slack セッションで一緒に使う MCP サーバー（`.mcp.json` と同じ `mcpServers` の形。ひな形: `extra-mcp.example.json`）。ツールの実行は通常どおり実行許可の確認に掛かる |
+| `extra-mcp.json` | `config\`（git 管理外） | Slack セッションで一緒に使う MCP サーバー（`.mcp.json` と同じ `mcpServers` の形。ひな形: `extra-mcp.example.json`）。登録したサーバーのツールは確認なしで実行される |
 | `allow-extra.json` | 状態ディレクトリ | Slack の「今後も許可」で足したルール（`{"allow": [...]}`）。ブリッジが書き、起動スクリプトが allow に足す |
 | `projects.json` | `config\` | `projects`: `{ name, path }` の配列。起動時の選択肢 |
 | `channel-settings.json` | `config\` | channel セッション専用の Claude Code 設定 |
