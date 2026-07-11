@@ -15,6 +15,7 @@ import type { ConsoleAccess } from './console.js';
 import { ScreenRelay, screenShowButton } from './screen-relay.js';
 import { RuleRelay } from './rule-relay.js';
 import { AllowRuleStore, readDeny } from './allow-rules.js';
+import { buildForbiddenHomeView, buildHomeView } from './home.js';
 
 // Slack 側で「読んだ」「許可した」「拒否した」を示すリアクション
 export const REACTION = {
@@ -32,7 +33,8 @@ export type ToolBridge = Pick<SlackBridge, 'postText' | 'addReaction' | 'updateT
 export type AppBridge = Pick<
   SlackBridge,
   'start' | 'stop' | 'postText' | 'postBlocks' | 'addReaction' | 'updateText' | 'postToAll' | 'updateBlocks'
->;
+> &
+  Partial<Pick<SlackBridge, 'publishHome'>>;
 
 /** 受信処理が使う MCP サーバー側の操作 */
 export type AppServer = Pick<ChannelServer, 'pushMessage'>;
@@ -249,7 +251,7 @@ async function sendFullPreview({ bridge, relay, logger }: Wiring, requestId: str
 // --- 起動 ---------------------------------------------------------------------
 
 export interface RunningApp {
-  /** 後片付け（lock.release → 無応答の見張りを解く → 保留中の permission request を deny（通常モードのみ） → bridge.stop → server.close の順。2 回目以降の呼び出しは 1 回目と同じ Promise を返す） */
+  /** 後片付け（lock.release → 無応答の見張りを解く → 保留中の permission request を deny → ホームを停止中にする（通常モードのみ） → bridge.stop → server.close の順。2 回目以降の呼び出しは 1 回目と同じ Promise を返す） */
   stop: () => Promise<void>;
 }
 
@@ -277,6 +279,11 @@ export interface BridgeAppOptions {
   allowExtraFile?: string | undefined;
   /** 追加の前に照合する deny を読む設定ファイル（channel-settings.json と作業フォルダーの .claude/settings*.json） */
   denyFiles?: string[] | undefined;
+  /**
+   * アプリのホームタブに状態を出す。起動時に users 全員のホームを「稼働中」にし、終了時に「停止中」へ書き換え、
+   * ホームが開かれたら最新の状態で出し直す。省略時はホームを更新しない
+   */
+  home?: { users: string[]; workDir: string; channelCount: number } | undefined;
 }
 
 /**
@@ -299,9 +306,10 @@ export async function startBridgeApp(opts: BridgeAppOptions): Promise<RunningApp
     },
   });
   const screen = new ScreenRelay({ console: opts.console, slack: bridge, logger });
-  const rules = opts.allowExtraFile
+  const ruleStore = opts.allowExtraFile ? new AllowRuleStore(opts.allowExtraFile) : undefined;
+  const rules = ruleStore
     ? new RuleRelay({
-        store: new AllowRuleStore(opts.allowExtraFile),
+        store: ruleStore,
         loadDeny: () => (opts.denyFiles ?? []).flatMap((f) => readDeny(f)),
         slack: bridge,
         logger,
@@ -320,14 +328,36 @@ export async function startBridgeApp(opts: BridgeAppOptions): Promise<RunningApp
   const relay: PermissionRelay = new PermissionRelay(bridge, server, logger);
   const wiring: Wiring = { bridge, server, relay, logger, watchdog, screen, rules };
 
+  // --- ホームタブ -------------------------------------------------------------
+  const startedAt = new Date();
+  const homeView = (running: boolean, since: Date): unknown =>
+    buildHomeView({
+      running,
+      since,
+      workDir: opts.home?.workDir ?? '',
+      channelCount: opts.home?.channelCount ?? 0,
+      ruleCount: ruleStore?.list().length,
+      replyTimeoutMin: Math.round((opts.replyTimeoutMs ?? 0) / 60000),
+      now: new Date(),
+    });
+  const publishHomeAll = async (running: boolean, since: Date): Promise<void> => {
+    if (!opts.home || !bridge.publishHome) return;
+    for (const user of opts.home.users) await bridge.publishHome(user, homeView(running, since));
+  };
+  const onHomeOpened = async (user: string, allowed: boolean): Promise<void> => {
+    if (!opts.home || !bridge.publishHome) return;
+    await bridge.publishHome(user, allowed ? homeView(true, startedAt) : buildForbiddenHomeView());
+  };
+
   let stopped: Promise<void> | undefined;
   const stop = (): Promise<void> =>
     (stopped ??= (async () => {
       opts.lock?.release();
       watchdog.stop();
       try {
-        // Slack の書き換えと Claude への通知が届くよう、切断より前に行う（denyAll は投げない）
+        // Slack の書き換えと Claude への通知が届くよう、切断より前に行う（denyAll・publishHome は投げない）
         await relay.denyAll('ブリッジ終了');
+        await publishHomeAll(false, new Date());
         await bridge.stop();
       } finally {
         await server.close();
@@ -342,12 +372,14 @@ export async function startBridgeApp(opts: BridgeAppOptions): Promise<RunningApp
       onMessage: (result, raw) => handleMessage(wiring, result, raw),
       onAction: (parsed, ctx) => handleAction(wiring, parsed, ctx),
       isKnownRequest: (id) => relay.lookup(id) !== undefined,
+      onHomeOpened,
     });
   } catch (e) {
     await stop().catch((err: unknown) => logger.error('起動失敗後の後片付けで例外', err));
     throw e;
   }
   logger.info('Slack ブリッジ稼働中');
+  await publishHomeAll(true, startedAt);
 
   return { stop };
 }

@@ -60,6 +60,12 @@ export function makeWeb(): FakeWeb {
         return { ok: true };
       },
     },
+    views: {
+      publish: async (args) => {
+        calls.push({ method: 'views.publish', args });
+        return { ok: true };
+      },
+    },
   };
   return web;
 }
