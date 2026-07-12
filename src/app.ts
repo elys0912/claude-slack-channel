@@ -17,6 +17,8 @@ import { RuleRelay } from './rule-relay.js';
 import { AllowRuleStore, readDeny } from './allow-rules.js';
 import { buildForbiddenHomeView, buildHomeView } from './home.js';
 import type { HomeCustom } from './home.js';
+import { downloadSlackFile } from './download.js';
+import type { DownloadDeps } from './download.js';
 
 // Slack 側で「読んだ」「許可した」「拒否した」を示すリアクション
 export const REACTION = {
@@ -65,13 +67,19 @@ const COMMAND_RE = /^\s*!(screen|rules)\s*$/i;
 
 // --- Claude → Slack（MCP ツールの実体） ----------------------------------------
 
-export type ToolHandlers = Pick<McpDeps, 'onReply' | 'onReact' | 'onEdit'>;
+export type ToolHandlers = Pick<McpDeps, 'onReply' | 'onReact' | 'onEdit' | 'onDownload'>;
 
 /**
- * reply / react / edit_message の実体。失敗しても投げず、Claude が読めるエラー文を返す。
+ * reply / react / edit_message / download_file の実体。失敗しても投げず、Claude が読めるエラー文を返す。
  * onActivity はツールが呼ばれるたびに（成否によらず）呼ぶ。無応答の見張りを解くのに使う。
+ * download が無ければ download_file は出さない。
  */
-export function createToolHandlers(bridge: ToolBridge, logger: Logger, onActivity?: () => void): ToolHandlers {
+export function createToolHandlers(
+  bridge: ToolBridge,
+  logger: Logger,
+  onActivity?: () => void,
+  download?: DownloadDeps
+): ToolHandlers {
   const run = async (tool: string, action: () => Promise<string>): Promise<string> => {
     onActivity?.();
     try {
@@ -101,6 +109,15 @@ export function createToolHandlers(bridge: ToolBridge, logger: Logger, onActivit
         await bridge.updateText(chat_id, message_id, text);
         return 'edited';
       }),
+
+    onDownload: download
+      ? ({ file_id, extract }) =>
+          run('download_file', async () => {
+            const result = await downloadSlackFile(download, file_id, extract ?? false);
+            logger.info(`download_file file=${file_id} extract=${extract ?? false}`);
+            return result;
+          })
+      : undefined,
   };
 }
 
@@ -294,6 +311,8 @@ export interface BridgeAppOptions {
         loadCustom?: (() => HomeCustom | undefined) | undefined;
       }
     | undefined;
+  /** 添付の保存先と取得手段（.env の DOWNLOAD_DIR があるとき）。省略時は download_file を出さない */
+  download?: DownloadDeps | undefined;
 }
 
 /**
@@ -329,7 +348,7 @@ export async function startBridgeApp(opts: BridgeAppOptions): Promise<RunningApp
   // server と relay は互いを参照する。relay を使うのは接続後なので、宣言順はこれでよい
   const server: ChannelServer = new ChannelServer({
     logger,
-    ...createToolHandlers(bridge, logger, () => watchdog.activity()),
+    ...createToolHandlers(bridge, logger, () => watchdog.activity(), opts.download),
     onPermissionRequest: (req) => {
       watchdog.activity();
       return relay.request(req);

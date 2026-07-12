@@ -677,6 +677,11 @@ describe('toInboundMessage の現状固定', () => {
     expect(msg.files).toBeUndefined();
   });
 
+  it('files の id は Slack のファイル ID の形のものだけ通す', () => {
+    const msg = toInboundMessage({ event: { files: [{ id: 'F0ABC123' }, { id: 'x"><evil' }, { id: 5 }] } });
+    expect(msg.files?.map((f) => f.id)).toEqual(['F0ABC123', undefined, undefined]);
+  });
+
   it('files の size が数値でなければ undefined、name/mimetype が文字列でなければ undefined', () => {
     const msg = toInboundMessage({ event: { files: [{ name: 1, mimetype: null, size: '10' }, 'junk'] } });
     expect(msg.files).toEqual([
@@ -940,5 +945,84 @@ describe('SlackBridge の送信（現状固定）', () => {
     const { bridge, web } = makeBridge();
     web.auth.test = async () => ({ ok: true, team_id: 'T123ABC' });
     await expect(bridge.init()).rejects.toThrow(/user_id/);
+  });
+});
+
+describe('SlackBridge のファイル取得', () => {
+  function bridgeWithFetch(response: Response): { bridge: SlackBridge; web: FakeWeb; requests: { url: string; auth: string | null }[] } {
+    const web = makeWeb();
+    const requests: { url: string; auth: string | null }[] = [];
+    const bridge = new SlackBridge({
+      botToken: 'xoxb-TEST-DUMMY',
+      appToken: 'xapp-TEST-DUMMY',
+      access: ACCESS,
+      logger: new Logger({ stderr: false }),
+      web,
+      socket: makeSocket(),
+      fetch: async (input, init) => {
+        requests.push({ url: input instanceof Request ? input.url : input.toString(), auth: new Headers(init?.headers).get('authorization') });
+        return response;
+      },
+    });
+    return { bridge, web, requests };
+  }
+
+  const FILE = {
+    id: 'F0ABC123',
+    name: 'a.zip',
+    size: 3,
+    mimetype: 'application/zip',
+    url: 'https://files.slack.com/files-pri/T1-F0ABC123/download/a.zip',
+  };
+
+  it('fileInfo は files.info の名前・サイズ・ダウンロード URL を返す', async () => {
+    const { bridge, web } = bridgeWithFetch(new Response(''));
+    web.file = { name: 'a.zip', size: 3, mimetype: 'application/zip', url_private_download: FILE.url, url_private: 'https://files.slack.com/other' };
+    expect(await bridge.fileInfo('F0ABC123')).toEqual(FILE);
+    expect(web.calls).toContainEqual({ method: 'files.info', args: { file: 'F0ABC123' } });
+  });
+
+  it('fileInfo は不正な file_id では API を呼ばずに投げる', async () => {
+    const { bridge, web } = bridgeWithFetch(new Response(''));
+    await expect(bridge.fileInfo('../etc')).rejects.toThrow(/file_id/);
+    expect(web.calls).toEqual([]);
+  });
+
+  it('fileInfo はダウンロード URL が無ければ投げる', async () => {
+    const { bridge, web } = bridgeWithFetch(new Response(''));
+    web.file = { name: 'ext', mode: 'external' };
+    await expect(bridge.fileInfo('F0ABC123')).rejects.toThrow(/URL が無い/);
+  });
+
+  it('fetchFile はボットトークンを付けて取りに行く', async () => {
+    const { bridge, requests } = bridgeWithFetch(new Response('abc', { headers: { 'content-type': 'application/zip' } }));
+    const res = await bridge.fetchFile(FILE);
+    expect(await res.text()).toBe('abc');
+    expect(requests).toEqual([{ url: FILE.url, auth: 'Bearer xoxb-TEST-DUMMY' }]);
+  });
+
+  it.each(['http://files.slack.com/a', 'https://evil.example/a', 'https://slack.com.evil.example/a'])(
+    'fetchFile は Slack 以外の URL（%s）にはトークンを送らない',
+    async (url) => {
+      const { bridge, requests } = bridgeWithFetch(new Response('abc'));
+      await expect(bridge.fetchFile({ ...FILE, url })).rejects.toThrow(/Slack 以外/);
+      expect(requests).toEqual([]);
+    }
+  );
+
+  it('fetchFile は HTML でないはずのファイルに HTML が返ったら投げる（権限不足のログイン画面）', async () => {
+    const { bridge } = bridgeWithFetch(new Response('<html>', { headers: { 'content-type': 'text/html; charset=utf-8' } }));
+    await expect(bridge.fetchFile(FILE)).rejects.toThrow(/files:read/);
+  });
+
+  it('fetchFile は HTML ファイルそのものなら HTML を受け取る', async () => {
+    const { bridge } = bridgeWithFetch(new Response('<html>', { headers: { 'content-type': 'text/html' } }));
+    const res = await bridge.fetchFile({ ...FILE, mimetype: 'text/html' });
+    expect(await res.text()).toBe('<html>');
+  });
+
+  it('fetchFile は失敗のステータスなら投げる', async () => {
+    const { bridge } = bridgeWithFetch(new Response('', { status: 404 }));
+    await expect(bridge.fetchFile(FILE)).rejects.toThrow(/status=404/);
   });
 });

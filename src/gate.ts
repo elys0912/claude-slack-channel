@@ -6,6 +6,8 @@ import { PERMISSION_ID_BODY } from './permission.js';
 
 /** 添付ファイルのうち、Claude に要約して渡す情報だけ */
 export interface FileInfo {
+  /** Slack のファイル ID（F...）。download_file ツールで取得するときに使う */
+  id?: string | undefined;
   name?: string | undefined;
   mimetype?: string | undefined;
   size?: number | undefined;
@@ -183,6 +185,8 @@ export function gate(
   if (msg.files !== undefined) {
     rawMeta.attachment_count = String(msg.files.length);
     rawMeta.attachments = buildAttachmentsSummary(msg.files);
+    const ids = msg.files.flatMap((f) => (f.id ? [f.id] : []));
+    if (ids.length > 0) rawMeta.attachment_ids = ids.join(',');
   }
 
   return { kind: 'deliver', content, meta: sanitizeMeta(rawMeta) };
