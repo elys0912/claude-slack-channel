@@ -129,6 +129,36 @@ export const AccessSchema = z.strictObject({
 
 export type ParsedAccess = z.infer<typeof AccessSchema>;
 
+/** 状態ディレクトリの home.json（ホームタブの文面の差し替え）のスキーマ。未知のキーはエラー */
+export const HomeCustomSchema = z.strictObject({
+  header: z.string().min(1).max(150).optional(),
+  running: z.string().min(1).optional(),
+  stopped: z.string().min(1).optional(),
+  greetings: z.array(z.string().min(1)).max(100).optional(),
+  body: z.array(z.string()).max(100).optional(),
+  footer: z.string().min(1).optional(),
+});
+
+export type ParsedHomeCustom = z.infer<typeof HomeCustomSchema>;
+
+/**
+ * dir/home.json を読む。ファイルが無ければ undefined（既定の文面を使う）。
+ * 読めない・JSON が壊れている・スキーマ違反のときは投げる（呼び出し側でログに残して既定の文面にする）。
+ */
+export function loadHomeCustom(dir: string): ParsedHomeCustom | undefined {
+  const file = path.join(dir, 'home.json');
+  if (!fs.existsSync(file)) return undefined;
+  const json: unknown = JSON.parse(stripBom(fs.readFileSync(file, 'utf8')));
+  const result = HomeCustomSchema.safeParse(json);
+  if (!result.success) {
+    const details = result.error.issues
+      .map((issue) => `${issue.path.length > 0 ? issue.path.join('.') : '(root)'}: ${issue.message}`)
+      .join('; ');
+    throw new Error(`home.json の検証に失敗: ${details}`);
+  }
+  return result.data;
+}
+
 /**
  * dir/access.json を読み、AccessSchema で検証して返す。先頭の BOM は取り除いてから JSON として解釈する。
  * 次の場合は投げる: ファイルが読めない（`access.json が見つからない`）、JSON 構文エラー（`JSON 構文が不正`）、

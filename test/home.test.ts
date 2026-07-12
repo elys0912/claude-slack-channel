@@ -62,6 +62,50 @@ describe('buildHomeView', () => {
   });
 });
 
+describe('buildHomeView（home.json で差し替え）', () => {
+  const custom = {
+    header: '🦊 FOX3 はここにいるわ',
+    running: '{since} からずっとそばにいるわ',
+    stopped: '少し休んでるだけよ',
+    greetings: ['一つ目', '二つ目 {mention}', '三つ目'],
+    body: ['本文の1行目', '本文の2行目'],
+    footer: 'またね',
+  };
+
+  it('見出し・ひと言・本文・フッターを差し替え、{since} と {mention} を置き換える', () => {
+    const t = text(buildHomeView({ ...base, botUserId: 'UBOT1', custom, random: () => 0.5 }));
+    expect(t).toContain('FOX3 はここにいるわ');
+    expect(t).toContain('2026-09-30 21:05 からずっとそばにいるわ');
+    expect(t).toContain('二つ目 <@UBOT1>');
+    expect(t).toContain('本文の1行目\\n本文の2行目');
+    expect(t).toContain('またね ・ 最終更新 2026-09-30 21:10');
+    // body を書いたら既定の情報とブリーフィングは出さない
+    expect(t).not.toContain('作業フォルダー');
+    expect(t).not.toContain('ブリーフィング');
+  });
+
+  it('greetings は乱数で 1 つだけ選ぶ', () => {
+    const t0 = text(buildHomeView({ ...base, custom, random: () => 0 }));
+    const t2 = text(buildHomeView({ ...base, custom, random: () => 0.99 }));
+    expect(t0).toContain('一つ目');
+    expect(t0).not.toContain('三つ目');
+    expect(t2).toContain('三つ目');
+  });
+
+  it('停止中は stopped を出す', () => {
+    const t = text(buildHomeView({ ...base, running: false, custom }));
+    expect(t).toContain('停止中');
+    expect(t).toContain('少し休んでるだけよ');
+  });
+
+  it('body を書かなければ既定の情報とブリーフィングを残す', () => {
+    const t = text(buildHomeView({ ...base, custom: { greetings: ['やっほー'] }, random: () => 0 }));
+    expect(t).toContain('やっほー');
+    expect(t).toContain('作業フォルダー');
+    expect(t).toContain('ブリーフィング');
+  });
+});
+
 describe('buildForbiddenHomeView', () => {
   it('中の情報は出さない', () => {
     const t = text(buildForbiddenHomeView());
