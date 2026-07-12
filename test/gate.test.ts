@@ -187,6 +187,16 @@ describe('gate', () => {
     expect(result).toEqual({ kind: 'drop', reason: 'unsupported_subtype' });
   });
 
+  it('添付の ID を attachment_ids にカンマ区切りで載せる（ID の無いものは飛ばす）', () => {
+    const result = gate(
+      baseMsg({ subtype: 'file_share', text: '', files: [{ id: 'F1AAA', name: 'a.zip' }, { name: 'b' }, { id: 'F2BBB', name: 'c' }] }),
+      access,
+      selfBotUserId,
+      new EventDedupe()
+    );
+    expect(result.kind === 'deliver' && result.meta.attachment_ids).toBe('F1AAA,F2BBB');
+  });
+
   it('delivers subtype file_share', () => {
     const dedupe = new EventDedupe();
     const result = gate(

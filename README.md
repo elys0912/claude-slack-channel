@@ -20,7 +20,7 @@ Claude Code（claude.exe、手元のセッション）
 ```
 
 - 許可したユーザーからの DM（と、`access.json` の `channels` に書いたチャンネルでの発言）が、Claude のセッションへそのまま届く。
-- Claude は `reply` / `react` / `edit_message` の3ツールで Slack に返信する。
+- Claude は `reply` / `react` / `edit_message` の3ツールで Slack に返信する（`.env` に `DOWNLOAD_DIR` があれば、添付を保存する `download_file` も使える）。
 - ファイル書き込みなどの実行許可は、Slack のボタンか `yes xxxxx` / `no xxxxx` の返信で答えられる。
 - 対象は Windows。起動スクリプトは PowerShell で書いてあるわ。
 
@@ -61,7 +61,7 @@ npm run build
    → `xapp-` で始まるこのトークンが **`SLACK_APP_TOKEN`**。
 3. **OAuth & Permissions** → **Install to Workspace** でインストールする。
    → 発行される `xoxb-` で始まるトークンが **`SLACK_BOT_TOKEN`**。
-   **Scopes** に次の7つがあるか確認する。既存のアプリにスコープを足したときは **Reinstall to Workspace** で入れ直すこと。
+   **Scopes** に次の7つ（添付を保存するなら `files:read` も足して8つ）があるか確認する。既存のアプリにスコープを足したときは **Reinstall to Workspace** で入れ直すこと。
 
    | スコープ | 用途 |
    |---|---|
@@ -72,6 +72,7 @@ npm run build
    | `groups:history` | 非公開チャンネル（`message.groups`）の受信 |
    | `reactions:write` | 受信・判定のリアクション |
    | `users:read` | `npm run check` での表示名の確認 |
+   | `files:read` | `download_file` での添付の保存（`.env` に `DOWNLOAD_DIR` を書くときだけ必要） |
 
 4. Slack で自分のプロフィールを開き、**その他** → **メンバーIDをコピー** で自分の ID
    （`U` で始まる）を控えておいて。
@@ -87,6 +88,8 @@ npm run build
 ```
 SLACK_BOT_TOKEN=xoxb-...
 SLACK_APP_TOKEN=xapp-...
+# 任意。書くと download_file ツールが使える（絶対パス）
+# DOWNLOAD_DIR=C:\Users\<ユーザー名>\Downloads
 ```
 
 `KEY=VALUE` 形式（`export ` 接頭辞、`"..."` / `'...'` の引用符、CRLF も可）。`#` で始まる行はコメント。
@@ -186,7 +189,8 @@ Claude Code を起動したいプロジェクトを並べる（`projects.json` �
 
 - ボットに DM を送る（または許可チャンネルでメンションする・関わっているスレッドに返信する）と手元のセッションに届いて、届いた印に :eyes: が付く。Claude には元のメッセージのスレッドへ返信するよう指示してある（MCP の instructions）。
 - 受け付けるのは **ボットとの DM と、`channels` に書いたチャンネルだけ**。それ以外のチャンネルやグループ DM、編集・削除などのイベントは無視する。
-- **添付ファイルは中身を渡さない**。ファイル名・種類・サイズの要約だけが Claude に届く（本文が無ければ `(attachment)`、複数なら `(N attachments)`）。
+- **添付ファイルは中身を渡さない**。ファイル名・種類・サイズの要約とファイル ID（`attachment_ids`）だけが Claude に届く（本文が無ければ `(attachment)`、複数なら `(N attachments)`）。
+  中身が要るときは Claude が `download_file` で取りに行く（[添付ファイルの保存と展開](#添付ファイルの保存と展開)）。
 - 受信したメッセージとボタン操作は、届いた順に1件ずつ処理する（前の処理が終わるまで次を始めない）。
 - 長い返信は自動で複数のメッセージに分割する。途中で送信に失敗したら、Claude には何件目まで送れたか（`sent=N`）付きのエラーが返る。
 - 投稿したリンクのプレビュー（unfurl）は展開しない。
@@ -196,6 +200,24 @@ Claude Code を起動したいプロジェクトを並べる（`projects.json` �
   待ち時間は `SLACK_CHANNEL_REPLY_TIMEOUT_MIN` で変えられる。警告には「🖥 画面を確認」ボタンが付く（[ターミナル画面の確認と解除](#ターミナル画面の確認と解除)）。
 - セッションは1つだけで、Slack 側の会話はすべて同じ文脈を共有する。
 - Slack のメッセージは本文として Claude に届くだけ。`/clear` などの Claude Code のコマンドを Slack から実行する機能は無いわ（ローカルのターミナルで操作して）。
+
+### 添付ファイルの保存と展開
+
+`.env` に `DOWNLOAD_DIR`（絶対パス）を書くと、MCP ツール `download_file` が使えるようになる。
+書かなければツール自体が出ないので、`files:read` を持たないボットはそのままでいいわ。
+
+- `download_file(file_id, extract?)` は、Slack のファイルを `DOWNLOAD_DIR` に保存して、保存先のパスを返す。
+  `file_id` は届いたメッセージの `attachment_ids` の 1 つ。自動では保存せず、Claude が必要なときだけ呼ぶ。
+- 同じ名前のファイルがあれば `名前 (1).拡張子` のように番号を付ける（上書きしない）。
+- ファイル名は送信者が自由に付けられるので、パス区切りより前を捨て、Windows で使えない文字を `_` にしてから保存する。
+- `extract: true` なら、圧縮ファイルを `DOWNLOAD_DIR\<名前>\` に展開する（元のファイルは残す）。
+  - 対応形式: zip / 7z / rar / tar / tar.gz（tgz）/ tar.bz2 / tar.xz / tar.zst / lzh は Windows 付属の `tar.exe`（bsdtar）で、単体の `.gz` は Node の zlib で展開する。
+  - パスワード付きのアーカイブや、bsdtar が読めない形式はエラーになる。アーカイブの中のアーカイブは展開しない。
+  - PATH 上の `tar`（Git の GNU tar など）は使わず、`%SystemRoot%\System32\tar.exe` を直接呼ぶ。
+- 上限: ダウンロードは 1GB、展開後は合計 4GB・10 万ファイル。超えたら止めて、書きかけ・展開しかけたものを消す。
+- `..` や絶対パスのエントリ（Zip Slip）は bsdtar が拒否する。展開後にシンボリックリンク・ジャンクションが見つかったら、展開先ごと消してエラーにする。
+- 展開したファイルを実行・解釈することはしない。ファイルの中身は「データ」で、書かれた指示には従わない（MCP の instructions と同じ扱い）。
+- ボットトークンは `https://*.slack.com` にしか送らない。権限が足りないと Slack はファイルの代わりにログイン画面の HTML を返すので、これはエラーにする。
 
 ### 実行許可
 
@@ -416,7 +438,7 @@ deny は allow より必ず優先される（評価順は deny → ask → allow
 
 | ファイル | 場所 | 内容 |
 |---|---|---|
-| `.env` | 状態ディレクトリ | `SLACK_BOT_TOKEN`（`xoxb-`）、`SLACK_APP_TOKEN`（`xapp-`） |
+| `.env` | 状態ディレクトリ | `SLACK_BOT_TOKEN`（`xoxb-`）、`SLACK_APP_TOKEN`（`xapp-`）、`DOWNLOAD_DIR`（任意。添付の保存先の絶対パス） |
 | `access.json` | 状態ディレクトリ | `teamId`（`T...`）、`allowFrom`（`U...` の配列）、`channels`（`C...` / `G...` の配列、省略可）。これ以外のキーはエラー |
 | `home.json` | 状態ディレクトリ（省略可） | ホームタブの文面の差し替え（[アプリのホームタブ](#アプリのホームタブ)） |
 | `allow-extra.json` | 状態ディレクトリ | Slack の「今後も許可」で足したルール（`{"allow": [...]}`）。ブリッジが書き、起動スクリプトが allow に足す |
@@ -470,7 +492,7 @@ deny は allow より必ず優先される（評価順は deny → ask → allow
 | `auth.test の team_id が access.json と一致しない` | `npm run check` で `team_id` を確認して `teamId` を直す |
 | `許可ユーザーの DM チャンネルを 1 件も開けなかった` | `allowFrom` の ID と `im:write` スコープを確認 |
 | `invalid_auth` | `SLACK_BOT_TOKEN` が無効。`npm run check` で確認し、トークンを取り直す |
-| `missing_scope` | **OAuth & Permissions** で7スコープが揃っているか確認し、足りなければ再インストール |
+| `missing_scope` | **OAuth & Permissions** で7スコープ（`DOWNLOAD_DIR` を使うなら `files:read` も）が揃っているか確認し、足りなければ再インストール |
 | ツールが「別のインスタンスが動いている」エラーを返す | 別のセッションが Slack ブリッジを使用中。2つ目以降は Slack に接続しない縮退モードで動き、ツールはすべてエラー、実行許可は Slack に出ない（ターミナル側で答える想定。Claude Code 側の挙動は未確認）。先のセッションを終了してから起動し直す |
 | 直前のセッションを落とした直後に起動したら縮退モードになった | 前のプロセスのロックが残っている。30秒待ってから起動し直す |
 | DM を送っても :eyes: が付かない | `allowFrom` に自分の ID があるか、DM の相手がこのボットかを確認。ログの `受信を破棄 reason=...` は debug なので出ない。起動時に DM を開けなかったユーザーは、そのユーザーから DM が届いた時点で送信先に加わる |
@@ -501,7 +523,7 @@ npm run check        # precheck（npm run build）のあと dist/scripts/check.j
 | `src/main.ts` | エントリポイント。ロガー・ロック・設定の読み込み、終了処理 |
 | `src/app.ts` | Slack・MCP・permission リレーの配線（通常モードと縮退モード）、MCP ツールと受信イベントの処理、ホームタブの更新 |
 | `src/slack.ts` | Slack の Socket Mode 受信と Web API 送信、チャンネルのスレッドの記憶 |
-| `src/mcp.ts` | MCP channel サーバー（`reply` / `react` / `edit_message` ツール） |
+| `src/mcp.ts` | MCP channel サーバー（`reply` / `react` / `edit_message` / `download_file` ツール） |
 | `src/permission-relay.ts` | 実行許可リレーの状態管理（配信・回答・結果表示への書き換え・自動 deny） |
 | `src/permission.ts` | 実行許可メッセージのブロック組み立てと、ボタン操作の検証（純関数） |
 | `src/gate.ts` | 受信メッセージを中継すべきかの判定（純関数） |
@@ -513,6 +535,7 @@ npm run check        # precheck（npm run build）のあと dist/scripts/check.j
 | `src/rule-relay.ts` | 「今後も許可」の提案・確認と `!rules` の処理 |
 | `src/home.ts` | ホームタブの画面の組み立て（純関数） |
 | `src/config.ts` | 状態ディレクトリ・`.env` パーサー・`access.json` の検証 |
+| `src/download.ts` | `download_file` の実体（ファイル名の無害化・保存・展開・上限の確認） |
 | `src/format.ts` | 送信前のテキスト整形（`@here` 等の無害化など） |
 | `src/chunk.ts` | 長文の分割 |
 | `src/lock.ts` | 単一インスタンス実行のファイルロック |

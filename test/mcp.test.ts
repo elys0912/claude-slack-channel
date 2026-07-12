@@ -16,6 +16,7 @@ interface Captured {
 async function connect(
   overrides: Partial<{
     onReply: (a: { chat_id: string; text: string; thread_ts?: string | undefined }) => Promise<string>;
+    onDownload: (a: { file_id: string; extract?: boolean | undefined }) => Promise<string>;
   }> = {}
 ): Promise<{ client: Client; server: ChannelServer; captured: Captured }> {
   const captured: Captured = {
@@ -45,6 +46,7 @@ async function connect(
     onPermissionRequest: (req) => {
       captured.permissionRequests.push(req);
     },
+    onDownload: overrides.onDownload,
   });
 
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -82,6 +84,29 @@ describe('ChannelServer の initialize', () => {
 });
 
 describe('ChannelServer の tools', () => {
+  it('onDownload があれば download_file を出し、引数を渡して呼ぶ', async () => {
+    const calls: unknown[] = [];
+    const { client } = await connect({
+      onDownload: async (a) => {
+        calls.push(a);
+        return 'saved: x';
+      },
+    });
+    const res = await client.listTools();
+    expect(res.tools.map((t) => t.name).sort()).toEqual(['download_file', 'edit_message', 'react', 'reply']);
+    expect(res.tools.find((t) => t.name === 'download_file')?.inputSchema.required).toEqual(['file_id']);
+
+    const out = await client.callTool({ name: 'download_file', arguments: { file_id: 'F1AAA', extract: true } });
+    expect(out.content).toEqual([{ type: 'text', text: 'saved: x' }]);
+    expect(calls).toEqual([{ file_id: 'F1AAA', extract: true }]);
+  });
+
+  it('onDownload が無ければ download_file は出さず、呼ばれてもエラー', async () => {
+    const { client } = await connect();
+    const out = await client.callTool({ name: 'download_file', arguments: { file_id: 'F1AAA' } });
+    expect(out.isError).toBe(true);
+  });
+
   it('reply / react / edit_message を出す', async () => {
     const { client, server } = await connect();
     const res = await client.listTools();

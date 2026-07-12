@@ -17,6 +17,8 @@ export interface FakeWeb extends SlackWebApiLike {
   /** postMessage が markdown_text を含むとき投げるエラー */
   rejectMarkdown: unknown;
   reactionError: unknown;
+  /** files.info が返す file */
+  file: Record<string, unknown> | undefined;
 }
 
 export function makeWeb(): FakeWeb {
@@ -26,6 +28,7 @@ export function makeWeb(): FakeWeb {
     calls,
     rejectMarkdown: undefined,
     reactionError: undefined,
+    file: undefined,
     auth: {
       test: async () => {
         calls.push({ method: 'auth.test', args: {} });
@@ -64,6 +67,12 @@ export function makeWeb(): FakeWeb {
       publish: async (args) => {
         calls.push({ method: 'views.publish', args });
         return { ok: true };
+      },
+    },
+    files: {
+      info: async (args) => {
+        calls.push({ method: 'files.info', args });
+        return { ok: true, ...(web.file ? { file: web.file } : {}) };
       },
     },
   };
