@@ -4,6 +4,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { PermissionRequest } from './permission.js';
+import { stripBom } from './text.js';
 
 const SHELL_TOOLS = new Set(['Bash', 'PowerShell']);
 /** ファイル編集はルールで恒久許可せず、許可モード（acceptEdits など）で扱う */
@@ -160,15 +161,23 @@ export function proposeRule(req: PermissionRequest, deny: readonly string[]): Ru
   return derived;
 }
 
+/** JSON ファイルを読む（BOM 付きでも可）。読めない・JSON でないときは undefined */
+function readJson(file: string): unknown {
+  try {
+    return JSON.parse(stripBom(fs.readFileSync(file, 'utf8'))) as unknown;
+  } catch {
+    return undefined;
+  }
+}
+
+/** 配列のうち文字列だけを返す（配列でなければ空） */
+function stringsOf(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string') : [];
+}
+
 /** 設定ファイル（Claude Code の settings JSON）の permissions.deny を読む。読めなければ空 */
 export function readDeny(file: string): string[] {
-  try {
-    const json: unknown = JSON.parse(fs.readFileSync(file, 'utf8').replace(/^﻿/, ''));
-    const deny = (json as { permissions?: { deny?: unknown } }).permissions?.deny;
-    return Array.isArray(deny) ? deny.filter((d): d is string => typeof d === 'string') : [];
-  } catch {
-    return [];
-  }
+  return stringsOf((readJson(file) as { permissions?: { deny?: unknown } } | undefined)?.permissions?.deny);
 }
 
 /** 追加分のルール（状態ディレクトリの allow-extra.json）。start.ps1 が起動時に channel-settings.json の allow へ足す */
@@ -180,13 +189,7 @@ export class AllowRuleStore {
   }
 
   list(): string[] {
-    try {
-      const json: unknown = JSON.parse(fs.readFileSync(this.file, 'utf8').replace(/^﻿/, ''));
-      const allow = (json as { allow?: unknown }).allow;
-      return Array.isArray(allow) ? allow.filter((r): r is string => typeof r === 'string') : [];
-    } catch {
-      return [];
-    }
+    return stringsOf((readJson(this.file) as { allow?: unknown } | undefined)?.allow);
   }
 
   /** 追加する。既にあれば false */

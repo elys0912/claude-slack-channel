@@ -84,10 +84,14 @@ export class PendingPermissions {
 const PLAIN_TEXT_LIMIT = 3000;
 
 /**
- * 表示を偽装できる不可視文字（双方向制御 U+202A-202E / U+2066-2069、ゼロ幅 U+200B-200D、BOM U+FEFF）。
- * 承認画面で実際と違う内容に見せられないよう、`\u{202E}` の形で見えるようにする。
+ * 表示を偽装できる不可視文字。承認画面で実際と違う内容に見せられないよう、`\u{202E}` の形で見えるようにする。
+ * - 双方向制御: U+202A-202E / U+2066-2069 と、向きの印 U+200E-200F / U+061C
+ * - ゼロ幅・結合制御: U+200B-200D / U+2060-2064 / U+034F / U+180E、BOM U+FEFF
+ * - 空白に見える埋め文字: U+00AD（ソフトハイフン）/ U+115F-1160 / U+17B4-17B5 / U+3164 / U+FFA0
+ * - C0・C1 制御文字（タブ・改行・復帰は除く）: U+0000-0008 / U+000B-000C / U+000E-001F / U+007F-009F
  */
-const INVISIBLE_RE = /[‪-‮⁦-⁩​-‍﻿]/;
+const INVISIBLE_RE =
+  /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F­͏؜ᅟᅠ឴឵᠎​-‏‪-‮⁠-⁤⁦-⁩ㅤ﻿ﾠ]/;
 
 function visibleUnit(ch: string): string {
   if (!INVISIBLE_RE.test(ch)) return ch;
@@ -291,13 +295,21 @@ export function buildExpiredBlocks(requestId: string): { text: string; blocks: u
   };
 }
 
+/** 1 行の知らせ（plain_text の section 1 つ） */
+function noticeBlocks(text: string): { text: string; blocks: unknown[] } {
+  const safe = neutralizeBroadcasts(text);
+  return { text: safe, blocks: [{ type: 'section', text: { type: 'plain_text', text: safe } }] };
+}
+
 /** 回答が無いまま自動で deny したときの表示。reason は「期限切れ」のような固定の文言（「〜のため自動で拒否した」に続く） */
 export function buildAutoDeniedBlocks(requestId: string, reason: string): { text: string; blocks: unknown[] } {
-  const text = neutralizeBroadcasts(`⌛ Permission request ${requestId}: ${reason}のため自動で拒否した`);
-  return {
-    text,
-    blocks: [{ type: 'section', text: { type: 'plain_text', text } }],
-  };
+  return noticeBlocks(`⌛ Permission request ${requestId}: ${reason}のため自動で拒否した`);
+}
+
+/** 回答を Claude に送れなかったときの表示（MCP の切断など。Claude 側は自分の期限で止まる） */
+export function buildVerdictFailedBlocks(requestId: string, behavior: 'allow' | 'deny'): { text: string; blocks: unknown[] } {
+  const verb = behavior === 'allow' ? 'Allow' : 'Deny';
+  return noticeBlocks(`⚠️ Permission request ${requestId}: ${verb} を Claude に送れなかった。Claude Code のセッションを確認すること`);
 }
 
 export interface BlockActionInput {

@@ -45,6 +45,11 @@ describe('buildHomeView', () => {
     expect(t).not.toContain('返事が無いとき');
   });
 
+  it('ボットのユーザー ID があればメンション表記にし、無ければ名前で書く', () => {
+    expect(text(buildHomeView({ ...base, botUserId: 'UBOT000' }))).toContain('<@UBOT000> にメンション');
+    expect(text(buildHomeView(base))).toContain('@fox3-local にメンション');
+  });
+
   it('作業フォルダーの & < > はエスケープする', () => {
     expect(text(buildHomeView({ ...base, workDir: 'C:\\a<b>&c' }))).toContain('a&lt;b&gt;&amp;c');
   });

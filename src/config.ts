@@ -4,11 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
 import { errMessage } from './errors.js';
-
-/** 先頭の BOM（メモ帳などが付ける U+FEFF）を取り除く */
-function stripBom(text: string): string {
-  return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
-}
+import { stripBom } from './text.js';
 
 /**
  * 状態ディレクトリ（.env / access.json / logs / instance.lock の置き場所）を返す。

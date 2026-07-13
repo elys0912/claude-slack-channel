@@ -1,13 +1,14 @@
 // ターミナル画面の確認と、Slack からの選択画面の解除。
 // 画面を読んで選択画面なら選択肢をボタンで出し、押されたら画面を読み直して同じ画面のときだけ選択キーを送る。
 // 自由な文字入力は送らない（Slack から任意のコマンドを打ち込めないようにするため）。
-import { randomBytes } from 'node:crypto';
 import type { ConsoleAccess } from './console.js';
 import type { Logger } from './log.js';
 import { redact } from './log.js';
 import { errMessage } from './errors.js';
 import { choiceFingerprint, keysToSelect, parseChoiceScreen, screenTail } from './screen.js';
 import type { ChoiceScreen } from './screen.js';
+import { clip, newToken } from './text.js';
+import type { PressedMessage } from './types.js';
 
 /** 選択肢のボタンの有効期限 */
 const SNAPSHOT_TTL_MS = 5 * 60 * 1000;
@@ -35,14 +36,6 @@ export interface ScreenRelayOptions {
   newId?: () => string;
 }
 
-function defaultId(): string {
-  return randomBytes(6).toString('base64url').toLowerCase().replace(/[^a-z0-9]/g, '0').slice(0, 8).padEnd(8, '0');
-}
-
-function clip(text: string, max: number): string {
-  return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
-}
-
 /** 無応答の警告などに付ける「画面を確認」ボタン */
 export function screenShowButton(): unknown {
   return {
@@ -66,7 +59,7 @@ export class ScreenRelay {
     this.slack = opts.slack;
     this.logger = opts.logger;
     this.now = opts.now ?? Date.now;
-    this.newId = opts.newId ?? defaultId;
+    this.newId = opts.newId ?? newToken;
   }
 
   /** 画面を読んでスレッドに出す。選択画面なら選択肢のボタン、そうでなければ画面の末尾。投げない */
@@ -103,7 +96,7 @@ export class ScreenRelay {
    * 選択肢のボタンが押された。画面を読み直して、見せたときと同じ選択画面なら選択キーを送り、
    * 押されたメッセージを結果の表示に書き換える。期限切れ・画面が変わっていたら何も送らず知らせる。投げない。
    */
-  async pick(snapshotId: string, index: number, pressed: { channel: string; ts?: string | undefined; threadTs: string }, byUserId: string): Promise<void> {
+  async pick(snapshotId: string, index: number, pressed: PressedMessage, byUserId: string): Promise<void> {
     const report = async (message: string): Promise<void> => {
       if (pressed.ts) {
         await this.slack
