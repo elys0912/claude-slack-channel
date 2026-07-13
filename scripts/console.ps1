@@ -1,4 +1,4 @@
-# claude-slack-channel: 自分が属するコンソールの画面を読む・選択キーを送る
+﻿# claude-slack-channel: 自分が属するコンソールの画面を読む・選択キーを送る
 #
 # ブリッジ（node）が子プロセスとして起動する。ブリッジは Claude Code と同じコンソールを継承しているので、
 # このスクリプトも同じコンソールの CONOUT$ / CONIN$ をそのまま開ける（AttachConsole は使わない）。
@@ -11,12 +11,23 @@
 
 param(
     [Parameter(Mandatory)][ValidateSet('read', 'keys', 'command')][string]$Mode,
-    [ValidateSet('Up', 'Down', 'Enter', 'Digit1')][string[]]$Keys = @(),
+    # カンマ区切りの文字列で受ける。powershell.exe -File で渡すと配列にならず "Down,Enter" が 1 つの値として届くため、
+    # [string[]] + ValidateSet では複数キーが弾かれる。分割と許可一覧との照合はこの下で行う
+    [string]$Keys = '',
     [ValidateSet('exit', 'compact')][string]$Command
 )
 
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+
+# 送ってよいキー。1 つでも違えば何も送らずに終わる（途中まで送ると TUI の状態が中途半端になるため）
+$AllowedKeys = @('Up', 'Down', 'Enter', 'Digit1')
+$keyList = @($Keys -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+$unknown = @($keyList | Where-Object { $AllowedKeys -notcontains $_ })
+if ($unknown.Count -gt 0) {
+    [Console]::Error.WriteLine("送れないキー: $($unknown -join ', ')（使えるのは $($AllowedKeys -join ' / ')）")
+    exit 2
+}
 
 # 仮想キーコード（VK_UP / VK_DOWN / VK_RETURN / VK_1）と、Enter の文字
 $VK_UP = 0x26
@@ -129,7 +140,7 @@ if ($Mode -eq 'command') {
     exit 0
 }
 
-foreach ($key in $Keys) {
+foreach ($key in $keyList) {
     switch ($key) {
         'Up' { [SlackChannelConsole]::SendKey($CHAR_NONE, $VK_UP) }
         'Down' { [SlackChannelConsole]::SendKey($CHAR_NONE, $VK_DOWN) }

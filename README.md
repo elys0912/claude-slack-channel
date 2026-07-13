@@ -488,6 +488,7 @@ deny は allow より必ず優先される（評価順は deny → ask → allow
 | `restart.flag` | 状態ディレクトリ | `!restart` が置く印。`start.ps1` が終了時に見て、あれば消して `--continue` で起動し直す |
 | `hooks.jsonl` | 状態ディレクトリ | Claude Code の hook が追記する出来事の記録（1 行 1 JSON）。ブリッジが読んで Slack に知らせる。1MB を超えると `hooks.jsonl.1` に退避 |
 | `logs\bridge.log` | 状態ディレクトリ | ログ（下記） |
+| `logs\dialog-answer.log` | 状態ディレクトリ | `!restart` の後、警告ダイアログに自動で答えたか（答えた・キーを送れなかった・時間切れ） |
 | `instance.lock` | 状態ディレクトリ | 多重起動防止のロック（自動で作られ、終了時に消える） |
 | `projects.json` | `config\`（git 管理外） | `projects`: `{ name, path }` の配列。起動時の選択肢 |
 | `extra-mcp.json` | `config\`（git 管理外） | Slack セッションで一緒に使う MCP サーバー（`.mcp.json` と同じ `mcpServers` の形。ひな形: `extra-mcp.example.json`）。登録したサーバーのツールは確認なしで実行される |
@@ -590,6 +591,7 @@ npm run check        # precheck（npm run build）のあと dist/scripts/check.j
    - `!restart` で起動し直す。
    - hook の知らせ（セッションの開始など）は、そのセッション自身の状態ディレクトリに書かれ、そのボットにだけ出る。
    - `download_file` で添付を保存・展開する。保存する前に、実行許可の確認が Slack に出る。
+   - `console.ps1` で複数のキーを送り、`dialog-answer.ps1` が警告ダイアログに答える。テストを動かしているコンソールに入力が入らないよう、別のコンソール（`conhost.exe`）を開き、その中で受け取ったキーを記録して確かめる。
 
 ### ファイル構成
 
