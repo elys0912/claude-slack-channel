@@ -28,6 +28,18 @@ param(
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'common.ps1')
 
+# MCP サーバーの名前（src/mcp.ts の SERVER_NAME と config/channel-settings.json の mcp__slackbridge__* と同じ値にすること）
+$ServerName = 'slackbridge'
+# 状態ディレクトリの既定の場所（%USERPROFILE% からの相対。src/config.ts の DEFAULT_STATE_DIR_RELATIVE と同じ値にすること）
+$DefaultStateDirRelative = '.claude\channels\slack'
+# Slack の !restart が置く印（src/session-control.ts の RESTART_FLAG_FILE と同じ名前にすること）
+$RestartFlagName = 'restart.flag'
+# 起動し直すとき、experimental channels の警告ダイアログを自動で抜けるために画面で探す文字列（正規表現）。
+# ダイアログの文言が変わって抜けられなくなったら、ここを直す（start.ps1 自身が表示する文には含めないこと）
+$DevChannelDialogPattern = 'development channel'
+# ダイアログを待つ最大秒数
+$DevChannelDialogTimeoutSec = 90
+
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $mainJs = Join-Path $repoRoot 'dist\src\main.js'
 $projectList = Join-Path $repoRoot 'config\projects.json'
@@ -47,7 +59,7 @@ $stateDir = if ($StateDir) {
 } elseif ($env:SLACK_CHANNEL_STATE_DIR) {
     $env:SLACK_CHANNEL_STATE_DIR
 } else {
-    Join-Path $env:USERPROFILE '.claude\channels\slack'
+    Join-Path $env:USERPROFILE $DefaultStateDirRelative
 }
 # 一時ファイル（mcp.json・合成した設定）は状態ディレクトリごとに分ける。複数のセッションを並べても上書きし合わず、
 # claude.exe のコマンドラインのパスでどのセッションか見分けられる（例: %TEMP%\claude-slack-channel\slack\mcp.json）
@@ -164,6 +176,88 @@ function Resolve-ProjectDir {
     return (Resolve-Path -LiteralPath $dir).ProviderPath
 }
 
+# --- MCP サーバーと許可ルールの設定を組み立てる ---------------------------------------
+
+# --strict-mcp-config で他の MCP サーバーは読み込まれないので、Slack セッションでも使うものは
+# config\extra-mcp.json（git 管理外。ひな形は extra-mcp.example.json）に書いて一緒に渡す。読めなければ警告だけ出す
+function Read-ExtraMcpServers {
+    $file = Join-Path $repoRoot 'config\extra-mcp.json'
+    $servers = @{}
+    if (-not (Test-Path -LiteralPath $file)) { return $servers }
+    try {
+        $parsed = Get-Content -LiteralPath $file -Raw -Encoding UTF8 | ConvertFrom-Json
+        foreach ($p in $parsed.mcpServers.PSObject.Properties) { $servers[$p.Name] = $p.Value }
+        if ($servers.Count -gt 0) { Write-Host "追加の MCP サーバー: $(($servers.Keys | Sort-Object) -join ', ')" }
+    } catch {
+        Write-Warning "config\extra-mcp.json を読めなかったので、追加の MCP サーバーは使わない: $($_.Exception.Message)"
+    }
+    return $servers
+}
+
+# Slack の「今後も許可」で足したルール（状態ディレクトリの allow-extra.json）を読む。
+# ブリッジが deny と照合してから書き込んだものだけが入っている。読めなければ警告だけ出して使わない
+function Read-AllowExtra {
+    $allowExtra = Join-Path $stateDir 'allow-extra.json'
+    if (-not (Test-Path $allowExtra)) { return @() }
+    try {
+        $rules = @((Get-Content -LiteralPath $allowExtra -Raw -Encoding UTF8 | ConvertFrom-Json).allow |
+            Where-Object { $_ -is [string] -and $_ -ne '' })
+        if ($rules.Count -gt 0) { Write-Host "Slack から追加した許可ルール: $($rules.Count) 件（$allowExtra）" }
+        return $rules
+    } catch {
+        Write-Warning "allow-extra.json を読めなかったので、追加の許可ルールは使わない: $($_.Exception.Message)"
+        return @()
+    }
+}
+
+# Claude Code の hook から呼ぶ記録コマンド（dist/src/hook.js）の設定。
+# セッションの開始・終了、応答の終了と失敗、通知（ターミナル側の入力待ち・使用量の上限）、圧縮を
+# 状態ディレクトリの hooks.jsonl に書き、ブリッジが Slack に知らせる。node が見つからなければ空
+function Get-HookSettings {
+    $hookJs = Join-Path $repoRoot 'dist\src\hook.js'
+    $node = Get-Command node -ErrorAction SilentlyContinue
+    if (-not $node) {
+        Write-Warning "node が見つからないので hook の通知は使わない"
+        return @{}
+    }
+    $hooks = @{}
+    foreach ($event in @('SessionStart', 'SessionEnd', 'Stop', 'StopFailure', 'Notification', 'PostCompact')) {
+        # exec 形式（command + args）でシェルを挟まず起動する（パスの引用符の問題を避ける）
+        $hooks[$event] = @(@{ hooks = @(@{ type = 'command'; command = $node.Source; args = @($hookJs); timeout = 5 }) })
+    }
+    return $hooks
+}
+
+# channel-settings.json に次を足し、%TEMP% に書き出したものを --settings に渡す。
+# - permissions.allow: extra-mcp.json に登録した MCP サーバーのツール全部（mcp__<サーバー名>。使う人が承知して入れたものなので確認を挟まない）と、
+#   Slack の「今後も許可」で足したルール
+# - hooks: Get-HookSettings
+# deny は channel-settings.json のまま（allow より優先される）。作れなければ channel-settings.json をそのまま渡す
+function Get-EffectiveSettings {
+    param([hashtable]$ExtraServers)
+
+    $extra = @(@($ExtraServers.Keys | Sort-Object | ForEach-Object { "mcp__$_" }) + @(Read-AllowExtra))
+    try {
+        $settings = Get-Content -LiteralPath $settingsFile -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($extra.Count -gt 0) {
+            $settings.permissions.allow = @(@($settings.permissions.allow) + $extra | Select-Object -Unique)
+        }
+        $hooks = Get-HookSettings
+        if ($hooks.Count -gt 0) {
+            $settings | Add-Member -NotePropertyName 'hooks' -NotePropertyValue $hooks -Force
+        }
+
+        $merged = Join-Path (Get-TempDir) "$sessionName\channel-settings.merged.json"
+        New-Item -ItemType Directory -Path (Split-Path -Parent $merged) -Force | Out-Null
+        $json = $settings | ConvertTo-Json -Depth 10
+        [System.IO.File]::WriteAllText($merged, $json, [System.Text.UTF8Encoding]::new($false))
+        return $merged
+    } catch {
+        Write-Warning "許可ルールと hook を足した設定を作れなかったので、channel-settings.json をそのまま使う: $($_.Exception.Message)"
+        return $settingsFile
+    }
+}
+
 # --- 本体 ---------------------------------------------------------------------
 
 $claude = Get-ClaudeExeOrExit
@@ -184,65 +278,15 @@ $env:ENABLE_CLAUDEAI_MCP_SERVERS = 'false'
     'CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING', 'CLAUDE_CODE_ENABLE_TASKS'
 ) | ForEach-Object { Remove-Item -Path "Env:$_" -ErrorAction SilentlyContinue }
 
-# --strict-mcp-config で他の MCP サーバーは読み込まれないので、Slack セッションでも使うものは
-# config\extra-mcp.json（git 管理外。ひな形は extra-mcp.example.json）に書いて一緒に渡す。読めなければ警告だけ出す
-function Read-ExtraMcpServers {
-    $file = Join-Path $repoRoot 'config\extra-mcp.json'
-    $servers = @{}
-    if (-not (Test-Path -LiteralPath $file)) { return $servers }
-    try {
-        $parsed = Get-Content -LiteralPath $file -Raw -Encoding UTF8 | ConvertFrom-Json
-        foreach ($p in $parsed.mcpServers.PSObject.Properties) { $servers[$p.Name] = $p.Value }
-        if ($servers.Count -gt 0) { Write-Host "追加の MCP サーバー: $(($servers.Keys | Sort-Object) -join ', ')" }
-    } catch {
-        Write-Warning "config\extra-mcp.json を読めなかったので、追加の MCP サーバーは使わない: $($_.Exception.Message)"
-    }
-    return $servers
-}
+# hook（dist/src/hook.js）は claude.exe の環境を引き継ぐので、ここで状態ディレクトリを渡す。
+# 渡さないと -StateDir のセッションの知らせが既定の状態ディレクトリ（別のボット）に書かれる
+$env:SLACK_CHANNEL_STATE_DIR = $stateDir
 
 $extraServers = Read-ExtraMcpServers
-# ブリッジには状態ディレクトリを環境変数で明示して渡す（claude.exe の環境の引き継ぎに頼らない）
-$mcpConfig = Write-McpConfig -FileName "$sessionName\mcp.json" -ServerName 'slackbridge' -ScriptPath $mainJs `
+# ブリッジには状態ディレクトリと設定ファイルを環境変数で明示して渡す（claude.exe の環境の引き継ぎに頼らない）
+$mcpConfig = Write-McpConfig -FileName "$sessionName\mcp.json" -ServerName $ServerName -ScriptPath $mainJs `
     -ExtraServers $extraServers -Env @{ SLACK_CHANNEL_STATE_DIR = $stateDir; SLACK_CHANNEL_SETTINGS_FILE = $settingsFile }
-
-# Slack の「今後も許可」で足したルール（状態ディレクトリの allow-extra.json）を読む。
-# ブリッジが deny と照合してから書き込んだものだけが入っている。読めなければ警告だけ出して使わない
-function Read-AllowExtra {
-    $allowExtra = Join-Path $stateDir 'allow-extra.json'
-    if (-not (Test-Path $allowExtra)) { return @() }
-    try {
-        $rules = @((Get-Content -LiteralPath $allowExtra -Raw -Encoding UTF8 | ConvertFrom-Json).allow |
-            Where-Object { $_ -is [string] -and $_ -ne '' })
-        if ($rules.Count -gt 0) { Write-Host "Slack から追加した許可ルール: $($rules.Count) 件（$allowExtra）" }
-        return $rules
-    } catch {
-        Write-Warning "allow-extra.json を読めなかったので、追加の許可ルールは使わない: $($_.Exception.Message)"
-        return @()
-    }
-}
-
-# 次の許可ルールを channel-settings.json の allow に足し、%TEMP% に書き出したものを --settings に渡す。
-# - extra-mcp.json に登録した MCP サーバーのツール全部（mcp__<サーバー名>）。使う人が承知して入れたものなので確認を挟まない
-# - Slack の「今後も許可」で足したルール
-# 足すものが無ければ channel-settings.json をそのまま渡す。deny は channel-settings.json のまま（allow より優先される）
-function Get-EffectiveSettings {
-    $extra = @(@($extraServers.Keys | Sort-Object | ForEach-Object { "mcp__$_" }) + @(Read-AllowExtra))
-    if ($extra.Count -eq 0) { return $settingsFile }
-    try {
-        $settings = Get-Content -LiteralPath $settingsFile -Raw -Encoding UTF8 | ConvertFrom-Json
-        $settings.permissions.allow = @(@($settings.permissions.allow) + $extra | Select-Object -Unique)
-
-        $merged = Join-Path $env:TEMP "claude-slack-channel\$sessionName\channel-settings.merged.json"
-        New-Item -ItemType Directory -Path (Split-Path -Parent $merged) -Force | Out-Null
-        $json = $settings | ConvertTo-Json -Depth 10
-        [System.IO.File]::WriteAllText($merged, $json, [System.Text.UTF8Encoding]::new($false))
-        return $merged
-    } catch {
-        Write-Warning "許可ルールを足した設定を作れなかったので、$settingsFile をそのまま使う: $($_.Exception.Message)"
-        return $settingsFile
-    }
-}
-$effectiveSettings = Get-EffectiveSettings
+$effectiveSettings = Get-EffectiveSettings -ExtraServers $extraServers
 
 # 各フラグの意味は README の「権限の設計」を参照
 $claudeArgs = @(
@@ -253,7 +297,7 @@ $claudeArgs = @(
     '--settings', $effectiveSettings,
     '--permission-mode', $PermissionMode,
     # 他のフラグより後ろ、最後に置く
-    '--dangerously-load-development-channels', 'server:slackbridge'
+    '--dangerously-load-development-channels', "server:$ServerName"
 )
 
 Write-Host "claude.exe: $claude"
@@ -261,16 +305,44 @@ Write-Host "作業ディレクトリ: $projectDir"
 Write-Host "状態ディレクトリ: $stateDir"
 Write-Host "警告ダイアログが出たら 1（I am using this for local development）を選ぶこと"
 
+$restartFlag = Join-Path $stateDir $RestartFlagName
+
 if ($DryRun) {
     Write-Host "[DryRun] 実行されるコマンドライン:"
     Write-Host (Format-CommandLine -Exe $claude -Arguments $claudeArgs)
+    Write-Host "[DryRun] 終了時に $restartFlag があれば、--continue を付けて起動し直す（ダイアログは scripts\dialog-answer.ps1 が答える）"
     exit 0
 }
 
+# --- 起動（Slack の !restart で印が置かれていたら --continue で起動し直す） ------------------
+
+# 前回の残り（起動し直す前に手で止めた等）は捨てる
+Remove-Item -LiteralPath $restartFlag -Force -ErrorAction SilentlyContinue
+
+$resume = $false
 Push-Location $projectDir
 try {
-    & $claude @claudeArgs
-    exit $LASTEXITCODE
+    do {
+        $args = if ($resume) { @('--continue') + $claudeArgs } else { $claudeArgs }
+        if ($resume) {
+            # 手元に人がいない前提なので、警告ダイアログは画面を見張って自動で答える
+            Start-Process -FilePath 'powershell.exe' -NoNewWindow -ArgumentList @(
+                '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+                '-File', (Join-Path $PSScriptRoot 'dialog-answer.ps1'),
+                '-Pattern', $DevChannelDialogPattern, '-TimeoutSec', $DevChannelDialogTimeoutSec
+            ) | Out-Null
+        }
+        & $claude @args
+        $code = $LASTEXITCODE
+        $again = Test-Path -LiteralPath $restartFlag
+        if ($again) {
+            Remove-Item -LiteralPath $restartFlag -Force -ErrorAction SilentlyContinue
+            $resume = $true
+            Write-Host ""
+            Write-Host "[start] Slack からの指示で起動し直す（--continue で会話を引き継ぐ）"
+        }
+    } while ($again)
+    exit $code
 } finally {
     Pop-Location
 }

@@ -5,6 +5,7 @@ import type { Logger } from './log.js';
 
 /** 既定の待ち時間（分） */
 export const DEFAULT_REPLY_TIMEOUT_MIN = 5;
+export const MS_PER_MINUTE = 60000;
 
 export interface WatchdogTarget {
   channel: string;
@@ -29,6 +30,8 @@ export class ResponseWatchdog {
   private readonly logger: Logger;
   private readonly notify: WatchdogOptions['notify'];
   private timer: ReturnType<typeof setTimeout> | undefined;
+  /** 最後にメッセージを渡してから応答が無い間、渡した時刻（epoch ms）。応答があれば undefined */
+  private waitingSinceMs: number | undefined;
 
   constructor(opts: WatchdogOptions) {
     this.timeoutMs = opts.timeoutMs;
@@ -38,6 +41,7 @@ export class ResponseWatchdog {
 
   /** Claude にメッセージを渡した。待ち時間を最初から数え直す */
   delivered(target: WatchdogTarget): void {
+    this.waitingSinceMs = Date.now();
     if (this.timeoutMs <= 0) return;
     this.clear();
     const timer = setTimeout(() => {
@@ -50,12 +54,24 @@ export class ResponseWatchdog {
 
   /** Claude が何か返した。見張りを解く */
   activity(): void {
+    this.waitingSinceMs = undefined;
     this.clear();
   }
 
   /** 終了時用。見張りを解く */
   stop(): void {
+    this.waitingSinceMs = undefined;
     this.clear();
+  }
+
+  /** メッセージを渡したまま応答を受け取っていない（警告を出した後も含む）。見張りが無効でも分かる */
+  isWaiting(): boolean {
+    return this.waitingSinceMs !== undefined;
+  }
+
+  /** 応答を待ち始めた時刻（epoch ms）。待っていなければ undefined */
+  waitingSince(): number | undefined {
+    return this.waitingSinceMs;
   }
 
   private clear(): void {
@@ -64,7 +80,7 @@ export class ResponseWatchdog {
   }
 
   private async fire(target: WatchdogTarget): Promise<void> {
-    const minutes = Math.round(this.timeoutMs / 60000);
+    const minutes = Math.round(this.timeoutMs / MS_PER_MINUTE);
     this.logger.warn(`Claude から ${minutes} 分応答が無い channel=${target.channel} thread=${target.threadTs}`);
     try {
       await this.notify(target, minutes);
@@ -91,8 +107,8 @@ export function buildNoResponseText(minutes: number): string {
  */
 export function replyTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
   const raw = env.SLACK_CHANNEL_REPLY_TIMEOUT_MIN;
-  if (raw === undefined || raw.trim() === '') return DEFAULT_REPLY_TIMEOUT_MIN * 60000;
+  if (raw === undefined || raw.trim() === '') return DEFAULT_REPLY_TIMEOUT_MIN * MS_PER_MINUTE;
   const n = Number(raw);
-  if (!Number.isFinite(n) || n < 0) return DEFAULT_REPLY_TIMEOUT_MIN * 60000;
-  return n * 60000;
+  if (!Number.isFinite(n) || n < 0) return DEFAULT_REPLY_TIMEOUT_MIN * MS_PER_MINUTE;
+  return n * MS_PER_MINUTE;
 }

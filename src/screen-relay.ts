@@ -1,18 +1,22 @@
 // ターミナル画面の確認と、Slack からの選択画面の解除。
 // 画面を読んで選択画面なら選択肢をボタンで出し、押されたら画面を読み直して同じ画面のときだけ選択キーを送る。
 // 自由な文字入力は送らない（Slack から任意のコマンドを打ち込めないようにするため）。
-import { randomBytes } from 'node:crypto';
 import type { ConsoleAccess } from './console.js';
 import type { Logger } from './log.js';
 import { redact } from './log.js';
 import { errMessage } from './errors.js';
 import { choiceFingerprint, keysToSelect, parseChoiceScreen, screenTail } from './screen.js';
 import type { ChoiceScreen } from './screen.js';
+import { clip, newToken } from './text.js';
+import type { PressedMessage } from './types.js';
+import { ACTION, PLAIN_TEXT_LIMIT, numberedAction } from './permission.js';
 
 /** 選択肢のボタンの有効期限 */
 const SNAPSHOT_TTL_MS = 5 * 60 * 1000;
 /** Slack の button の text の上限（75）に収める */
 const BUTTON_LABEL_MAX = 70;
+/** 通知欄（text）に出す見出しの長さ */
+const NOTIFICATION_TITLE_MAX = 100;
 
 export interface ScreenSlack {
   postText(channel: string, text: string, threadTs?: string): Promise<{ ts: string[] }>;
@@ -35,20 +39,12 @@ export interface ScreenRelayOptions {
   newId?: () => string;
 }
 
-function defaultId(): string {
-  return randomBytes(6).toString('base64url').toLowerCase().replace(/[^a-z0-9]/g, '0').slice(0, 8).padEnd(8, '0');
-}
-
-function clip(text: string, max: number): string {
-  return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
-}
-
 /** 無応答の警告などに付ける「画面を確認」ボタン */
 export function screenShowButton(): unknown {
   return {
     type: 'button',
     text: { type: 'plain_text', text: '🖥 画面を確認' },
-    action_id: 'screen_show',
+    action_id: ACTION.SCREEN_SHOW,
     value: 'show',
   };
 }
@@ -66,7 +62,7 @@ export class ScreenRelay {
     this.slack = opts.slack;
     this.logger = opts.logger;
     this.now = opts.now ?? Date.now;
-    this.newId = opts.newId ?? defaultId;
+    this.newId = opts.newId ?? newToken;
   }
 
   /** 画面を読んでスレッドに出す。選択画面なら選択肢のボタン、そうでなければ画面の末尾。投げない */
@@ -103,16 +99,8 @@ export class ScreenRelay {
    * 選択肢のボタンが押された。画面を読み直して、見せたときと同じ選択画面なら選択キーを送り、
    * 押されたメッセージを結果の表示に書き換える。期限切れ・画面が変わっていたら何も送らず知らせる。投げない。
    */
-  async pick(snapshotId: string, index: number, pressed: { channel: string; ts?: string | undefined; threadTs: string }, byUserId: string): Promise<void> {
-    const report = async (message: string): Promise<void> => {
-      if (pressed.ts) {
-        await this.slack
-          .updateBlocks(pressed.channel, pressed.ts, message, [{ type: 'section', text: { type: 'plain_text', text: message } }])
-          .catch((e: unknown) => this.logger.warn('選択画面の表示の書き換えに失敗', e));
-      } else {
-        await this.slack.postText(pressed.channel, message, pressed.threadTs).catch(() => undefined);
-      }
-    };
+  async pick(snapshotId: string, index: number, pressed: PressedMessage, byUserId: string): Promise<void> {
+    const report = (message: string): Promise<void> => this.report(pressed, message);
 
     const snapshot = this.snapshots.get(snapshotId);
     this.snapshots.delete(snapshotId);
@@ -141,6 +129,17 @@ export class ScreenRelay {
     }
   }
 
+  /** 結果を知らせる。押されたメッセージが分かればそれを書き換え、分からなければスレッドに投稿する。投げない */
+  private async report(pressed: PressedMessage, message: string): Promise<void> {
+    if (pressed.ts) {
+      await this.slack
+        .updateBlocks(pressed.channel, pressed.ts, message, [{ type: 'section', text: { type: 'plain_text', text: message } }])
+        .catch((e: unknown) => this.logger.warn('選択画面の表示の書き換えに失敗', e));
+    } else {
+      await this.slack.postText(pressed.channel, message, pressed.threadTs).catch(() => undefined);
+    }
+  }
+
   private prune(): void {
     const t = this.now();
     for (const [id, s] of this.snapshots) {
@@ -155,19 +154,19 @@ export function buildChoiceBlocks(id: string, choice: ChoiceScreen): { text: str
   const details = choice.options
     .map((o, i) => `${i === choice.cursor ? '▶' : '・'} ${o.label}${o.description ? ` — ${o.description}` : ''}`)
     .join('\n');
-  const text = `🖥 ターミナルが選択画面で止まっている: ${clip(choice.title[0] ?? '', 100)}`;
+  const text = `🖥 ターミナルが選択画面で止まっている: ${clip(choice.title[0] ?? '', NOTIFICATION_TITLE_MAX)}`;
   return {
     text,
     blocks: [
-      { type: 'section', text: { type: 'plain_text', text: clip(`🖥 ターミナルの選択画面\n${heading}`, 3000) } },
-      { type: 'context', elements: [{ type: 'plain_text', text: clip(redact(details), 3000) }] },
+      { type: 'section', text: { type: 'plain_text', text: clip(`🖥 ターミナルの選択画面\n${heading}`, PLAIN_TEXT_LIMIT) } },
+      { type: 'context', elements: [{ type: 'plain_text', text: clip(redact(details), PLAIN_TEXT_LIMIT) }] },
       {
         type: 'actions',
         elements: choice.options.map((o, i) => ({
           type: 'button',
           text: { type: 'plain_text', text: clip(redact(o.label), BUTTON_LABEL_MAX) },
           // 同じ actions ブロック内で action_id は重複できないので番号を付ける（受け側は接頭辞で判定）
-          action_id: `screen_pick_${i}`,
+          action_id: numberedAction(ACTION.SCREEN_PICK, i),
           value: `${id}.${i}`,
         })),
       },

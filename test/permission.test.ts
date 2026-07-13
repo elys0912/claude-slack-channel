@@ -50,7 +50,7 @@ describe('PERMISSION_ID_RE / isValidRequestId', () => {
 
 describe('PendingPermissions', () => {
   it('returns the request via get() before expiry', () => {
-    let now = 1000;
+    const now = 1000;
     const pending = new PendingPermissions(1000, () => now);
     pending.add(sampleReq);
     expect(pending.get('abcde')).toEqual(sampleReq);
@@ -65,7 +65,7 @@ describe('PendingPermissions', () => {
   });
 
   it('take() removes the entry so a second take() is undefined', () => {
-    let now = 1000;
+    const now = 1000;
     const pending = new PendingPermissions(1000, () => now);
     pending.add(sampleReq);
     expect(pending.take('abcde')).toEqual(sampleReq);
@@ -165,8 +165,16 @@ describe('buildPermissionBlocks', () => {
     expect(previewOf(blocks)).toBe(
       'rm\\u{202A}\\u{202B}\\u{202C}\\u{202D}\\u{202E}\\u{2066}\\u{2067}\\u{2068}\\u{2069}\\u{200B}\\u{200C}\\u{200D}\\u{FEFF}x'
     );
-    expect(JSON.stringify(blocks)).not.toMatch(/[‪-‮⁦-⁩​-‍﻿]/);
+    expect(JSON.stringify(blocks)).not.toMatch(/[\u202A-\u202E\u2066-\u2069\u200B-\u200D\uFEFF]/);
     expect((blocks[2] as { text: { text: string } }).text.text).toBe('desc\\u{202E}gnp.exe');
+  });
+
+  it('向きの印・ソフトハイフン・埋め文字・C0/C1 制御文字も見えるようにし、タブと改行はそのまま残す', () => {
+    const { blocks } = buildPermissionBlocks({
+      ...sampleReq,
+      input_preview: 'a‎b­c⁠dㅤe\u001Bf\u0000g\u009Fh\tI\nj\rk'
+    });
+    expect(previewOf(blocks)).toBe('a\\u{200E}b\\u{AD}c\\u{2060}d\\u{3164}e\\u{1B}f\\u{0}g\\u{9F}h\tI\nj\rk');
   });
 
   it('切り詰めの境目でサロゲートペアや可視化したエスケープを割らない', () => {

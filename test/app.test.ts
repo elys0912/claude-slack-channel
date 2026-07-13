@@ -43,7 +43,10 @@ interface Harness {
 async function startHarness(
   access: ParsedAccess = ACCESS,
   replyTimeoutMs?: number,
-  extra: Pick<BridgeAppOptions, 'console' | 'allowExtraFile' | 'denyFiles' | 'home'> = {}
+  extra: Pick<
+    BridgeAppOptions,
+    'console' | 'allowExtraFile' | 'denyFiles' | 'home' | 'hookInboxFile' | 'hookPollMs' | 'restartFlagFile' | 'killParent'
+  > = {}
 ): Promise<Harness> {
   const web = makeWeb();
   const socket = makeSocket();
@@ -805,7 +808,7 @@ describe('ターミナル画面と許可リスト（!screen / 今後も許可 / 
     fs.writeFileSync(denyFile, JSON.stringify({ permissions: { deny: ['Bash(git log --all:*)'] } }));
     sent = [];
     h = await startHarness(ACCESS, undefined, {
-      console: { read: async () => CHROME, sendKeys: async (keys) => void sent.push(keys) },
+      console: { read: async () => CHROME, sendKeys: async (keys) => void sent.push(keys), sendCommand: async () => undefined },
       allowExtraFile: path.join(dir, 'allow-extra.json'),
       denyFiles: [denyFile],
     });
@@ -898,7 +901,7 @@ async function client_sendBash(h: Harness, command: string): Promise<void> {
 
 describe('ホームタブ', () => {
   let h: Harness;
-  const home = { users: ACCESS.allowFrom, workDir: 'C:\dev', channelCount: 0 };
+  const home = { users: ACCESS.allowFrom, workDir: 'C:\\dev', channelCount: 0 };
   const publishes = () => h.web.calls.filter((c) => c.method === 'views.publish');
 
   function homeOpened(user: string, tab = 'home', team = 'T123ABC'): Record<string, unknown> {
@@ -949,5 +952,160 @@ describe('ホームタブ', () => {
     await h.stop();
     expect(publishes().map((p) => p.args.user_id)).toEqual(ACCESS.allowFrom);
     expect(JSON.stringify(publishes()[0]?.args.view)).toContain('停止中');
+  });
+});
+
+describe('!status / !restart / !compact', () => {
+  const PROMPT = ['Claude: done.', '', '❯ ', '  ? for shortcuts'].join('\n');
+  let h: Harness;
+  let dir: string;
+  let flag: string;
+  let screen: string;
+  let commands: string[];
+  let killed: number;
+  const posts = () => h.web.calls.filter((c) => c.method === 'chat.postMessage');
+  const texts = () => posts().map((p) => String(p.args.markdown_text ?? p.args.text));
+
+  beforeEach(async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'app-session-'));
+    flag = path.join(dir, 'restart.flag');
+    screen = PROMPT;
+    commands = [];
+    killed = 0;
+    h = await startHarness(ACCESS, undefined, {
+      console: { read: async () => screen, sendKeys: async () => undefined, sendCommand: async (c) => void commands.push(c) },
+      restartFlagFile: flag,
+      killParent: () => void killed++,
+      home: { users: ACCESS.allowFrom, workDir: 'C:\\dev\\app', channelCount: 0 },
+    });
+    h.web.calls.length = 0;
+  });
+
+  afterEach(async () => {
+    await h.client.close();
+    await h.stop();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('!status は Claude に渡さず、稼働状態をスレッドに返す', async () => {
+    h.socket.emit('slack_event', dmEnvelope('!status', { ts: '80.1' }));
+    await flush();
+
+    expect(h.notifications.filter((x) => x.method === 'notifications/claude/channel')).toEqual([]);
+    expect(posts()[0]?.args).toMatchObject({ channel: DM1, thread_ts: '80.1' });
+    const text = texts()[0] ?? '';
+    expect(text).toContain('ブリッジの状態');
+    expect(text).toContain('C:\\dev\\app');
+    expect(text).toContain('返事待ち: 無し');
+    expect(text).toContain('実行許可: 0 件');
+  });
+
+  it('!restart は restart.flag を置いて /exit を送る', async () => {
+    h.socket.emit('slack_event', dmEnvelope('!restart', { ts: '81.1' }));
+    await flush();
+    await flush();
+
+    expect(fs.existsSync(flag)).toBe(true);
+    expect(commands).toEqual(['exit']);
+    expect(killed).toBe(0);
+    expect(texts().join('\n')).toContain('/exit を送った');
+  });
+
+  it('入力待ちでなければ /exit を送らない（印は置いたまま）', async () => {
+    screen = 'Thinking…\n⠋ Working';
+    h.socket.emit('slack_event', dmEnvelope('!restart', { ts: '82.1' }));
+    await flush();
+    await flush();
+
+    expect(commands).toEqual([]);
+    expect(texts().join('\n')).toContain('入力待ちでない');
+  });
+
+  it('!restart force は印を置いて claude.exe を止める', async () => {
+    h.socket.emit('slack_event', dmEnvelope('!restart  force', { ts: '83.1' }));
+    await flush();
+    await flush();
+
+    expect(fs.existsSync(flag)).toBe(true);
+    expect(killed).toBe(1);
+    expect(commands).toEqual([]);
+  });
+
+  it('!compact は /compact を送り、印は置かない', async () => {
+    h.socket.emit('slack_event', dmEnvelope('!compact', { ts: '84.1' }));
+    await flush();
+    await flush();
+
+    expect(commands).toEqual(['compact']);
+    expect(fs.existsSync(flag)).toBe(false);
+  });
+});
+
+describe('hook の記録（hooks.jsonl）からの知らせ', () => {
+  let h: Harness;
+  let dir: string;
+  let file: string;
+  const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const posts = () => h.web.calls.filter((c) => c.method === 'chat.postMessage');
+  const hookLine = (fields: Record<string, unknown>) => JSON.stringify({ at: Date.now(), session_id: 's1', ...fields }) + '\n';
+
+  beforeEach(async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'app-hooks-'));
+    file = path.join(dir, 'hooks.jsonl');
+    h = await startHarness(ACCESS, undefined, {
+      hookInboxFile: file,
+      hookPollMs: 20,
+      console: { read: async () => '', sendKeys: async () => undefined, sendCommand: async () => undefined },
+    });
+  });
+
+  afterEach(async () => {
+    await h.client.close();
+    await h.stop();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('ターミナル側の許可待ちは、画面を確認するボタン付きで許可ユーザー全員の DM に出す', async () => {
+    fs.appendFileSync(file, hookLine({ hook_event_name: 'Notification', notification_type: 'permission_prompt', message: 'needs permission' }));
+    await wait(60);
+
+    expect(posts().map((p) => p.args.channel)).toEqual([DM1, DM2]);
+    expect(String(posts()[0]?.args.text)).toContain('ターミナル側で入力待ち');
+    const blocks = posts()[0]?.args.blocks as { type: string; elements?: { action_id: string }[] }[];
+    expect(blocks.at(-1)?.elements?.[0]?.action_id).toBe('screen_show');
+  });
+
+  it('話しかけられた後は、そのスレッドに出す', async () => {
+    h.socket.emit('slack_event', dmEnvelope('hello', { ts: '70.1' }));
+    await flush();
+    h.web.calls.length = 0;
+    fs.appendFileSync(file, hookLine({ hook_event_name: 'StopFailure', error: 'rate_limit' }));
+    await wait(60);
+
+    expect(posts()).toHaveLength(1);
+    expect(posts()[0]?.args).toMatchObject({ channel: DM1, thread_ts: '70.1' });
+    expect(String(posts()[0]?.args.text)).toContain('使用量の上限');
+  });
+
+  it('Slack に中継中の許可があるときは、ターミナル側の許可待ちを重ねて知らせない', async () => {
+    await sendPermissionRequest(h.client);
+    h.web.calls.length = 0;
+    fs.appendFileSync(file, hookLine({ hook_event_name: 'Notification', notification_type: 'permission_prompt' }));
+    await wait(60);
+    expect(posts()).toEqual([]);
+  });
+
+  it('Stop は Slack への返事が無いときだけ知らせる', async () => {
+    fs.appendFileSync(file, hookLine({ hook_event_name: 'Stop' }));
+    await wait(60);
+    expect(posts()).toEqual([]);
+
+    h.socket.emit('slack_event', dmEnvelope('hello', { ts: '71.1' }));
+    await flush();
+    h.web.calls.length = 0;
+    fs.appendFileSync(file, hookLine({ hook_event_name: 'Stop' }));
+    await wait(60);
+    expect(posts()).toHaveLength(1);
+    expect(String(posts()[0]?.args.text)).toContain('返事をしないまま');
   });
 });

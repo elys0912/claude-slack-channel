@@ -85,4 +85,10 @@ describe('sanitizeMeta', () => {
     expect(out.ok).toBe('x'.repeat(2000));
     expect(out.long).toBe('y'.repeat(1999) + '…');
   });
+
+  it('切り詰めの境目がサロゲートペアの途中なら、その 1 文字ごと落とす', () => {
+    const out = sanitizeMeta({ emoji: 'x'.repeat(1998) + '😀😀' });
+    expect(out.emoji).toBe('x'.repeat(1998) + '…');
+    expect(out.emoji).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
+  });
 });
