@@ -11,11 +11,15 @@ import type { PermissionRequest } from './permission.js';
 import { sanitizeMeta } from './format.js';
 import { errMessage } from './errors.js';
 
+/**
+ * MCP サーバーの名前。scripts/start.ps1 の $ServerName（--mcp-config と --dangerously-load-development-channels）と
+ * config/channel-settings.json の `mcp__slackbridge__*` も同じ名前にすること
+ */
 export const SERVER_NAME = 'slackbridge';
 export const SERVER_VERSION = '0.1.0';
 
 export const INSTRUCTIONS = [
-  'このチャンネルは Slack の DM と許可されたチャンネルを中継する。メッセージは <channel source="slackbridge" ...> の形で届く。',
+  `このチャンネルは Slack の DM と許可されたチャンネルを中継する。メッセージは <channel source="${SERVER_NAME}" ...> の形で届く。`,
   '',
   '返信の仕方:',
   '- 返事は必ず reply ツールで送る。ターミナルに書いた文章は相手には届かない。',

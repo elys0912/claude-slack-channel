@@ -11,7 +11,7 @@ import { revealInvisible } from './permission.js';
 import type { ActionParse } from './permission.js';
 import type { GateResult } from './gate.js';
 import type { PressedMessage } from './types.js';
-import { ResponseWatchdog, buildNoResponseText } from './watchdog.js';
+import { MS_PER_MINUTE, ResponseWatchdog, buildNoResponseText } from './watchdog.js';
 import type { ConsoleAccess } from './console.js';
 import { ScreenRelay, screenShowButton } from './screen-relay.js';
 import { RuleRelay } from './rule-relay.js';
@@ -344,7 +344,7 @@ export async function startBridgeApp(opts: BridgeAppOptions): Promise<RunningApp
       channelCount: opts.home?.channelCount ?? 0,
       botUserId: opts.home?.botUserId,
       ruleCount: ruleStore?.list().length,
-      replyTimeoutMin: Math.round((opts.replyTimeoutMs ?? 0) / 60000),
+      replyTimeoutMin: Math.round((opts.replyTimeoutMs ?? 0) / MS_PER_MINUTE),
       now: new Date(),
     });
   const publishHomeAll = async (running: boolean, since: Date): Promise<void> => {

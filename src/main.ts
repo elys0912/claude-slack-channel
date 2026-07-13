@@ -15,6 +15,13 @@ import { PowerShellConsole, findConsoleScript } from './console.js';
 /** リポジトリのルート（dist/src/main.js の 2 つ上） */
 const repoRoot = path.resolve(import.meta.dirname, '..', '..');
 
+/** 起動失敗時、process.exit の前に undici の後始末を待つ時間 */
+const EXIT_SETTLE_MS = 250;
+/** 終了処理が固まったときに強制終了するまでの猶予 */
+const SHUTDOWN_GRACE_MS = 2000;
+/** stdin の終了を取りこぼしていないか確認する間隔 */
+const STDIN_POLL_MS = 5000;
+
 function createLogger(dir: string): Logger {
   const logger = new Logger({ file: path.join(dir, 'logs', 'bridge.log') });
   logger.setName('bridge');
@@ -26,7 +33,7 @@ function createLogger(dir: string): Logger {
  * libuv がアサートで落ちるので、少しだけ待ってから抜ける。
  */
 async function exitWithError(code: number): Promise<never> {
-  await new Promise((r) => setTimeout(r, 250));
+  await new Promise((r) => setTimeout(r, EXIT_SETTLE_MS));
   process.exit(code);
 }
 
@@ -136,7 +143,7 @@ function installShutdown(logger: Logger, cleanup: () => Promise<void>): void {
     setTimeout(() => {
       logger.info(`終了（強制） 理由=${reason}`);
       process.exit(0);
-    }, 2000).unref();
+    }, SHUTDOWN_GRACE_MS).unref();
   };
 
   process.stdin.on('end', () => shutdown('stdin end'));
@@ -150,7 +157,7 @@ function installShutdown(logger: Logger, cleanup: () => Promise<void>): void {
     if (process.stdin.destroyed || process.stdin.readableEnded) {
       shutdown('stdin destroyed/ended（監視ループ検知）');
     }
-  }, 5000).unref();
+  }, STDIN_POLL_MS).unref();
 }
 
 // --- 予期しない例外でもプロセスを落とさない ---------------------------------------

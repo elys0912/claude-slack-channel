@@ -16,6 +16,15 @@ param(
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 
+# 仮想キーコード（VK_UP / VK_DOWN / VK_RETURN）と、Enter の文字
+$VK_UP = 0x26
+$VK_DOWN = 0x28
+$VK_RETURN = 0x0D
+$CHAR_NONE = [char]0
+$CHAR_CR = [char]13
+# TUI が 1 キーずつ描き直す間を空ける
+$KEY_INTERVAL_MS = 80
+
 Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
@@ -101,11 +110,10 @@ if ($Mode -eq 'read') {
 
 foreach ($key in $Keys) {
     switch ($key) {
-        'Up' { [SlackChannelConsole]::SendKey([char]0, 0x26) }
-        'Down' { [SlackChannelConsole]::SendKey([char]0, 0x28) }
-        'Enter' { [SlackChannelConsole]::SendKey([char]13, 0x0D) }
+        'Up' { [SlackChannelConsole]::SendKey($CHAR_NONE, $VK_UP) }
+        'Down' { [SlackChannelConsole]::SendKey($CHAR_NONE, $VK_DOWN) }
+        'Enter' { [SlackChannelConsole]::SendKey($CHAR_CR, $VK_RETURN) }
     }
-    # TUI が 1 キーずつ描き直す間を空ける
-    Start-Sleep -Milliseconds 80
+    Start-Sleep -Milliseconds $KEY_INTERVAL_MS
 }
 exit 0

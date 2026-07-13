@@ -5,6 +5,7 @@ import type { Logger } from './log.js';
 
 /** 既定の待ち時間（分） */
 export const DEFAULT_REPLY_TIMEOUT_MIN = 5;
+export const MS_PER_MINUTE = 60000;
 
 export interface WatchdogTarget {
   channel: string;
@@ -64,7 +65,7 @@ export class ResponseWatchdog {
   }
 
   private async fire(target: WatchdogTarget): Promise<void> {
-    const minutes = Math.round(this.timeoutMs / 60000);
+    const minutes = Math.round(this.timeoutMs / MS_PER_MINUTE);
     this.logger.warn(`Claude から ${minutes} 分応答が無い channel=${target.channel} thread=${target.threadTs}`);
     try {
       await this.notify(target, minutes);
@@ -91,8 +92,8 @@ export function buildNoResponseText(minutes: number): string {
  */
 export function replyTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
   const raw = env.SLACK_CHANNEL_REPLY_TIMEOUT_MIN;
-  if (raw === undefined || raw.trim() === '') return DEFAULT_REPLY_TIMEOUT_MIN * 60000;
+  if (raw === undefined || raw.trim() === '') return DEFAULT_REPLY_TIMEOUT_MIN * MS_PER_MINUTE;
   const n = Number(raw);
-  if (!Number.isFinite(n) || n < 0) return DEFAULT_REPLY_TIMEOUT_MIN * 60000;
-  return n * 60000;
+  if (!Number.isFinite(n) || n < 0) return DEFAULT_REPLY_TIMEOUT_MIN * MS_PER_MINUTE;
+  return n * MS_PER_MINUTE;
 }

@@ -6,6 +6,9 @@ import { z } from 'zod';
 import { errMessage } from './errors.js';
 import { stripBom } from './text.js';
 
+/** 状態ディレクトリの既定の場所（ホームからの相対。scripts/start.ps1 の $DefaultStateDirRelative と同じ値にすること） */
+const DEFAULT_STATE_DIR_RELATIVE = ['.claude', 'channels', 'slack'];
+
 /**
  * 状態ディレクトリ（.env / access.json / logs / instance.lock の置き場所）を返す。
  * SLACK_CHANNEL_STATE_DIR があれば path.resolve で絶対パスにして使う（相対パスはこのプロセスのカレントディレクトリ基準）。
@@ -14,7 +17,7 @@ import { stripBom } from './text.js';
 export function stateDir(env: NodeJS.ProcessEnv = process.env): string {
   const dir = env.SLACK_CHANNEL_STATE_DIR;
   if (dir) return path.resolve(dir);
-  return path.join(os.homedir(), '.claude', 'channels', 'slack');
+  return path.join(os.homedir(), ...DEFAULT_STATE_DIR_RELATIVE);
 }
 
 // `=` より右側を値として解釈する。引用符で囲まれていれば中身を返し、閉じ引用符の後ろの ` # ...` は捨てる。
