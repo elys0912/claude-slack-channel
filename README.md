@@ -567,6 +567,30 @@ npm run build        # tsc -p tsconfig.json で dist へ出力
 npm run check        # precheck（npm run build）のあと dist/scripts/check.js を実行
 ```
 
+### テスト
+
+テストは 3 段階。1 と 2 は `npm test` でまとめて走る。3 は手作業。
+
+1. **単体テスト**：純関数とクラス単体を確かめる。
+   - 対象：`gate` / `format` / `chunk` / `permission` / `screen` / `home` / `allow-rules` / `config` など。
+   - I/O は使わないか、一時フォルダーだけを使う。
+2. **結合テスト**：部品をつないで、実際に近い経路を通す。
+   - `app.test.ts`：偽の Slack（`test/helpers/fake-slack.ts`）と、インメモリの MCP クライアントで `startBridgeApp` を動かす。Slack イベントの受信から、Claude への通知、ツールの呼び出し、Slack への投稿までを通しで確かめる。
+   - `mcp.test.ts`：実際の MCP SDK のクライアントとサーバーをつないで、ツールの一覧・呼び出し・通知を確かめる。
+   - `download.test.ts`：Windows では実際の `tar.exe` で次を確かめる。Windows 以外では、tar を使うテストは飛ばす。
+     - zip / tar.gz / tar.xz / 7z の展開
+     - Zip Slip の拒否
+     - 上限を超えた時の中断と後始末
+   - `hook.test.ts` / `hook-inbox.test.ts` / `lock.test.ts`：実際のファイルを読み書きして確かめる。
+3. **システムテスト（実機）**：手元の Slack ワークスペースと Claude Code で、機能を入れるたびに確かめる。
+   - 状態ディレクトリを分けて、2 つのボットのセッションを並べて起動する。どちらのブリッジも Slack に接続することを確かめる。
+   - DM と許可チャンネルで、受信（👀）とスレッドへの返信が届く。
+   - 実行許可のボタンが Slack に出る。
+   - `!status` がブリッジの状態を返す。手で打った場合と、Slack アプリが代わりに投稿した場合（末尾に署名が付く）の両方で確かめる。
+   - `!restart` で起動し直す。
+   - hook の知らせ（セッションの開始など）は、そのセッション自身の状態ディレクトリに書かれ、そのボットにだけ出る。
+   - `download_file` で添付を保存・展開する。保存する前に、実行許可の確認が Slack に出る。
+
 ### ファイル構成
 
 | パス | 役割 |

@@ -76,6 +76,18 @@ export interface Wiring {
 /** Claude に渡さず、ブリッジ自身が処理するコマンド（`!restart force` だけ引数を取る） */
 const COMMAND_RE = /^\s*!(screen|rules|status|restart(?:\s+force)?|compact)\s*$/i;
 
+/**
+ * Slack のアプリ（Claude の Slack コネクタなど）が利用者の代わりに投稿したとき、本文の末尾に付く署名
+ * （例: `*使用して送信されました* <@U0BF61P77U1>`）。太字 1 つとユーザーへのメンションだけの末尾に限る
+ */
+const APP_FOOTER_RE = /\s+\*[^*\n]+\*\s+<@U[A-Z0-9]+(?:\|[^>]*)?>\s*$/;
+
+/** 本文がブリッジのコマンドならその名前（小文字・空白 1 つに正規化）を返す。アプリの署名が付いていても同じコマンドとみなす */
+export function parseCommand(content: string): string | undefined {
+  const m = COMMAND_RE.exec(content) ?? COMMAND_RE.exec(content.replace(APP_FOOTER_RE, ''));
+  return m?.[1]?.toLowerCase().replace(/\s+/g, ' ');
+}
+
 // --- Claude → Slack（MCP ツールの実体） ----------------------------------------
 
 export type ToolHandlers = Pick<McpDeps, 'onReply' | 'onReact' | 'onEdit' | 'onDownload'>;
@@ -155,7 +167,7 @@ export async function handleMessage(wiring: Wiring, result: GateResult, raw: Inb
   const { bridge, server, relay, logger, watchdog } = wiring;
 
   // `!screen` などのコマンドは Claude に渡さずにここで処理する（Claude が止まっていても使えるように）
-  const command = result.kind === 'deliver' ? COMMAND_RE.exec(result.content)?.[1]?.toLowerCase().replace(/\s+/g, ' ') : undefined;
+  const command = result.kind === 'deliver' ? parseCommand(result.content) : undefined;
   if (command && raw.channel && raw.threadTs) {
     if (raw.ts) await bridge.addReaction(raw.channel, raw.ts, REACTION.SEEN);
     await handleCommand(wiring, command, { channel: raw.channel, threadTs: raw.threadTs }, raw.user ?? '');
