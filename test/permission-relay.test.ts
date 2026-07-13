@@ -107,6 +107,52 @@ describe('PermissionRelay', () => {
     expect(relay.lookup('abcde')).toBeUndefined();
   });
 
+  it('保留中と同じ ID の request が再び届いても、出し直さず最初のボタンで答えられる', async () => {
+    const { relay, posts, verdicts, updates } = setup();
+    await relay.request(REQ);
+    await relay.request({ ...REQ, description: 'resent' });
+    expect(posts).toHaveLength(1);
+    expect(relay.lookup('abcde')).toEqual(REQ);
+
+    await relay.answerByButton({ requestId: 'abcde', behavior: 'deny' }, 'U1', { channel: 'D1', ts: '1.0' });
+    expect(verdicts).toEqual([{ requestId: 'abcde', behavior: 'deny' }]);
+    expect(updates).toEqual([expect.objectContaining({ channel: 'D1', ts: '1.0' })]);
+  });
+
+  it.each([
+    ['ボタン', (relay: PermissionRelay) => relay.answerByButton({ requestId: 'abcde', behavior: 'allow' }, 'U1', { channel: 'D1', ts: '1.0' })],
+    ['テキスト', (relay: PermissionRelay) => relay.answerByText({ requestId: 'abcde', behavior: 'allow' }, 'U1')],
+  ])('%sの回答を Claude に送れなかったら、投げずにメッセージを「送れなかった」表示にし、期限のタイマーも止める', async (_label, answer) => {
+    vi.useFakeTimers();
+    const updates: string[] = [];
+    const sent: Verdict[] = [];
+    const relay = new PermissionRelay(
+      {
+        postToAll: async () => [{ channel: 'D1', ts: '1.0' }],
+        postBlocks: noReply,
+        updateBlocks: async (_channel, _ts, text) => void updates.push(text),
+      },
+      {
+        sendVerdict: async (v) => {
+          sent.push(v);
+          throw new Error('not connected');
+        },
+      },
+      new Logger({ stderr: false }),
+      new PendingPermissions(1000, () => 0)
+    );
+    await relay.request(REQ);
+    updates.length = 0;
+    await expect(answer(relay)).resolves.not.toThrow();
+
+    expect(updates).toEqual([expect.stringContaining('Allow を Claude に送れなかった')]);
+    expect(relay.lookup('abcde')).toBeUndefined();
+    // 期限が来ても deny を重ねて送らない（Claude には既に届いていない）
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(sent).toEqual([{ requestId: 'abcde', behavior: 'allow' }]);
+    vi.useRealTimers();
+  });
+
   it('期限切れのボタンは Claude に送らず、押されたメッセージを期限切れ表示にする', async () => {
     let t = 0;
     const { relay, updates, verdicts } = setup(() => t);

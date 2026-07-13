@@ -11,9 +11,18 @@ import { SlackBridge } from './slack.js';
 import { startBridgeApp, startDegradedApp } from './app.js';
 import { replyTimeoutMs } from './watchdog.js';
 import { PowerShellConsole, findConsoleScript } from './console.js';
+import { HOOK_LOG_FILE } from './hook-event.js';
+import { RESTART_FLAG_FILE } from './session-control.js';
 
 /** リポジトリのルート（dist/src/main.js の 2 つ上） */
 const repoRoot = path.resolve(import.meta.dirname, '..', '..');
+
+/** 起動失敗時、process.exit の前に undici の後始末を待つ時間 */
+const EXIT_SETTLE_MS = 250;
+/** 終了処理が固まったときに強制終了するまでの猶予 */
+const SHUTDOWN_GRACE_MS = 2000;
+/** stdin の終了を取りこぼしていないか確認する間隔 */
+const STDIN_POLL_MS = 5000;
 
 function createLogger(dir: string): Logger {
   const logger = new Logger({ file: path.join(dir, 'logs', 'bridge.log') });
@@ -26,7 +35,7 @@ function createLogger(dir: string): Logger {
  * libuv がアサートで落ちるので、少しだけ待ってから抜ける。
  */
 async function exitWithError(code: number): Promise<never> {
-  await new Promise((r) => setTimeout(r, 250));
+  await new Promise((r) => setTimeout(r, EXIT_SETTLE_MS));
   process.exit(code);
 }
 
@@ -108,6 +117,8 @@ async function main(dir: string, logger: Logger): Promise<void> {
       },
     },
     allowExtraFile: path.join(dir, 'allow-extra.json'),
+    hookInboxFile: path.join(dir, HOOK_LOG_FILE),
+    restartFlagFile: path.join(dir, RESTART_FLAG_FILE),
     download: tokens.downloadDir ? { bridge, dir: tokens.downloadDir } : undefined,
     // 起動スクリプトは作業フォルダーで claude.exe を起動し、MCP サーバーも同じ作業フォルダーで動く。
     // channel セッションの設定ファイルは -SettingsFile で替えられるので、起動スクリプトが渡した場所を優先する
@@ -151,7 +162,7 @@ function installShutdown(logger: Logger, cleanup: () => Promise<void>): void {
     setTimeout(() => {
       logger.info(`終了（強制） 理由=${reason}`);
       process.exit(0);
-    }, 2000).unref();
+    }, SHUTDOWN_GRACE_MS).unref();
   };
 
   process.stdin.on('end', () => shutdown('stdin end'));
@@ -165,7 +176,7 @@ function installShutdown(logger: Logger, cleanup: () => Promise<void>): void {
     if (process.stdin.destroyed || process.stdin.readableEnded) {
       shutdown('stdin destroyed/ended（監視ループ検知）');
     }
-  }, 5000).unref();
+  }, STDIN_POLL_MS).unref();
 }
 
 // --- 予期しない例外でもプロセスを落とさない ---------------------------------------

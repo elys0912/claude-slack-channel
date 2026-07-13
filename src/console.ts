@@ -7,14 +7,20 @@ import { fileURLToPath } from 'node:url';
 
 /** 送れるキー。自由な文字入力は送らない */
 export type ConsoleKey = 'Up' | 'Down' | 'Enter';
+/** 送れるスラッシュコマンド（固定。console.ps1 側でも同じ一覧に限っている） */
+export type ConsoleCommand = 'exit' | 'compact';
 
 export interface ConsoleAccess {
   /** 表示中の範囲の文字（行末の空白は除く） */
   read(): Promise<string>;
   sendKeys(keys: ConsoleKey[]): Promise<void>;
+  /** `/exit` や `/compact` を打って Enter を送る */
+  sendCommand(command: ConsoleCommand): Promise<void>;
 }
 
 const TIMEOUT_MS = 20000;
+/** console.ps1 の出力（画面 1 枚分のテキスト）の上限 */
+const MAX_OUTPUT_BYTES = 1024 * 1024;
 
 /**
  * scripts/console.ps1 の場所。ビルド後（dist/src/console.js）とテスト時（src/console.ts）の両方から探す。
@@ -49,12 +55,16 @@ export class PowerShellConsole implements ConsoleAccess {
     await this.run(['-Mode', 'keys', '-Keys', keys.join(',')]);
   }
 
+  async sendCommand(command: ConsoleCommand): Promise<void> {
+    await this.run(['-Mode', 'command', '-Command', command]);
+  }
+
   private run(args: string[]): Promise<string> {
     return new Promise((resolve, reject) => {
       execFile(
         'powershell.exe',
         ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', this.script, ...args],
-        { windowsHide: false, timeout: TIMEOUT_MS, encoding: 'utf8', maxBuffer: 1024 * 1024 },
+        { windowsHide: false, timeout: TIMEOUT_MS, encoding: 'utf8', maxBuffer: MAX_OUTPUT_BYTES },
         (err, stdout, stderr) => {
           if (err) {
             const detail = stderr.trim().split(/\r?\n/)[0] ?? '';

@@ -6,15 +6,29 @@
 #
 # 使い方:
 #   console.ps1 -Mode read                     表示中の範囲の文字を UTF-8 で標準出力に書く
-#   console.ps1 -Mode keys -Keys Down,Enter    キーを順に送る（Up / Down / Enter のみ）
+#   console.ps1 -Mode keys -Keys Down,Enter    キーを順に送る（Up / Down / Enter / Digit1 のみ）
+#   console.ps1 -Mode command -Command exit    固定のスラッシュコマンド（/exit か /compact）を打って Enter を送る
 
 param(
-    [Parameter(Mandatory)][ValidateSet('read', 'keys')][string]$Mode,
-    [ValidateSet('Up', 'Down', 'Enter')][string[]]$Keys = @()
+    [Parameter(Mandatory)][ValidateSet('read', 'keys', 'command')][string]$Mode,
+    [ValidateSet('Up', 'Down', 'Enter', 'Digit1')][string[]]$Keys = @(),
+    [ValidateSet('exit', 'compact')][string]$Command
 )
 
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+
+# 仮想キーコード（VK_UP / VK_DOWN / VK_RETURN / VK_1）と、Enter の文字
+$VK_UP = 0x26
+$VK_DOWN = 0x28
+$VK_RETURN = 0x0D
+$VK_1 = 0x31
+$CHAR_NONE = [char]0
+$CHAR_CR = [char]13
+# TUI が 1 キーずつ描き直す間を空ける
+$KEY_INTERVAL_MS = 80
+# 文字を打つときの間隔（入力欄が 1 文字ずつ受け取れるように）
+$CHAR_INTERVAL_MS = 30
 
 Add-Type -TypeDefinition @'
 using System;
@@ -99,13 +113,29 @@ if ($Mode -eq 'read') {
     exit 0
 }
 
+if ($Mode -eq 'command') {
+    if (-not $Command) {
+        Write-Error 'command モードには -Command が要る'
+        exit 1
+    }
+    # 文字は仮想キーコード無し（UnicodeChar だけ）で送る。Claude Code の入力欄はこれで受け取れる
+    $text = '/' + $Command
+    foreach ($ch in $text.ToCharArray()) {
+        [SlackChannelConsole]::SendKey($ch, 0)
+        Start-Sleep -Milliseconds $CHAR_INTERVAL_MS
+    }
+    Start-Sleep -Milliseconds $KEY_INTERVAL_MS
+    [SlackChannelConsole]::SendKey($CHAR_CR, $VK_RETURN)
+    exit 0
+}
+
 foreach ($key in $Keys) {
     switch ($key) {
-        'Up' { [SlackChannelConsole]::SendKey([char]0, 0x26) }
-        'Down' { [SlackChannelConsole]::SendKey([char]0, 0x28) }
-        'Enter' { [SlackChannelConsole]::SendKey([char]13, 0x0D) }
+        'Up' { [SlackChannelConsole]::SendKey($CHAR_NONE, $VK_UP) }
+        'Down' { [SlackChannelConsole]::SendKey($CHAR_NONE, $VK_DOWN) }
+        'Enter' { [SlackChannelConsole]::SendKey($CHAR_CR, $VK_RETURN) }
+        'Digit1' { [SlackChannelConsole]::SendKey([char]'1', $VK_1) }
     }
-    # TUI が 1 キーずつ描き直す間を空ける
-    Start-Sleep -Milliseconds 80
+    Start-Sleep -Milliseconds $KEY_INTERVAL_MS
 }
 exit 0

@@ -1,5 +1,23 @@
 import { describe, expect, it } from 'vitest';
-import { choiceFingerprint, keysToSelect, parseChoiceScreen, screenTail } from '../src/screen.js';
+import { choiceFingerprint, hasEmptyPrompt, keysToSelect, parseChoiceScreen, screenTail } from '../src/screen.js';
+
+describe('hasEmptyPrompt', () => {
+  it('末尾に空の入力欄があれば true', () => {
+    expect(hasEmptyPrompt('Claude: done.\n\n❯ \n  ? for shortcuts\n')).toBe(true);
+    expect(hasEmptyPrompt('> ')).toBe(true);
+  });
+
+  it('打ちかけ・応答中・選択画面なら false', () => {
+    expect(hasEmptyPrompt('❯ git sta')).toBe(false);
+    expect(hasEmptyPrompt('⠋ Thinking…')).toBe(false);
+    expect(hasEmptyPrompt(' Choose\n  > One\n    Two\n')).toBe(false);
+    expect(hasEmptyPrompt('')).toBe(false);
+  });
+
+  it('入力欄がずっと上（末尾 8 行より前）にあれば false', () => {
+    expect(hasEmptyPrompt('❯ \n' + 'output\n'.repeat(10))).toBe(false);
+  });
+});
 
 // 2026-09-30 に実際に止まった画面（Claude in Chrome の案内）
 const CHROME_SCREEN = [
