@@ -30,6 +30,8 @@ export class ResponseWatchdog {
   private readonly logger: Logger;
   private readonly notify: WatchdogOptions['notify'];
   private timer: ReturnType<typeof setTimeout> | undefined;
+  /** 最後にメッセージを渡してから応答が無い間、渡した時刻（epoch ms）。応答があれば undefined */
+  private waitingSinceMs: number | undefined;
 
   constructor(opts: WatchdogOptions) {
     this.timeoutMs = opts.timeoutMs;
@@ -39,6 +41,7 @@ export class ResponseWatchdog {
 
   /** Claude にメッセージを渡した。待ち時間を最初から数え直す */
   delivered(target: WatchdogTarget): void {
+    this.waitingSinceMs = Date.now();
     if (this.timeoutMs <= 0) return;
     this.clear();
     const timer = setTimeout(() => {
@@ -51,12 +54,24 @@ export class ResponseWatchdog {
 
   /** Claude が何か返した。見張りを解く */
   activity(): void {
+    this.waitingSinceMs = undefined;
     this.clear();
   }
 
   /** 終了時用。見張りを解く */
   stop(): void {
+    this.waitingSinceMs = undefined;
     this.clear();
+  }
+
+  /** メッセージを渡したまま応答を受け取っていない（警告を出した後も含む）。見張りが無効でも分かる */
+  isWaiting(): boolean {
+    return this.waitingSinceMs !== undefined;
+  }
+
+  /** 応答を待ち始めた時刻（epoch ms）。待っていなければ undefined */
+  waitingSince(): number | undefined {
+    return this.waitingSinceMs;
   }
 
   private clear(): void {

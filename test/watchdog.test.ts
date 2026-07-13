@@ -32,6 +32,20 @@ describe('ResponseWatchdog', () => {
     vi.useRealTimers();
   });
 
+  it('isWaiting は渡してから応答があるまで true で、警告を出した後も変わらず、見張りが無効でも分かる', async () => {
+    for (const w of [make(), make(0)]) {
+      expect(w.isWaiting()).toBe(false);
+      w.delivered({ channel: 'C1', threadTs: '1.0' });
+      expect(w.isWaiting()).toBe(true);
+      expect(w.waitingSince()).toBeTypeOf('number');
+      await vi.advanceTimersByTimeAsync(60000);
+      expect(w.isWaiting()).toBe(true);
+      w.activity();
+      expect(w.isWaiting()).toBe(false);
+      expect(w.waitingSince()).toBeUndefined();
+    }
+  });
+
   it('応答が無いまま待ち時間を過ぎたら、最後のスレッドに 1 回だけ知らせる', async () => {
     const w = make();
     w.delivered({ channel: 'C1', threadTs: '1.0' });

@@ -17,6 +17,9 @@ import { ScreenRelay, screenShowButton } from './screen-relay.js';
 import { RuleRelay } from './rule-relay.js';
 import { AllowRuleStore, readDeny } from './allow-rules.js';
 import { buildForbiddenHomeView, buildHomeView } from './home.js';
+import { HookInbox } from './hook-inbox.js';
+import { hookToNotice } from './hook-notices.js';
+import { NoticePoster } from './notice.js';
 
 // Slack 側で「読んだ」「許可した」「拒否した」を示すリアクション
 export const REACTION = {
@@ -257,7 +260,7 @@ async function sendFullPreview({ bridge, relay, logger }: Wiring, requestId: str
 // --- 起動 ---------------------------------------------------------------------
 
 export interface RunningApp {
-  /** 後片付け（lock.release → 無応答の見張りを解く → 保留中の permission request を deny → ホームを停止中にする（通常モードのみ） → bridge.stop → server.close の順。2 回目以降の呼び出しは 1 回目と同じ Promise を返す） */
+  /** 後片付け（lock.release → hook の読み取りと無応答の見張りを止める → 保留中の permission request を deny → ホームを停止中にする（通常モードのみ） → bridge.stop → server.close の順。2 回目以降の呼び出しは 1 回目と同じ Promise を返す） */
   stop: () => Promise<void>;
 }
 
@@ -290,6 +293,13 @@ export interface BridgeAppOptions {
    * ホームが開かれたら最新の状態で出し直す。省略時はホームを更新しない
    */
   home?: { users: string[]; workDir: string; channelCount: number; botUserId?: string | undefined } | undefined;
+  /**
+   * Claude Code の hook が追記する記録（状態ディレクトリの hooks.jsonl）。読んで、ターミナル側の入力待ち・
+   * 使用量の上限・セッションの開始と終了・圧縮を Slack に知らせる。省略時は読まない
+   */
+  hookInboxFile?: string | undefined;
+  /** hooks.jsonl を読みに行く間隔（ミリ秒。テスト用。省略時は hook-inbox.ts の既定） */
+  hookPollMs?: number | undefined;
 }
 
 /**
@@ -334,6 +344,26 @@ export async function startBridgeApp(opts: BridgeAppOptions): Promise<RunningApp
   const relay: PermissionRelay = new PermissionRelay(bridge, server, logger);
   const wiring: Wiring = { bridge, server, relay, logger, watchdog, screen, rules };
 
+  // --- hook の記録 → Slack への知らせ -------------------------------------------
+  const notice = new NoticePoster(bridge, () => relay.lastThread, logger);
+  const inbox = opts.hookInboxFile
+    ? new HookInbox({
+        file: opts.hookInboxFile,
+        logger,
+        pollMs: opts.hookPollMs,
+        onEvent: async (event) => {
+          const found = hookToNotice(event, { waiting: watchdog.isWaiting(), pending: relay.pendingCount() });
+          if (!found) return;
+          logger.info(`hook を知らせる event=${event.hook_event_name} type=${event.notification_type ?? '-'}`);
+          const blocks = [
+            { type: 'section', text: { type: 'plain_text', text: found.text } },
+            ...(found.screenButton && opts.console ? [{ type: 'actions', elements: [screenShowButton()] }] : []),
+          ];
+          await notice.post(found.text, blocks);
+        },
+      })
+    : undefined;
+
   // --- ホームタブ -------------------------------------------------------------
   const startedAt = new Date();
   const homeView = (running: boolean, since: Date): unknown =>
@@ -360,6 +390,7 @@ export async function startBridgeApp(opts: BridgeAppOptions): Promise<RunningApp
   const stop = (): Promise<void> =>
     (stopped ??= (async () => {
       opts.lock?.release();
+      inbox?.stop();
       watchdog.stop();
       try {
         // Slack の書き換えと Claude への通知が届くよう、切断より前に行う（denyAll・publishHome は投げない）
@@ -387,6 +418,7 @@ export async function startBridgeApp(opts: BridgeAppOptions): Promise<RunningApp
   }
   logger.info('Slack ブリッジ稼働中');
   await publishHomeAll(true, startedAt);
+  await inbox?.start();
 
   return { stop };
 }

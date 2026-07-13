@@ -271,6 +271,23 @@ Slack でボットのアプリを開くと、ホームタブにブリッジの�
 - 起動したときに許可ユーザー全員のホームを「稼働中」にして、終了するときに「停止中」へ書き換える。
   プロセスが強制終了された（終了処理が走らなかった）ときは「稼働中」のまま残るから、下の「最終更新」の時刻も見ること。
 
+### Claude Code 側の出来事の知らせ（hook）
+
+Slack からは見えない Claude Code 側の出来事を、Claude Code の hook 経由で Slack に知らせるわ。使用量の上限とターミナル側の入力待ちが主な狙い。
+
+- 起動スクリプトが `--settings` に渡す設定へ hook を注入する。hook は `dist\src\hook.js` を実行して、状態ディレクトリの `hooks.jsonl` に 1 行追記するだけ。
+  ブリッジが 1.5 秒ごとにその増えた分を読んで Slack に出す（stdout は MCP 専用なので、hook はブリッジと直接は話さない）。
+- 宛先は、最後に話しかけられたスレッド。まだ話しかけられていなければ許可ユーザー全員の DM。
+- 知らせるもの:
+  - ターミナル側の入力待ち（Slack に中継されない許可の確認・elicitation・サブエージェントの質問）: **🖥 画面を確認** ボタン付き。Slack に中継中の許可があるときは重ねて出さない
+  - Claude が Slack に返事をしないまま応答を終えた（`Stop`）、または入力待ちのまま止まっている（`idle_prompt`）: Slack への返事を待っているときだけ
+  - 応答が失敗した（`StopFailure`）: 使用量の上限（rate limit）・混雑・認証・請求などの種別と、あれば詳細
+  - 使用量の上限からの自動再開の案内（`quota_auto_resume_*`）
+  - セッションの開始（作業フォルダー付き）・終了・会話のクリア・圧縮
+- 使用量の上限で止まったあとの自動再開（`autoContinueAtUsageLimit`）は、Claude Code の managed settings かデスクトップアプリでしか設定できない（CLI の設定や `--settings` では効かない）。
+  上限に達したらここで知らせるので、再開の操作は手元でやること。
+- `node` が PATH に無いと hook は注入されない（起動スクリプトが警告を出す）。hook のイベント名や欄は Claude Code の版で変わりうるので、知らせが出ないときは `hooks.jsonl` に何が記録されているかを見ること。
+
 ## 権限の設計
 
 ここは部隊の盾の話。Slack から手元の PC を動かす以上、どこまで通してどこで止めるかは妥協しないわよ。
@@ -391,13 +408,14 @@ deny は allow より必ず優先される（評価順は deny → ask → allow
 | `.env` | 状態ディレクトリ | `SLACK_BOT_TOKEN`（`xoxb-`）、`SLACK_APP_TOKEN`（`xapp-`） |
 | `access.json` | 状態ディレクトリ | `teamId`（`T...`）、`allowFrom`（`U...` の配列）、`channels`（`C...` / `G...` の配列、省略可）。これ以外のキーはエラー |
 | `allow-extra.json` | 状態ディレクトリ | Slack の「今後も許可」で足したルール（`{"allow": [...]}`）。ブリッジが書き、起動スクリプトが allow に足す |
+| `hooks.jsonl` | 状態ディレクトリ | Claude Code の hook が追記する出来事の記録（1 行 1 JSON）。ブリッジが読んで Slack に知らせる。1MB を超えると `hooks.jsonl.1` に退避 |
 | `logs\bridge.log` | 状態ディレクトリ | ログ（下記） |
 | `instance.lock` | 状態ディレクトリ | 多重起動防止のロック（自動で作られ、終了時に消える） |
 | `projects.json` | `config\`（git 管理外） | `projects`: `{ name, path }` の配列。起動時の選択肢 |
 | `extra-mcp.json` | `config\`（git 管理外） | Slack セッションで一緒に使う MCP サーバー（`.mcp.json` と同じ `mcpServers` の形。ひな形: `extra-mcp.example.json`）。登録したサーバーのツールは確認なしで実行される |
 | `channel-settings.json` | `config\` | channel セッション専用の Claude Code 設定 |
 | `mcp.json` | `%TEMP%\claude-slack-channel\` | 起動スクリプトが毎回生成する MCP 設定 |
-| `channel-settings.merged.json` | `%TEMP%\claude-slack-channel\` | 追加の allow を足した設定。足すものがあるときだけ起動スクリプトが生成する |
+| `channel-settings.merged.json` | `%TEMP%\claude-slack-channel\` | `channel-settings.json` に追加の allow と hook を足した設定。起動スクリプトが毎回生成する |
 
 ### 環境変数
 
@@ -426,6 +444,7 @@ deny は allow より必ず優先される（評価順は deny → ask → allow
 | 覚えておくチャンネルのスレッド | 1000件まで（古いものから忘れる。起動中だけ） |
 | ロックのハートビート / 失効 | 10秒ごとに更新 / 30秒更新が無ければ失効。ハートビートが現在時刻より5秒を超えて未来でも失効扱い（プロセスが生きているかは見ない） |
 | 再接続の待ち時間 | 1秒から倍々で最大60秒 |
+| `hooks.jsonl` を読む間隔 / 起動時に読み直す範囲 | 1.5秒 / 起動の30秒前まで |
 
 ## トラブルシューティング
 
@@ -453,6 +472,7 @@ deny は allow より必ず優先される（評価順は deny → ask → allow
 | 実行許可が勝手に拒否された | 30分答えが無かった（期限切れ）、どの DM にも投稿できなかった（ログに `permission_request をどの DM にも配信できなかった`）、またはブリッジが終了した、のいずれかで自動 deny している。投稿失敗なら直前の `DM への送信に失敗` の理由（スコープ・DM チャンネル）を確認する |
 | スリープ復帰後に反応しない | 自動で再接続する（最大60秒間隔で繰り返す）。しばらく経っても駄目ならログを確認して起動し直す |
 | 更新したのに挙動が変わらない | `npm run build` を実行してから起動し直す |
+| 使用量の上限や入力待ちの知らせが Slack に来ない | 状態ディレクトリの `hooks.jsonl` が増えているか見る。増えていなければ hook が動いていない（`%TEMP%\claude-slack-channel\channel-settings.merged.json` に `hooks` があるか、`node` に PATH が通っているか）。増えているのに来なければ、記録された `hook_event_name` / `notification_type` が対応表に無い可能性があるので、ログの `hooks.jsonl に読めない行がある` と合わせて確認する |
 
 ## 開発
 
@@ -477,6 +497,11 @@ npm run check        # precheck（npm run build）のあと dist/scripts/check.j
 | `src/permission.ts` | 実行許可メッセージのブロック組み立てと、ボタン操作の検証（純関数） |
 | `src/gate.ts` | 受信メッセージを中継すべきかの判定（純関数） |
 | `src/watchdog.ts` | Claude の無応答の見張り |
+| `src/hook.ts` | Claude Code の hook として起動され、`hooks.jsonl` に 1 行追記するコマンド |
+| `src/hook-event.ts` | `hooks.jsonl` の 1 行の型と欄 |
+| `src/hook-inbox.ts` | `hooks.jsonl` の増えた分を読んでイベントとして渡す |
+| `src/hook-notices.ts` | hook のイベントを Slack の文言にする（純関数） |
+| `src/notice.ts` | ブリッジからの知らせの投稿（最後のスレッド、無ければ DM） |
 | `src/console.ts` | ターミナル画面の読み取り・選択キーの送信（`scripts/console.ps1` の呼び出し） |
 | `src/screen.ts` | 画面テキストから選択画面を取り出す（純関数） |
 | `src/screen-relay.ts` | `!screen` と選択肢ボタンの処理 |
@@ -490,6 +515,7 @@ npm run check        # precheck（npm run build）のあと dist/scripts/check.j
 | `src/log.ts` | ログ出力（トークンのマスク込み） |
 | `src/errors.ts` | エラー値の文字列化 helper |
 | `src/stdio-guard.ts` | stdout を MCP 専用に保つガード |
+| `src/text.ts` | 文字列の小さな整形（BOM 除去・切り詰め・ID の生成） |
 | `src/types.ts` | 共有型 |
 | `scripts/check.ts` | `npm run check` の実体（Slack への疎通確認） |
 | `scripts/start.cmd` / `start.ps1` | 起動スクリプト |

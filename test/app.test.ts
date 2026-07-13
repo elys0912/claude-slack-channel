@@ -43,7 +43,7 @@ interface Harness {
 async function startHarness(
   access: ParsedAccess = ACCESS,
   replyTimeoutMs?: number,
-  extra: Pick<BridgeAppOptions, 'console' | 'allowExtraFile' | 'denyFiles' | 'home'> = {}
+  extra: Pick<BridgeAppOptions, 'console' | 'allowExtraFile' | 'denyFiles' | 'home' | 'hookInboxFile' | 'hookPollMs'> = {}
 ): Promise<Harness> {
   const web = makeWeb();
   const socket = makeSocket();
@@ -949,5 +949,74 @@ describe('ホームタブ', () => {
     await h.stop();
     expect(publishes().map((p) => p.args.user_id)).toEqual(ACCESS.allowFrom);
     expect(JSON.stringify(publishes()[0]?.args.view)).toContain('停止中');
+  });
+});
+
+describe('hook の記録（hooks.jsonl）からの知らせ', () => {
+  let h: Harness;
+  let dir: string;
+  let file: string;
+  const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const posts = () => h.web.calls.filter((c) => c.method === 'chat.postMessage');
+  const hookLine = (fields: Record<string, unknown>) => JSON.stringify({ at: Date.now(), session_id: 's1', ...fields }) + '\n';
+
+  beforeEach(async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'app-hooks-'));
+    file = path.join(dir, 'hooks.jsonl');
+    h = await startHarness(ACCESS, undefined, {
+      hookInboxFile: file,
+      hookPollMs: 20,
+      console: { read: async () => '', sendKeys: async () => undefined },
+    });
+  });
+
+  afterEach(async () => {
+    await h.client.close();
+    await h.stop();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('ターミナル側の許可待ちは、画面を確認するボタン付きで許可ユーザー全員の DM に出す', async () => {
+    fs.appendFileSync(file, hookLine({ hook_event_name: 'Notification', notification_type: 'permission_prompt', message: 'needs permission' }));
+    await wait(60);
+
+    expect(posts().map((p) => p.args.channel)).toEqual([DM1, DM2]);
+    expect(String(posts()[0]?.args.text)).toContain('ターミナル側で入力待ち');
+    const blocks = posts()[0]?.args.blocks as { type: string; elements?: { action_id: string }[] }[];
+    expect(blocks.at(-1)?.elements?.[0]?.action_id).toBe('screen_show');
+  });
+
+  it('話しかけられた後は、そのスレッドに出す', async () => {
+    h.socket.emit('slack_event', dmEnvelope('hello', { ts: '70.1' }));
+    await flush();
+    h.web.calls.length = 0;
+    fs.appendFileSync(file, hookLine({ hook_event_name: 'StopFailure', error: 'rate_limit' }));
+    await wait(60);
+
+    expect(posts()).toHaveLength(1);
+    expect(posts()[0]?.args).toMatchObject({ channel: DM1, thread_ts: '70.1' });
+    expect(String(posts()[0]?.args.text)).toContain('使用量の上限');
+  });
+
+  it('Slack に中継中の許可があるときは、ターミナル側の許可待ちを重ねて知らせない', async () => {
+    await sendPermissionRequest(h.client);
+    h.web.calls.length = 0;
+    fs.appendFileSync(file, hookLine({ hook_event_name: 'Notification', notification_type: 'permission_prompt' }));
+    await wait(60);
+    expect(posts()).toEqual([]);
+  });
+
+  it('Stop は Slack への返事が無いときだけ知らせる', async () => {
+    fs.appendFileSync(file, hookLine({ hook_event_name: 'Stop' }));
+    await wait(60);
+    expect(posts()).toEqual([]);
+
+    h.socket.emit('slack_event', dmEnvelope('hello', { ts: '71.1' }));
+    await flush();
+    h.web.calls.length = 0;
+    fs.appendFileSync(file, hookLine({ hook_event_name: 'Stop' }));
+    await wait(60);
+    expect(posts()).toHaveLength(1);
+    expect(String(posts()[0]?.args.text)).toContain('返事をしないまま');
   });
 });
