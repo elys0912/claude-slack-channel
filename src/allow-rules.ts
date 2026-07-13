@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { PermissionRequest } from './permission.js';
 import { stripBom } from './text.js';
+import { errMessage } from './errors.js';
 
 const SHELL_TOOLS = new Set(['Bash', 'PowerShell']);
 /** ファイル編集はルールで恒久許可せず、許可モード（acceptEdits など）で扱う */
@@ -161,12 +162,22 @@ export function proposeRule(req: PermissionRequest, deny: readonly string[]): Ru
   return derived;
 }
 
-/** JSON ファイルを読む（BOM 付きでも可）。読めない・JSON でないときは undefined */
+/**
+ * JSON ファイルを読む（BOM 付きでも可）。ファイルが無ければ undefined。
+ * 読めない・JSON でないときは投げる（壊れたファイルを「空」と取り違えて、deny の照合抜けや既存ルールの消失を起こさないため）
+ */
 function readJson(file: string): unknown {
+  let text: string;
   try {
-    return JSON.parse(stripBom(fs.readFileSync(file, 'utf8'))) as unknown;
-  } catch {
-    return undefined;
+    text = fs.readFileSync(file, 'utf8');
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    throw new Error(`${file} を読めない: ${errMessage(e)}`, { cause: e });
+  }
+  try {
+    return JSON.parse(stripBom(text)) as unknown;
+  } catch (e) {
+    throw new Error(`${file} の JSON 構文が不正: ${errMessage(e)}`, { cause: e });
   }
 }
 
@@ -175,7 +186,7 @@ function stringsOf(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string') : [];
 }
 
-/** 設定ファイル（Claude Code の settings JSON）の permissions.deny を読む。読めなければ空 */
+/** 設定ファイル（Claude Code の settings JSON）の permissions.deny を読む。ファイルが無ければ空、読めない・JSON でなければ投げる */
 export function readDeny(file: string): string[] {
   return stringsOf((readJson(file) as { permissions?: { deny?: unknown } } | undefined)?.permissions?.deny);
 }
@@ -188,24 +199,34 @@ export class AllowRuleStore {
     this.file = file;
   }
 
+  /** 保存済みのルール。ファイルが無い・読めないときは空（表示用。書き換えには read を使う） */
   list(): string[] {
-    return stringsOf((readJson(this.file) as { allow?: unknown } | undefined)?.allow);
+    try {
+      return this.read();
+    } catch {
+      return [];
+    }
   }
 
-  /** 追加する。既にあれば false */
+  /** 追加する。既にあれば false。ファイルが読めない・JSON でなければ投げる（既存のルールを消さないため） */
   add(rule: string): boolean {
-    const rules = this.list();
+    const rules = this.read();
     if (rules.includes(rule)) return false;
     this.write([...rules, rule]);
     return true;
   }
 
-  /** 消す。無ければ false */
+  /** 消す。無ければ false。ファイルが読めない・JSON でなければ投げる */
   remove(rule: string): boolean {
-    const rules = this.list();
+    const rules = this.read();
     if (!rules.includes(rule)) return false;
     this.write(rules.filter((r) => r !== rule));
     return true;
+  }
+
+  /** ファイルが無ければ空、読めない・JSON でなければ投げる */
+  private read(): string[] {
+    return stringsOf((readJson(this.file) as { allow?: unknown } | undefined)?.allow);
   }
 
   private write(rules: string[]): void {

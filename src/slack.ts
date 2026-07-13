@@ -230,6 +230,8 @@ export class SlackBridge {
     this.appToken = deps.appToken;
     this.injectedSocket = deps.socket;
     for (const channel of deps.access.channels ?? []) this.allowedChannelIds.add(channel);
+    // SDK のクライアントは引数の型が SlackWebApiLike / SocketClientLike より狭く（各 API 固有の型）、そのままでは代入できない。
+    // 使うメソッドだけに絞った interface で扱うため、ここでだけ型を付け替える（テストはこの interface の偽物を注入する）
     this.web =
       deps.web ??
       (new WebClient(deps.botToken, {

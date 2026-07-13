@@ -1,4 +1,5 @@
 // Slack への送信前にテキストを安全な形へ整える純関数群（I/O なし）
+import { clip } from './text.js';
 
 const BROADCAST_TAG_RE = /<!(channel|here|everyone)>/g;
 const SUBTEAM_TAG_RE = /<!subteam\^([A-Za-z0-9]+)(\|[^>]*)?>/g;
@@ -27,14 +28,14 @@ export const META_VALUE_MAX = 2000;
 
 /**
  * meta のキー・値ルールを適用する（キーは英数字とアンダースコアのみ、値は undefined 除外、
- * 値は META_VALUE_MAX 文字まで。超えた分は切り捨てて末尾を … にする）
+ * 値は META_VALUE_MAX 文字まで。超えた分は切り捨てて末尾を … にする。サロゲートペアの途中では切らない）
  */
 export function sanitizeMeta(meta: Record<string, string | undefined>): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [key, value] of Object.entries(meta)) {
     if (value === undefined) continue;
     if (!META_KEY_RE.test(key)) continue;
-    out[key] = value.length > META_VALUE_MAX ? value.slice(0, META_VALUE_MAX - 1) + '…' : value;
+    out[key] = clip(value, META_VALUE_MAX);
   }
   return out;
 }

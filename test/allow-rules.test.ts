@@ -102,13 +102,23 @@ describe('readDeny / AllowRuleStore', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  it('settings の permissions.deny を読む（無い・壊れていれば空）', () => {
+  it('settings の permissions.deny を読む（無ければ空、壊れていれば投げる）', () => {
     const file = path.join(dir, 's.json');
     fs.writeFileSync(file, '\uFEFF' + JSON.stringify({ permissions: { deny: ['Read(.env)', 1] } }));
     expect(readDeny(file)).toEqual(['Read(.env)']);
     expect(readDeny(path.join(dir, 'none.json'))).toEqual([]);
     fs.writeFileSync(file, '{ broken');
-    expect(readDeny(file)).toEqual([]);
+    expect(() => readDeny(file)).toThrow('JSON 構文が不正');
+  });
+
+  it('壊れた allow-extra.json は一覧では空扱いにし、追加・削除は投げて上書きしない', () => {
+    const file = path.join(dir, 'allow-extra.json');
+    fs.writeFileSync(file, '{ broken');
+    const store = new AllowRuleStore(file);
+    expect(store.list()).toEqual([]);
+    expect(() => store.add('WebFetch')).toThrow('JSON 構文が不正');
+    expect(() => store.remove('WebFetch')).toThrow('JSON 構文が不正');
+    expect(fs.readFileSync(file, 'utf8')).toBe('{ broken');
   });
 
   it('追加・重複・削除', () => {
