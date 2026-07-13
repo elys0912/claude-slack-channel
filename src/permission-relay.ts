@@ -88,21 +88,7 @@ export class PermissionRelay {
     this.startExpiryTimer(req.request_id);
 
     const { text, blocks } = buildPermissionBlocks(req);
-    const target = this.lastThread;
-    if (target) {
-      try {
-        const res = await this.slack.postBlocks(target.channel, text, blocks, target.threadTs);
-        if (res.ts !== '') {
-          this.posted.set(req.request_id, [{ channel: target.channel, ts: res.ts }]);
-          this.logger.info(
-            `permission_request をスレッドに返信 id=${req.request_id} tool=${req.tool_name} channel=${target.channel}`
-          );
-          return;
-        }
-      } catch (e) {
-        this.logger.warn(`permission_request のスレッド返信に失敗、DM に配信する channel=${target.channel}`, e);
-      }
-    }
+    if (await this.replyToLastThread(req, text, blocks)) return;
 
     let results: MessageRef[] = [];
     try {
@@ -121,6 +107,22 @@ export class PermissionRelay {
     this.logger.info(
       `permission_request を配信 id=${req.request_id} tool=${req.tool_name} 成功=${delivered.length}/${results.length}`
     );
+  }
+
+  /** 最後に話しかけられたスレッドに返信する。まだ話しかけられていない・投稿に失敗した・ts が返らなかったら false */
+  private async replyToLastThread(req: PermissionRequest, text: string, blocks: unknown[]): Promise<boolean> {
+    const target = this.lastThread;
+    if (!target) return false;
+    try {
+      const res = await this.slack.postBlocks(target.channel, text, blocks, target.threadTs);
+      if (res.ts === '') return false;
+      this.posted.set(req.request_id, [{ channel: target.channel, ts: res.ts }]);
+      this.logger.info(`permission_request をスレッドに返信 id=${req.request_id} tool=${req.tool_name} channel=${target.channel}`);
+      return true;
+    } catch (e) {
+      this.logger.warn(`permission_request のスレッド返信に失敗、DM に配信する channel=${target.channel}`, e);
+      return false;
+    }
   }
 
   /**

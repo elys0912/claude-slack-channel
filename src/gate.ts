@@ -165,14 +165,18 @@ export function gate(
     return { kind: 'verdict', verdict };
   }
 
-  const hasText = text !== undefined && text !== '';
-  // チャンネルでメンションだけの投稿（添付も無い）は、添付の代わりの文言ではなく本文なしとして渡す
-  const content = hasText
-    ? (text as string)
-    : inChannel && (msg.files?.length ?? 0) === 0
-      ? '(本文なし)'
-      : attachmentPlaceholder(msg.files);
+  return { kind: 'deliver', content: contentOf(text, msg.files, inChannel), meta: buildMeta(msg) };
+}
 
+/** Claude に渡す本文。本文が空なら添付の代わりの文言、チャンネルでメンションだけの投稿（添付も無い）なら本文なしの文言 */
+function contentOf(text: string | undefined, files: FileInfo[] | undefined, inChannel: boolean): string {
+  if (text !== undefined && text !== '') return text;
+  if (inChannel && (files?.length ?? 0) === 0) return '(本文なし)';
+  return attachmentPlaceholder(files);
+}
+
+/** Claude に渡すタグの属性（chat_id / message_id / thread_ts / user_id / ts と、添付があればその要約） */
+function buildMeta(msg: InboundMessage): Record<string, string> {
   const rawMeta: Record<string, string | undefined> = {
     chat_id: msg.channel,
     message_id: msg.ts,
@@ -184,6 +188,5 @@ export function gate(
     rawMeta.attachment_count = String(msg.files.length);
     rawMeta.attachments = buildAttachmentsSummary(msg.files);
   }
-
-  return { kind: 'deliver', content, meta: sanitizeMeta(rawMeta) };
+  return sanitizeMeta(rawMeta);
 }
