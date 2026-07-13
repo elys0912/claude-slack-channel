@@ -115,7 +115,9 @@ export function numberedAction(base: typeof ACTION.SCREEN_PICK | typeof ACTION.R
  * - 空白に見える埋め文字: U+00AD（ソフトハイフン）/ U+115F-1160 / U+17B4-17B5 / U+3164 / U+FFA0
  * - C0・C1 制御文字（タブ・改行・復帰は除く）: U+0000-0008 / U+000B-000C / U+000E-001F / U+007F-009F
  */
+// 制御文字・不可視文字をわざと列挙しているので、それらを禁じる lint は外す
 const INVISIBLE_RE =
+  // eslint-disable-next-line no-control-regex, no-misleading-character-class, no-irregular-whitespace
   /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F­͏؜ᅟᅠ឴឵᠎​-‏‪-‮⁠-⁤⁦-⁩ㅤ﻿ﾠ]/;
 
 function visibleUnit(ch: string): string {
