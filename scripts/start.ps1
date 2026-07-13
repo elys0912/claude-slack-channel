@@ -26,6 +26,13 @@ $ErrorActionPreference = 'Stop'
 $ServerName = 'slackbridge'
 # 状態ディレクトリの既定の場所（%USERPROFILE% からの相対。src/config.ts の DEFAULT_STATE_DIR_RELATIVE と同じ値にすること）
 $DefaultStateDirRelative = '.claude\channels\slack'
+# Slack の !restart が置く印（src/session-control.ts の RESTART_FLAG_FILE と同じ名前にすること）
+$RestartFlagName = 'restart.flag'
+# 起動し直すとき、experimental channels の警告ダイアログを自動で抜けるために画面で探す文字列（正規表現）。
+# ダイアログの文言が変わって抜けられなくなったら、ここを直す（start.ps1 自身が表示する文には含めないこと）
+$DevChannelDialogPattern = 'development channel'
+# ダイアログを待つ最大秒数
+$DevChannelDialogTimeoutSec = 90
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $mainJs = Join-Path $repoRoot 'dist\src\main.js'
@@ -270,16 +277,44 @@ Write-Host "作業ディレクトリ: $projectDir"
 Write-Host "状態ディレクトリ: $stateDir"
 Write-Host "警告ダイアログが出たら 1（I am using this for local development）を選ぶこと"
 
+$restartFlag = Join-Path $stateDir $RestartFlagName
+
 if ($DryRun) {
     Write-Host "[DryRun] 実行されるコマンドライン:"
     Write-Host (Format-CommandLine -Exe $claude -Arguments $claudeArgs)
+    Write-Host "[DryRun] 終了時に $restartFlag があれば、--continue を付けて起動し直す（ダイアログは scripts\dialog-answer.ps1 が答える）"
     exit 0
 }
 
+# --- 起動（Slack の !restart で印が置かれていたら --continue で起動し直す） ------------------
+
+# 前回の残り（起動し直す前に手で止めた等）は捨てる
+Remove-Item -LiteralPath $restartFlag -Force -ErrorAction SilentlyContinue
+
+$resume = $false
 Push-Location $projectDir
 try {
-    & $claude @claudeArgs
-    exit $LASTEXITCODE
+    do {
+        $args = if ($resume) { @('--continue') + $claudeArgs } else { $claudeArgs }
+        if ($resume) {
+            # 手元に人がいない前提なので、警告ダイアログは画面を見張って自動で答える
+            Start-Process -FilePath 'powershell.exe' -NoNewWindow -ArgumentList @(
+                '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+                '-File', (Join-Path $PSScriptRoot 'dialog-answer.ps1'),
+                '-Pattern', $DevChannelDialogPattern, '-TimeoutSec', $DevChannelDialogTimeoutSec
+            ) | Out-Null
+        }
+        & $claude @args
+        $code = $LASTEXITCODE
+        $again = Test-Path -LiteralPath $restartFlag
+        if ($again) {
+            Remove-Item -LiteralPath $restartFlag -Force -ErrorAction SilentlyContinue
+            $resume = $true
+            Write-Host ""
+            Write-Host "[start] Slack からの指示で起動し直す（--continue で会話を引き継ぐ）"
+        }
+    } while ($again)
+    exit $code
 } finally {
     Pop-Location
 }

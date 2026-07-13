@@ -1,0 +1,132 @@
+// Slack からの `!restart` / `!compact`。Claude Code にスラッシュコマンドを送る手段は channel プロトコルに無いので、
+// ターミナルの入力欄に固定のコマンド（/exit・/compact）を打ち込む。自由な文字入力は受け付けない。
+// 再起動は、状態ディレクトリに restart.flag を置いてから /exit を送り、start.ps1 がフラグを見て --continue で起動し直す。
+import fs from 'node:fs';
+import type { ConsoleAccess, ConsoleCommand } from './console.js';
+import type { Logger } from './log.js';
+import { errMessage } from './errors.js';
+import { hasEmptyPrompt } from './screen.js';
+import type { ThreadRef } from './types.js';
+
+/** /exit を送ってから、まだ終了していないことを知らせるまでの時間 */
+export const EXIT_CONFIRM_MS = 20000;
+/** 状態ディレクトリに置く再起動の印（scripts/start.ps1 の $RestartFlagName と同じ名前にすること） */
+export const RESTART_FLAG_FILE = 'restart.flag';
+
+export interface SessionSlack {
+  postText(channel: string, text: string, threadTs?: string): Promise<{ ts: string[] }>;
+}
+
+export interface SessionControlOptions {
+  /** ターミナルを操作する手段。無ければ !restart（force 以外）と !compact は使えない */
+  console: ConsoleAccess | undefined;
+  /** start.ps1 が起動し直す印として見るファイル */
+  restartFlagFile: string;
+  slack: SessionSlack;
+  logger: Logger;
+  /** 親プロセス（claude.exe）を止める（`!restart force`）。省略時は process.kill(process.ppid) */
+  killParent?: (() => void) | undefined;
+  /** /exit の後に終了を確かめるまでの時間（テスト用） */
+  exitConfirmMs?: number | undefined;
+}
+
+export class SessionControl {
+  private readonly opts: SessionControlOptions;
+  private confirmTimer: ReturnType<typeof setTimeout> | undefined;
+
+  constructor(opts: SessionControlOptions) {
+    this.opts = opts;
+  }
+
+  /**
+   * 再起動する。restart.flag を置いて /exit を送る（force なら claude.exe を止める）。
+   * Claude Code が終わればこの MCP サーバーも終わり、start.ps1 がフラグを見て起動し直す。投げない
+   */
+  async restart(at: ThreadRef, byUserId: string, force: boolean): Promise<void> {
+    const { logger } = this.opts;
+    try {
+      this.writeFlag();
+    } catch (e) {
+      await this.say(at, `⚠️ 再起動の印（restart.flag）を書けなかった: ${errMessage(e)}`);
+      return;
+    }
+
+    if (force) {
+      logger.warn(`!restart force by=${byUserId}: claude.exe を止める`);
+      await this.say(at, '🔁 Claude Code を強制終了して起動し直す（会話は --continue で引き継ぐ）');
+      try {
+        (this.opts.killParent ?? defaultKillParent)();
+      } catch (e) {
+        await this.say(at, `⚠️ 強制終了に失敗した: ${errMessage(e)}`);
+      }
+      return;
+    }
+
+    const sent = await this.sendCommand(at, 'exit');
+    if (!sent) return;
+    logger.info(`!restart by=${byUserId}: /exit を送った`);
+    await this.say(at, '🔁 /exit を送った。終了したら start.ps1 が --continue で起動し直す（開始の知らせが来るまで待つこと）');
+    this.scheduleExitCheck(at);
+  }
+
+  /** /compact を送る。投げない */
+  async compact(at: ThreadRef, byUserId: string): Promise<void> {
+    const sent = await this.sendCommand(at, 'compact');
+    if (!sent) return;
+    this.opts.logger.info(`!compact by=${byUserId}: /compact を送った`);
+    await this.say(at, '🧹 /compact を送った。終わると「会話を圧縮した」の知らせが来る');
+  }
+
+  stop(): void {
+    if (this.confirmTimer !== undefined) clearTimeout(this.confirmTimer);
+    this.confirmTimer = undefined;
+  }
+
+  /** 画面が空の入力欄で待っているときだけコマンドを送る。送れたら true */
+  private async sendCommand(at: ThreadRef, command: ConsoleCommand): Promise<boolean> {
+    const console = this.opts.console;
+    if (!console) {
+      await this.say(at, `⚠️ このブリッジからはターミナルを操作できないので /${command} は送れない（!restart force なら強制終了できる）`);
+      return false;
+    }
+    try {
+      const screen = await console.read();
+      if (!hasEmptyPrompt(screen)) {
+        await this.say(at, `⚠️ ターミナルが入力待ちでない（応答中・選択画面・打ちかけの文字がある）ので /${command} は送らなかった。!screen で確認すること`);
+        return false;
+      }
+      await console.sendCommand(command);
+      return true;
+    } catch (e) {
+      this.opts.logger.warn(`/${command} の送信に失敗`, e);
+      await this.say(at, `⚠️ /${command} を送れなかった: ${errMessage(e)}`);
+      return false;
+    }
+  }
+
+  private scheduleExitCheck(at: ThreadRef): void {
+    this.stop();
+    // このプロセスがまだ動いていれば、Claude Code は終了していない
+    this.confirmTimer = setTimeout(() => {
+      this.confirmTimer = undefined;
+      void this.say(at, '⚠️ /exit を送ったが、まだ終了していない。!screen で画面を確認するか、!restart force で強制終了すること');
+    }, this.opts.exitConfirmMs ?? EXIT_CONFIRM_MS);
+    this.confirmTimer.unref?.();
+  }
+
+  private writeFlag(): void {
+    fs.writeFileSync(this.opts.restartFlagFile, JSON.stringify({ at: new Date().toISOString() }) + '\n');
+  }
+
+  private async say(at: ThreadRef, text: string): Promise<void> {
+    try {
+      await this.opts.slack.postText(at.channel, text, at.threadTs);
+    } catch (e) {
+      this.opts.logger.warn('再起動・圧縮の知らせの投稿に失敗', e);
+    }
+  }
+}
+
+function defaultKillParent(): void {
+  process.kill(process.ppid);
+}
