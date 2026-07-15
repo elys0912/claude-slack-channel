@@ -84,6 +84,29 @@ describe('SessionControl', () => {
     screen = '❯ git sta';
     await s.restart(AT, 'U1', false);
     expect(commands).toEqual([]);
+    // 送らなかったので、後で手元で終了しても起動し直さないよう印は残さない
+    expect(fs.existsSync(flag)).toBe(false);
+  });
+
+  it('restart: /exit の送信に失敗したら印を消す', async () => {
+    await make(fakeConsole({ fail: true })).restart(AT, 'U1', false);
+    expect(posted[0]).toContain('送れなかった');
+    expect(fs.existsSync(flag)).toBe(false);
+  });
+
+  it('restart: 強制終了に失敗したら印を消す', async () => {
+    const s = new SessionControl({
+      console: undefined,
+      restartFlagFile: flag,
+      slack: { postText: async (_c, text) => ({ ts: [String(posted.push(text))] }) },
+      logger: new Logger({ stderr: false }),
+      killParent: () => {
+        throw new Error('EPERM');
+      },
+    });
+    await s.restart(AT, 'U1', true);
+    expect(posted.at(-1)).toContain('強制終了に失敗した');
+    expect(fs.existsSync(flag)).toBe(false);
   });
 
   it('restart: console が無ければ force を案内する。force は console が無くても止める', async () => {
@@ -91,6 +114,7 @@ describe('SessionControl', () => {
     await s.restart(AT, 'U1', false);
     expect(posted[0]).toContain('!restart force');
     expect(killed).toBe(0);
+    expect(fs.existsSync(flag)).toBe(false);
 
     await s.restart(AT, 'U1', true);
     expect(killed).toBe(1);
