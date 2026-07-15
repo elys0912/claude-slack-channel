@@ -110,8 +110,11 @@ export function keysToSelect(cursor: number, target: number): ConsoleKey[] {
   return keys;
 }
 
-/** 入力欄の行（`❯ ` / `> ` だけで、まだ何も打っていない） */
-const EMPTY_PROMPT_RE = /^\s*[❯>]\s*$/;
+/**
+ * 入力欄の行で、まだ何も打っていないもの。`❯ ` / `> ` だけの行か、起動直後に薄く出る入力例
+ * （`> Try "how do I log an error?"`。記号の後ろはノーブレークスペース）の行
+ */
+const EMPTY_PROMPT_RE = /^\s*[❯>](?:\s*|[\s\u00a0]+Try "[^"]*")$/;
 /** 入力欄を探す画面の末尾の行数 */
 const PROMPT_LOOKBACK = 8;
 
