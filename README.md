@@ -281,6 +281,9 @@ Claude Code を起動したいプロジェクトを並べる（`projects.json` �
 
 - ルールは確認の中身から作る（自由な入力は受け付けない）。
   - Bash / PowerShell: コマンドの先頭の語をプレフィックスにする（`git` / `npm` などはサブコマンドまで。例: `Bash(git status:*)`）
+  - Read / Grep / Glob: 対象のフォルダー以下の `Read`（例: `C:\dev\foo\a.ts` を読んだら `Read(//c/dev/foo/**)`。Grep / Glob は `path` のフォルダー）
+  - Edit / Write / MultiEdit / NotebookEdit: 対象のフォルダー以下の `Edit`（例: `Edit(//c/dev/foo/**)`）。
+    Claude Code がパスで照合するのは `Read(path)` と `Edit(path)` だけなので、この 2 つで作る（`Edit` は書き換え系のツール全部に、`Read` は Grep / Glob にも効く）
   - それ以外のツール: ツール名だけ（例: `WebFetch`）
 - 次のものは作らず、理由をスレッドで知らせる。ROE 違反につき却下よ。
   - 複数のコマンドをつないだもの・リダイレクトを含むもの
@@ -288,9 +291,14 @@ Claude Code を起動したいプロジェクトを並べる（`projects.json` �
     エージェントの CLI（`claude` / `codex` / `gemini` など。別のエージェントに確認なしで操作させられるため）、
     `git push` / `reset` / `clean` などの破壊的な操作、スクリプトを実行する操作（`npm test` / `npm run` / `dotnet run` など。
     ファイル編集が確認なしだと、スクリプトを書き換えてから実行できるため）、読み取り系（`Get` / `Test` / `Select` など）以外の PowerShell コマンドレット
-  - ファイル編集（Write / Edit など。許可モードで扱う）
-- **deny に当たるものは追加しない**。`channel-settings.json` と作業フォルダーの `.claude/settings.json` / `settings.local.json` の deny と
-  範囲が重なる（どちらかがもう一方を含む）ときは、「deny に当たるので追加しない」と当たった deny をスレッドで知らせる。
+  - パスを取るツールで、パスが読み取れない・相対パス・`..` や gitignore の特殊文字（`* ? [ ] ! # { }`）を含む・浅すぎる（`C:\` や `C:\dev` 直下）・
+    ホームフォルダーそのものかその親、のもの（範囲が広すぎるか、意図と違う範囲になりうるため）
+- **deny に当たるものは追加しない**。`channel-settings.json` と作業フォルダーの `.claude/settings.json` / `settings.local.json` の deny と照合し、
+  当たったら「deny に当たるので追加しない」と当たった deny をスレッドで知らせる。
+  - Bash / PowerShell などは、範囲が重なる（どちらかがもう一方を含む）と当たり。
+  - フォルダー以下の `Read` / `Edit` は、そのフォルダーが deny の範囲に**丸ごと入る**とき（ツール全体の deny、同じか親のフォルダー以下全部の deny）だけ当たり。
+    `Read(.env)` や `Read(~/.ssh/*)` のように一部だけ重なる deny では断らない。Claude Code は allow より deny を優先するので、追加しても `.env` などは読めないまま。
+    deny の `./path` と `/path` は作業フォルダー基準、`~/path` はホームフォルダー基準とみなして照合する。
   確認の後、追加する直前にも deny を読み直して照合するわ。
 - `!rules` と送ると追加分のルールを一覧して、🗑 ボタンで消せる（次に起動し直したときから反映）。
 - 追加・削除はログ（`許可リストに追加` / `許可リストから削除`）に残る。
