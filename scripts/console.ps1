@@ -1,20 +1,23 @@
 ﻿# claude-slack-channel: 自分が属するコンソールの画面を読む・選択キーを送る
 #
-# ブリッジ（node）が子プロセスとして起動する。ブリッジは Claude Code と同じコンソールを継承しているので、
-# このスクリプトも同じコンソールの CONOUT$ / CONIN$ をそのまま開ける（AttachConsole は使わない）。
+# ブリッジ（node）が子プロセスとして起動する。Claude Code は MCP サーバーを別のコンソールで起動することがあるので、
+# ブリッジは -TargetPid に claude.exe の pid を渡し、このスクリプトはそのコンソールに付け直してから CONOUT$ / CONIN$ を開く。
+# 付け直せなければ自分のコンソールのまま使う。dialog-answer.ps1 は claude.exe と同じコンソールで動くので -TargetPid を渡さない。
 # 結果は標準出力（パイプ）にだけ書き、コンソールには何も書かない（Claude Code の画面を崩さないため）。
 #
 # 使い方:
 #   console.ps1 -Mode read                     表示中の範囲の文字を UTF-8 で標準出力に書く
 #   console.ps1 -Mode keys -Keys Down,Enter    キーを順に送る（Up / Down / Enter / Digit1 のみ）
 #   console.ps1 -Mode command -Command exit    固定のスラッシュコマンド（/exit か /compact）を打って Enter を送る
+#   -TargetPid <pid>                           そのプロセスのコンソールに付け直してから操作する
 
 param(
     [Parameter(Mandatory)][ValidateSet('read', 'keys', 'command')][string]$Mode,
     # カンマ区切りの文字列で受ける。powershell.exe -File で渡すと配列にならず "Down,Enter" が 1 つの値として届くため、
     # [string[]] + ValidateSet では複数キーが弾かれる。分割と許可一覧との照合はこの下で行う
     [string]$Keys = '',
-    [ValidateSet('exit', 'compact')][string]$Command
+    [ValidateSet('exit', 'compact')][string]$Command,
+    [int]$TargetPid = 0
 )
 
 $ErrorActionPreference = 'Stop'
@@ -72,6 +75,22 @@ public static class SlackChannelConsole {
     [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
     static extern bool WriteConsoleInput(IntPtr h, INPUT_RECORD[] recs, uint n, out uint written);
 
+    [DllImport("kernel32.dll", SetLastError = true)] static extern bool FreeConsole();
+    [DllImport("kernel32.dll", SetLastError = true)] static extern bool AttachConsole(uint pid);
+    const uint ATTACH_PARENT_PROCESS = 0xFFFFFFFF;
+
+    // pid のプロセスのコンソールに付け直す。付けられなければ親（ブリッジ）のコンソールに戻して false を返す。
+    // 標準入出力はパイプなので、付け直しても結果の受け渡しには影響しない
+    public static bool AttachTo(int pid) {
+        FreeConsole();
+        if (AttachConsole((uint)pid)) return true;
+        int error = Marshal.GetLastWin32Error();
+        AttachConsole(ATTACH_PARENT_PROCESS);
+        LastAttachError = error;
+        return false;
+    }
+    public static int LastAttachError;
+
     const uint GENERIC_READ = 0x80000000, GENERIC_WRITE = 0x40000000, SHARE_RW = 3, OPEN_EXISTING = 3;
     static readonly IntPtr INVALID = new IntPtr(-1);
 
@@ -118,6 +137,10 @@ public static class SlackChannelConsole {
     }
 }
 '@
+
+if ($TargetPid -gt 0 -and -not [SlackChannelConsole]::AttachTo($TargetPid)) {
+    [Console]::Error.WriteLine("pid=$TargetPid のコンソールに付けられなかったので、自分のコンソールを使う error=$([SlackChannelConsole]::LastAttachError)")
+}
 
 if ($Mode -eq 'read') {
     [Console]::Out.Write([SlackChannelConsole]::ReadScreen())

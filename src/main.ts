@@ -138,7 +138,8 @@ function consoleAccess(logger: Logger): PowerShellConsole | undefined {
     logger.warn('scripts/console.ps1 が見つからないので、!screen と画面のボタンは使えない');
     return undefined;
   }
-  return new PowerShellConsole(script);
+  // ブリッジの親は claude.exe（MCP サーバーとして起動される）。そのコンソールの画面を操作する
+  return new PowerShellConsole(script, process.ppid);
 }
 
 // --- 終了処理 -------------------------------------------------------------------
