@@ -603,6 +603,8 @@ npm run check        # precheck（npm run build）のあと dist/scripts/check.j
 
 テストは 3 段階。1 と 2 は `npm test` でまとめて走る。3 は手作業。
 
+main への push と pull request では、GitHub Actions（`.github/workflows/ci.yml`）が windows-latest と ubuntu-latest の両方で `npm run typecheck`・`npm test`・`npm run lint` を走らせる。
+
 1. **単体テスト**：純関数とクラス単体を確かめる。
    - 対象：`gate` / `format` / `chunk` / `permission` / `screen` / `home` / `allow-rules` / `config` など。
    - I/O は使わないか、一時フォルダーだけを使う。
