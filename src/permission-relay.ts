@@ -14,6 +14,10 @@ import {
   buildVerdictFailedBlocks,
 } from './permission.js';
 import type { PermissionRequest } from './permission.js';
+import type { SessionAllowAll } from './session-allow.js';
+
+/** 自動許可をスレッドに記録するとき、入力を載せる長さ */
+const AUTO_ALLOW_PREVIEW_MAX = 300;
 
 interface MessageRef {
   channel: string;
@@ -52,12 +56,21 @@ export class PermissionRelay {
    * 回答を送ったら消す（期限切れのあとに押されたボタンなど、送らなかった回答では消さない）。
    */
   private readonly expiryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** 「このセッション中は全部許可」（.env で有効にしたボットだけ）。無ければボタンも出さない */
+  private readonly sessionAllow: SessionAllowAll | undefined;
 
-  constructor(slack: RelaySlack, claude: RelayClaude, logger: Logger, pending = new PendingPermissions()) {
+  constructor(
+    slack: RelaySlack,
+    claude: RelayClaude,
+    logger: Logger,
+    pending = new PendingPermissions(),
+    sessionAllow?: SessionAllowAll
+  ) {
     this.slack = slack;
     this.claude = claude;
     this.logger = logger;
     this.pending = pending;
+    this.sessionAllow = sessionAllow;
   }
 
   /** 会話中のスレッドを覚えておく。次の permission request はそこに返信される */
@@ -94,10 +107,11 @@ export class PermissionRelay {
       this.logger.warn(`保留中の permission_request と同じ ID が届いたので無視する id=${req.request_id}`);
       return;
     }
+    if (await this.tryAutoAllow(req)) return;
     this.pending.add(req);
     this.startExpiryTimer(req.request_id);
 
-    const { text, blocks } = buildPermissionBlocks(req);
+    const { text, blocks } = buildPermissionBlocks(req, undefined, this.sessionAllow !== undefined && this.sessionAllow.current === undefined);
     if (await this.replyToLastThread(req, text, blocks)) return;
 
     let results: MessageRef[] = [];
@@ -117,6 +131,39 @@ export class PermissionRelay {
     this.logger.info(
       `permission_request を配信 id=${req.request_id} tool=${req.tool_name} 成功=${delivered.length}/${results.length}`
     );
+  }
+
+  /**
+   * 「このセッション中は全部許可」が有効で、settings の ask に当たらなければ、ボタンを出さずに allow を返し、スレッドに記録する。
+   * 自動で許可したら true。送れなかったら false を返し、通常どおりボタンで聞く
+   */
+  private async tryAutoAllow(req: PermissionRequest): Promise<boolean> {
+    if (!this.sessionAllow?.current) return false;
+    const result = this.sessionAllow.check(req);
+    if (!result.allow) {
+      this.logger.info(`全部許可中だが確認する id=${req.request_id} tool=${req.tool_name} 当たったルール=${result.rule ?? '-'}`);
+      return false;
+    }
+    try {
+      await this.claude.sendVerdict({ requestId: req.request_id, behavior: 'allow' });
+    } catch (e) {
+      this.logger.error(`自動許可の送信に失敗 id=${req.request_id}`, e);
+      return false;
+    }
+    this.logger.info(`自動許可（全部許可中） id=${req.request_id} tool=${req.tool_name}`);
+    const target = this.lastThreadRef;
+    if (target) {
+      const preview = req.input_preview.length > AUTO_ALLOW_PREVIEW_MAX ? `${req.input_preview.slice(0, AUTO_ALLOW_PREVIEW_MAX)}…` : req.input_preview;
+      const text = `🔓 自動許可: ${req.tool_name}\n${preview}`;
+      try {
+        await this.slack.postBlocks(target.channel, `🔓 自動許可: ${req.tool_name}`, [
+          { type: 'context', elements: [{ type: 'plain_text', text: text.slice(0, 2900) }] },
+        ], target.threadTs);
+      } catch (e) {
+        this.logger.warn('自動許可の記録の投稿に失敗', e);
+      }
+    }
+    return true;
   }
 
   /** 最後に話しかけられたスレッドに返信する。まだ話しかけられていない・投稿に失敗した・ts が返らなかったら false */

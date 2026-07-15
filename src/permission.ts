@@ -94,6 +94,7 @@ const DEFAULT_PREVIEW_LIMIT = 2800;
 export const ACTION = {
   ALLOW: 'perm_allow',
   ALLOW_ALWAYS: 'perm_always',
+  ALLOW_SESSION: 'perm_session',
   DENY: 'perm_deny',
   SEE_MORE: 'perm_more',
   SCREEN_SHOW: 'screen_show',
@@ -220,7 +221,9 @@ function orPlaceholder(text: string, placeholder: string): string {
  */
 export function buildPermissionBlocks(
   req: PermissionRequest,
-  previewLimit: number = DEFAULT_PREVIEW_LIMIT
+  previewLimit: number = DEFAULT_PREVIEW_LIMIT,
+  /** 「このセッション中は全部許可」ボタンを付けるか */
+  sessionButton = false
 ): { text: string; blocks: unknown[]; truncated: boolean } {
   const toolLabel = 'Tool: ';
   const toolNameResult = truncatePlain(orPlaceholder(req.tool_name, '(不明なツール)'), PLAIN_TEXT_LIMIT - toolLabel.length);
@@ -261,6 +264,7 @@ export function buildPermissionBlocks(
       elements: [
         button('Allow', ACTION.ALLOW, req.request_id, 'primary'),
         button('♾ 今後も許可', ACTION.ALLOW_ALWAYS, req.request_id),
+        ...(sessionButton ? [button('🔓 このセッション中は全部許可', ACTION.ALLOW_SESSION, req.request_id)] : []),
         button('Deny', ACTION.DENY, req.request_id, 'danger'),
         // 省略した部分があるときだけ、全文を出すボタンを付ける
         ...(truncated ? [button('See more', ACTION.SEE_MORE, req.request_id)] : [])
@@ -356,6 +360,8 @@ export type ActionParse =
   | { ok: true; kind: 'see_more'; requestId: string }
   /** 今回は許可し、同じ種類の操作を許可リストに足す提案を出す */
   | { ok: true; kind: 'allow_always'; requestId: string }
+  /** 今回は許可し、このセッション中は settings の ask / deny 以外を自動で許可する */
+  | { ok: true; kind: 'allow_session'; requestId: string }
   /** ターミナルの画面を確認する */
   | { ok: true; kind: 'screen_show' }
   /** 画面の選択肢を選ぶ（snapshotId は画面を見せたときの控え） */
@@ -438,6 +444,8 @@ export function parseBlockAction(
       return { ok: true, kind: 'see_more', requestId: input.value };
     case ACTION.ALLOW_ALWAYS:
       return { ok: true, kind: 'allow_always', requestId: input.value };
+    case ACTION.ALLOW_SESSION:
+      return { ok: true, kind: 'allow_session', requestId: input.value };
     default:
       return { ok: false, reason: 'unknown_action' };
   }

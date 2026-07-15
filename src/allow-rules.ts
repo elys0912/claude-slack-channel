@@ -139,7 +139,7 @@ function derivePathRule(req: PermissionRequest, spec: { ruleTool: 'Read' | 'Edit
 }
 
 /** a が b と同じか、b の親（祖先）フォルダーか（大文字小文字は区別しない） */
-function isSameOrAncestor(a: string, b: string): boolean {
+export function isSameOrAncestor(a: string, b: string): boolean {
   const x = segmentsOf(a.toLowerCase());
   const y = segmentsOf(b.toLowerCase());
   return x.length <= y.length && x.every((seg, i) => seg === y[i]);
@@ -234,7 +234,7 @@ function defaultContext(): DenyContext {
  * `//x/**`・`~/x/**`・`./x/**`・`x/y/**`・`/x/**`（作業フォルダー基準とみなす）と、末尾に `/**` の無い同じ形のフォルダー名を扱う。
  * ファイル名だけのもの（`.env`）や途中にワイルドカードがあるもの（`**\/secret/*`）は、フォルダー全体を指さないので undefined
  */
-function denyDirOf(body: string, ctx: DenyContext): string | undefined {
+export function denyDirOf(body: string, ctx: DenyContext): string | undefined {
   // 末尾の /** と /*（直下だけ）はどちらもそのフォルダーとみなす（断る側に倒す）
   const pattern = body.replace(/\/\*{1,2}$/, '').replace(/\/+$/, '');
   if (pattern === '' || GLOB_CHARS_RE.test(pattern)) return undefined;
@@ -325,6 +325,11 @@ function stringsOf(value: unknown): string[] {
 /** 設定ファイル（Claude Code の settings JSON）の permissions.deny を読む。ファイルが無ければ空、読めない・JSON でなければ投げる */
 export function readDeny(file: string): string[] {
   return stringsOf((readJson(file) as { permissions?: { deny?: unknown } } | undefined)?.permissions?.deny);
+}
+
+/** 設定ファイルの permissions.ask を読む。ファイルが無ければ空、読めない・JSON でなければ投げる */
+export function readAsk(file: string): string[] {
+  return stringsOf((readJson(file) as { permissions?: { ask?: unknown } } | undefined)?.permissions?.ask);
 }
 
 /** 追加分のルール（状態ディレクトリの allow-extra.json）。start.ps1 が起動時に channel-settings.json の allow へ足す */

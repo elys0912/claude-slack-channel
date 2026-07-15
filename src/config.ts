@@ -72,6 +72,8 @@ export interface Tokens {
    * 設定されているときだけ download_file ツールを出す（files:read スコープが要るため、使うボットだけで有効にする）
    */
   downloadDir?: string;
+  /** .env の SESSION_ALLOW_ALL が on / true / 1 なら、実行許可に「このセッション中は全部許可」ボタンを出す */
+  sessionAllowAll?: boolean;
 }
 
 /**
@@ -99,6 +101,7 @@ export function loadTokens(dir: string): Tokens {
     if (!path.isAbsolute(downloadDir)) throw new Error('DOWNLOAD_DIR は絶対パスで指定する');
     tokens.downloadDir = path.resolve(downloadDir);
   }
+  if (/^(on|true|1)$/i.test(parsed.SESSION_ALLOW_ALL ?? '')) tokens.sessionAllowAll = true;
   return tokens;
 }
 
