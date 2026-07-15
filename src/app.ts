@@ -55,7 +55,7 @@ export type AppRelay = Pick<PermissionRelay, 'answerByText' | 'answerByButton' |
 export type AppWatchdog = Pick<ResponseWatchdog, 'delivered'>;
 export type AppScreen = Pick<ScreenRelay, 'show' | 'pick'>;
 export type AppRules = Pick<RuleRelay, 'propose' | 'confirm' | 'list' | 'remove'>;
-export type AppSession = Pick<SessionControl, 'restart' | 'compact'>;
+export type AppSession = Pick<SessionControl, 'restart' | 'compact' | 'clear'>;
 
 export interface Wiring {
   bridge: AppBridge;
@@ -69,12 +69,27 @@ export interface Wiring {
   rules?: AppRules | undefined;
   /** `!status` の文面。無ければ !status は使えない */
   status?: (() => string) | undefined;
-  /** `!restart` / `!compact`。無ければ使えない */
+  /** `!restart` / `!compact` / `!clear`。無ければ使えない */
   session?: AppSession | undefined;
 }
 
 /** Claude に渡さず、ブリッジ自身が処理するコマンド（`!restart force` だけ引数を取る） */
-const COMMAND_RE = /^\s*!(screen|rules|status|restart(?:\s+force)?|compact)\s*$/i;
+const COMMAND_RE = /^\s*!(help|screen|rules|status|restart(?:\s+force)?|compact|clear)\s*$/i;
+
+/** `!help` の文面。Slack では `/` で始まる文は Slack のコマンドとして扱われ Claude Code まで届かないので、その案内も添える */
+export const HELP_TEXT = [
+  '📖 ブリッジのコマンド（Claude には渡さず、ブリッジが処理する。Claude が止まっていても使える）',
+  '• `!help` … この一覧',
+  '• `!status` … ブリッジの稼働状態',
+  '• `!screen` … ターミナルの画面を見る（選択画面ならボタンで選べる）',
+  '• `!rules` … Slack から足した許可ルールの一覧と削除',
+  '• `!compact` … /compact を送る（会話を要約して縮める）',
+  '• `!clear` … /clear を送る（会話を捨てて新しい会話にする）',
+  '• `!restart` … /exit を送って起動し直す（会話は --continue で引き継ぐ）',
+  '• `!restart force` … Claude Code を強制終了して起動し直す（応答しないとき用）',
+  '',
+  '`/` で始まる文は Slack のコマンドとして扱われ、Claude Code には届かない。スラッシュコマンドは上の `!` 版を使うこと。',
+].join('\n');
 
 /**
  * Slack のアプリ（Claude の Slack コネクタなど）が利用者の代わりに投稿したとき、本文の末尾に付く署名
@@ -201,6 +216,9 @@ export async function handleMessage(wiring: Wiring, result: GateResult, raw: Inb
 async function handleCommand({ bridge, screen, rules, status, session }: Wiring, command: string, at: ThreadRef, byUserId: string): Promise<void> {
   const unavailable = (name: string): Promise<unknown> => bridge.postText(at.channel, `⚠️ このブリッジでは ${name} を使えない`, at.threadTs);
   switch (command) {
+    case 'help':
+      await bridge.postText(at.channel, HELP_TEXT, at.threadTs);
+      return;
     case 'screen':
       if (screen) await screen.show(at.channel, at.threadTs);
       else await unavailable('!screen');
@@ -221,6 +239,10 @@ async function handleCommand({ bridge, screen, rules, status, session }: Wiring,
     case 'compact':
       if (session) await session.compact(at, byUserId);
       else await unavailable('!compact');
+      return;
+    case 'clear':
+      if (session) await session.clear(at, byUserId);
+      else await unavailable('!clear');
       return;
     default:
       return;
@@ -367,7 +389,7 @@ export interface BridgeAppOptions {
   hookInboxFile?: string | undefined;
   /** hooks.jsonl を読みに行く間隔（ミリ秒。テスト用。省略時は hook-inbox.ts の既定） */
   hookPollMs?: number | undefined;
-  /** `!restart` が置く印（状態ディレクトリの restart.flag。start.ps1 が見て --continue で起動し直す）。省略時は !restart と !compact を使えない */
+  /** `!restart` が置く印（状態ディレクトリの restart.flag。start.ps1 が見て --continue で起動し直す）。省略時は !restart・!compact・!clear を使えない */
   restartFlagFile?: string | undefined;
   /** `!restart force` で claude.exe を止める手段（テスト用。省略時は親プロセスに process.kill） */
   killParent?: (() => void) | undefined;
@@ -435,7 +457,7 @@ export async function startBridgeApp(opts: BridgeAppOptions): Promise<RunningApp
       })
     : undefined;
 
-  // --- !status / !restart / !compact ----------------------------------------------
+  // --- !status / !restart / !compact / !clear -------------------------------------
   const status = (): string => {
     const waiting = watchdog.waitingSince();
     return buildStatusText({

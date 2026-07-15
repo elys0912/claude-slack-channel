@@ -796,6 +796,8 @@ describe('parseCommand', () => {
   it('コマンドだけの本文を正規化して返す', () => {
     expect(parseCommand('!status')).toBe('status');
     expect(parseCommand('  !RESTART   FORCE ')).toBe('restart force');
+    expect(parseCommand('!clear')).toBe('clear');
+    expect(parseCommand('!Help')).toBe('help');
   });
 
   it('アプリの署名（太字 + メンション）が末尾にあっても認める', () => {
@@ -975,7 +977,7 @@ describe('ホームタブ', () => {
   });
 });
 
-describe('!status / !restart / !compact', () => {
+describe('!status / !restart / !compact / !clear / !help', () => {
   const PROMPT = ['Claude: done.', '', '❯ ', '  ? for shortcuts'].join('\n');
   let h: Harness;
   let dir: string;
@@ -1066,6 +1068,39 @@ describe('!status / !restart / !compact', () => {
 
     expect(commands).toEqual(['compact']);
     expect(fs.existsSync(flag)).toBe(false);
+  });
+
+  it('!clear は /clear を送り、印は置かない', async () => {
+    h.socket.emit('slack_event', dmEnvelope('!clear', { ts: '85.1' }));
+    await flush();
+    await flush();
+
+    expect(h.notifications.filter((x) => x.method === 'notifications/claude/channel')).toEqual([]);
+    expect(commands).toEqual(['clear']);
+    expect(fs.existsSync(flag)).toBe(false);
+    expect(texts().join('\n')).toContain('/clear を送った');
+  });
+
+  it('入力待ちでなければ /clear を送らない', async () => {
+    screen = 'Thinking…\n⠋ Working';
+    h.socket.emit('slack_event', dmEnvelope('!clear', { ts: '85.2' }));
+    await flush();
+    await flush();
+
+    expect(commands).toEqual([]);
+    expect(texts().join('\n')).toContain('入力待ちでない');
+  });
+
+  it('!help は Claude に渡さず、コマンドの一覧をスレッドに返す', async () => {
+    h.socket.emit('slack_event', dmEnvelope('!help', { ts: '86.1' }));
+    await flush();
+
+    expect(h.notifications.filter((x) => x.method === 'notifications/claude/channel')).toEqual([]);
+    expect(posts()[0]?.args).toMatchObject({ channel: DM1, thread_ts: '86.1' });
+    const text = texts()[0] ?? '';
+    for (const c of ['!help', '!status', '!screen', '!rules', '!compact', '!clear', '!restart', '!restart force']) {
+      expect(text).toContain(`\`${c}\``);
+    }
   });
 });
 
