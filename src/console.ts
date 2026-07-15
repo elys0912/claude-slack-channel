@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 /** 送れるキー。自由な文字入力は送らない */
 export type ConsoleKey = 'Up' | 'Down' | 'Enter';
 /** 送れるスラッシュコマンド（固定。console.ps1 側でも同じ一覧に限っている） */
-export type ConsoleCommand = 'exit' | 'compact' | 'clear';
+export type ConsoleCommand = 'exit' | 'compact';
 
 export interface ConsoleAccess {
   /** 表示中の範囲の文字（行末の空白は除く） */
