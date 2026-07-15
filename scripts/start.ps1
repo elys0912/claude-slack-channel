@@ -316,6 +316,12 @@ if ($DryRun) {
 
 # --- 起動（Slack の !restart で印が置かれていたら --continue で起動し直す） ------------------
 
+# Start-Process -ArgumentList に渡す値を、空白を含んでも 1 つの引数として届くよう引用符で囲む
+function Quote-Arg {
+    param([string]$Value)
+    return '"' + $Value + '"'
+}
+
 # 前回の残り（起動し直す前に手で止めた等）は捨てる
 Remove-Item -LiteralPath $restartFlag -Force -ErrorAction SilentlyContinue
 
@@ -325,12 +331,14 @@ try {
     do {
         $args = if ($resume) { @('--continue') + $claudeArgs } else { $claudeArgs }
         if ($resume) {
-            # 手元に人がいない前提なので、警告ダイアログは画面を見張って自動で答える
+            # 手元に人がいない前提なので、警告ダイアログは画面を見張って自動で答える。
+            # Start-Process -ArgumentList は要素を空白でつなぐだけなので、空白を含みうる値は引用符で囲む
+            # （囲まないと 'development channel' が 2 つの引数に割れて、dialog-answer.ps1 が起動時に失敗する）
             Start-Process -FilePath 'powershell.exe' -NoNewWindow -ArgumentList @(
                 '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
-                '-File', (Join-Path $PSScriptRoot 'dialog-answer.ps1'),
-                '-Pattern', $DevChannelDialogPattern, '-TimeoutSec', $DevChannelDialogTimeoutSec,
-                '-LogFile', (Join-Path $stateDir 'logs\dialog-answer.log')
+                '-File', (Quote-Arg (Join-Path $PSScriptRoot 'dialog-answer.ps1')),
+                '-Pattern', (Quote-Arg $DevChannelDialogPattern), '-TimeoutSec', $DevChannelDialogTimeoutSec,
+                '-LogFile', (Quote-Arg (Join-Path $stateDir 'logs\dialog-answer.log'))
             ) | Out-Null
         }
         & $claude @args
