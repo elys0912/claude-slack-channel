@@ -20,7 +20,7 @@ import {
 import { ChannelServer } from '../src/mcp.js';
 import { PermissionRelay } from '../src/permission-relay.js';
 import { ACCESS, BOT, DM1, DM2, flush, makeSocket, makeWeb, platformError } from './helpers/fake-slack.js';
-import type { FakeSocket, FakeWeb } from './helpers/fake-slack.js';
+import type { ApiCall, FakeSocket, FakeWeb } from './helpers/fake-slack.js';
 import type { ParsedAccess } from '../src/config.js';
 import type { BridgeAppOptions } from '../src/app.js';
 import type { ConsoleKey } from '../src/console.js';
@@ -46,7 +46,7 @@ async function startHarness(
   replyTimeoutMs?: number,
   extra: Pick<
     BridgeAppOptions,
-    'console' | 'allowExtraFile' | 'denyFiles' | 'home' | 'hookInboxFile' | 'hookPollMs' | 'restartFlagFile' | 'killParent'
+    'console' | 'allowExtraFile' | 'denyFiles' | 'home' | 'hookInboxFile' | 'hookPollMs' | 'restartFlagFile' | 'killParent' | 'sessionAllowAll'
   > = {}
 ): Promise<Harness> {
   const web = makeWeb();
@@ -908,11 +908,11 @@ describe('ターミナル画面と許可リスト（!screen / 今後も許可 / 
 });
 
 /** Bash の permission_request を Claude 側から送る */
-async function client_sendBash(h: Harness, command: string): Promise<void> {
+async function client_sendBash(h: Harness, command: string, requestId = 'abcde'): Promise<void> {
   await h.client.notification({
     method: 'notifications/claude/channel/permission_request',
     params: {
-      request_id: 'abcde',
+      request_id: requestId,
       tool_name: 'Bash',
       description: 'run',
       input_preview: JSON.stringify({ command }),
@@ -1170,5 +1170,102 @@ describe('hook の記録（hooks.jsonl）からの知らせ', () => {
     await wait(60);
     expect(posts()).toHaveLength(1);
     expect(String(posts()[0]?.args.text)).toContain('返事をしないまま');
+  });
+});
+
+describe('このセッション中は全部許可', () => {
+  let h: Harness;
+  let dir: string;
+  let hooks: string;
+  const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const posts = () => h.web.calls.filter((c) => c.method === 'chat.postMessage');
+  const verdicts = () =>
+    h.notifications.filter((x) => x.method === 'notifications/claude/channel/permission').map((x) => x.params);
+  const actionIds = (call: ApiCall | undefined) =>
+    ((call?.args.blocks ?? []) as { type: string; elements?: { action_id: string }[] }[])
+      .find((b) => b.type === 'actions')
+      ?.elements?.map((e) => e.action_id) ?? [];
+
+  async function start(sessionAllowAll: boolean): Promise<void> {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'app-allowall-'));
+    const settings = path.join(dir, 'settings.json');
+    fs.writeFileSync(settings, JSON.stringify({ permissions: { ask: ['Bash(git push:*)'], deny: ['Bash(rm:*)'] } }));
+    hooks = path.join(dir, 'hooks.jsonl');
+    h = await startHarness(ACCESS, undefined, { denyFiles: [settings], sessionAllowAll, hookInboxFile: hooks, hookPollMs: 20 });
+    // 自動許可の記録を出すスレッドを覚えさせる
+    h.socket.emit('slack_event', dmEnvelope('作業して', { ts: '20.0' }));
+    await flush();
+    h.web.calls.length = 0;
+  }
+
+  afterEach(async () => {
+    await h.client.close();
+    await h.stop();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  async function enableByButton(): Promise<void> {
+    await client_sendBash(h, 'git status');
+    expect(actionIds(posts()[0])).toContain('perm_session');
+    h.socket.emit('interactive', blockAction('perm_session', 'abcde', { container: { message_ts: '100.1', thread_ts: '20.0' } }));
+    await flush();
+    await flush();
+    h.web.calls.length = 0;
+  }
+
+  it('無効なボットにはボタンを出さない', async () => {
+    await start(false);
+    await client_sendBash(h, 'git status');
+    expect(actionIds(posts()[0])).not.toContain('perm_session');
+  });
+
+  it('ボタンで有効にすると、今回を許可し、以後は ask / deny 以外をボタン無しで許可してスレッドに記録する', async () => {
+    await start(true);
+    await enableByButton();
+    expect(verdicts()).toEqual([{ request_id: 'abcde', behavior: 'allow' }]);
+
+    await client_sendBash(h, 'npm test', 'fghij');
+    expect(verdicts().at(-1)).toEqual({ request_id: 'fghij', behavior: 'allow' });
+    expect(posts()).toHaveLength(1);
+    expect(String(posts()[0]?.args.text)).toContain('自動許可: Bash');
+    expect(posts()[0]?.args.thread_ts).toBe('20.0');
+    expect(actionIds(posts()[0])).toEqual([]);
+  });
+
+  it('有効でも、settings の ask に当たるものはボタンで聞く（全部許可のボタンはもう出さない）', async () => {
+    await start(true);
+    await enableByButton();
+
+    await client_sendBash(h, 'git push origin main', 'fghij');
+    expect(verdicts()).toHaveLength(1);
+    expect(actionIds(posts()[0])).toEqual(['perm_allow', 'perm_always', 'perm_deny']);
+  });
+
+  it('!lock で解除すると、またボタンで聞く', async () => {
+    await start(true);
+    await enableByButton();
+
+    h.socket.emit('slack_event', dmEnvelope('!lock', { ts: '30.0' }));
+    await flush();
+    expect(String(posts().at(-1)?.args.markdown_text ?? posts().at(-1)?.args.text)).toContain('解除した');
+
+    h.web.calls.length = 0;
+    await client_sendBash(h, 'npm test', 'fghij');
+    expect(verdicts()).toHaveLength(1);
+    expect(actionIds(posts()[0])).toContain('perm_session');
+  });
+
+  it('!clear などで新しい会話になったら（SessionStart source=clear）解除する', async () => {
+    await start(true);
+    await enableByButton();
+
+    fs.appendFileSync(hooks, JSON.stringify({ at: Date.now(), session_id: 's2', hook_event_name: 'SessionStart', source: 'clear' }) + '\n');
+    await wait(80);
+    expect(posts().some((p) => String(p.args.text).includes('全部許可」を解除した'))).toBe(true);
+
+    h.web.calls.length = 0;
+    await client_sendBash(h, 'npm test', 'fghij');
+    expect(verdicts()).toHaveLength(1);
+    expect(actionIds(posts()[0])).toContain('perm_session');
   });
 });

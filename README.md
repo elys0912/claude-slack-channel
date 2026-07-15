@@ -203,7 +203,7 @@ Claude Code を起動したいプロジェクトを並べる（`projects.json` �
 - セッションは1つだけで、Slack 側の会話はすべて同じ文脈を共有する。
 - Slack のメッセージは本文として Claude に届くだけ。Claude Code のコマンドを Slack から実行する機能は、`!restart`・`!compact`・`!clear` を除いて無いわ。
   `/clear` のように `/` で始まる文は Slack 自身のコマンドとして扱われ、Claude Code には届かない。
-- `!` で始まる次のコマンドは Claude に渡さず、ブリッジが処理する: `!help` `!screen` `!rules` `!status` `!restart` `!restart force` `!compact` `!clear`。
+- `!` で始まる次のコマンドは Claude に渡さず、ブリッジが処理する: `!help` `!screen` `!rules` `!status` `!restart` `!restart force` `!compact` `!clear` `!lock`。
   `!help` はこの一覧をスレッドに返す。
 
 ### 添付ファイルの保存と展開
@@ -302,6 +302,22 @@ Claude Code を起動したいプロジェクトを並べる（`projects.json` �
   確認の後、追加する直前にも deny を読み直して照合するわ。
 - `!rules` と送ると追加分のルールを一覧して、🗑 ボタンで消せる（次に起動し直したときから反映）。
 - 追加・削除はログ（`許可リストに追加` / `許可リストから削除`）に残る。
+
+### このセッション中は全部許可（🔓）
+
+`.env` に `SESSION_ALLOW_ALL=on` を書いたボットだけ、実行許可のメッセージに **🔓 このセッション中は全部許可** ボタンが出る。
+押すと今回を許可したうえで、以後の実行許可にブリッジが自動で allow を返す（ボタンを出さない）。
+
+- 自動許可から外すもの: `channel-settings.json`（`-SettingsFile` で渡したもの）と作業フォルダーの `.claude/settings.json` / `settings.local.json` の
+  **ask と deny** に当たる操作。これらは今までどおりボタンで聞く（deny は Claude Code がそもそも実行しない）。
+  照合は安全側に倒す: ツール全体のルール、シェル以外の中身付きのルール、コマンドが読めないリクエストは「当たる」とみなす。
+  シェルの中身付きのルールは、コマンドがそのプレフィックスで始まるときに当たる。
+- 自動で許可した操作は、最後に話しかけたスレッドに「🔓 自動許可: ツール名」と入力の先頭を残す。
+- 解除: `!lock`、`!clear` などで新しい会話になったとき（hook の SessionStart で source=clear）、ブリッジの終了（起動し直し・`!restart`）。
+  `/compact` では解除しない。
+- `!status` に「全部許可: 有効（○時から）／無効」を出す。
+
+> Slack アカウントを乗っ取られると、有効な間は ask / deny 以外を確認なしで実行される。個人のワークスペースで、手元のセッションに限って使うこと。
 
 ### ターミナル画面の確認と解除
 
@@ -493,7 +509,7 @@ deny は allow より必ず優先される（評価順は deny → ask → allow
 
 | ファイル | 場所 | 内容 |
 |---|---|---|
-| `.env` | 状態ディレクトリ | `SLACK_BOT_TOKEN`（`xoxb-`）、`SLACK_APP_TOKEN`（`xapp-`）、`DOWNLOAD_DIR`（任意。添付の保存先の絶対パス） |
+| `.env` | 状態ディレクトリ | `SLACK_BOT_TOKEN`（`xoxb-`）、`SLACK_APP_TOKEN`（`xapp-`）、`DOWNLOAD_DIR`（任意。添付の保存先の絶対パス）、`SESSION_ALLOW_ALL`（任意。on で「このセッション中は全部許可」ボタンを出す） |
 | `access.json` | 状態ディレクトリ | `teamId`（`T...`）、`allowFrom`（`U...` の配列）、`channels`（`C...` / `G...` の配列、省略可）。これ以外のキーはエラー |
 | `home.json` | 状態ディレクトリ（省略可） | ホームタブの文面の差し替え（[アプリのホームタブ](#アプリのホームタブ)） |
 | `allow-extra.json` | 状態ディレクトリ | Slack の「今後も許可」で足したルール（`{"allow": [...]}`）。ブリッジが書き、起動スクリプトが allow に足す |
