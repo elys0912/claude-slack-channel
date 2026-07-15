@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { AllowRuleStore, denyOverlaps, deriveRule, proposeRule, readDeny } from '../src/allow-rules.js';
+import { AllowRuleStore, denyOverlaps, deriveRule, parseRuleForCheck, proposeRule, readDeny, toRulePath } from '../src/allow-rules.js';
 import type { PermissionRequest } from '../src/permission.js';
 
 function req(tool: string, input: unknown): PermissionRequest {
@@ -51,7 +51,7 @@ describe('deriveRule', () => {
     if (!result.ok) expect(result.reason).toContain(reason);
   });
 
-  it('ファイル編集のツールからは作らない', () => {
+  it('ファイル編集のツールでも、相対パスからは作らない', () => {
     expect(deriveRule(req('Write', { file_path: 'a.txt' })).ok).toBe(false);
   });
 
@@ -131,5 +131,100 @@ describe('readDeny / AllowRuleStore', () => {
     expect(store.remove('Bash(git status:*)')).toBe(true);
     expect(store.remove('Bash(git status:*)')).toBe(false);
     expect(store.list()).toEqual(['WebFetch']);
+  });
+});
+
+const HOME = 'C:\\Users\\me';
+const CTX = { workDir: 'C:\\dev\\foo', home: HOME };
+
+describe('toRulePath', () => {
+  it.each([
+    ['C:\\dev\\foo', '//c/dev/foo'],
+    ['D:/Work/x/', '//d/Work/x'],
+    ['C:\\', '//c'],
+    ['/home/a/proj', '//home/a/proj'],
+  ])('%s → %s', (input, expected) => {
+    expect(toRulePath(input)).toBe(expected);
+  });
+
+  it('相対パスや UNC は undefined', () => {
+    expect(toRulePath('dev\\foo')).toBeUndefined();
+    expect(toRulePath('//server/share')).toBeUndefined();
+  });
+});
+
+describe('deriveRule（パスを取るツール）', () => {
+  it.each([
+    ['Read', { file_path: 'C:\\dev\\foo\\src\\a.ts' }, 'Read(//c/dev/foo/src/**)'],
+    ['Read', { file_path: '/home/u/proj/a.ts' }, 'Read(//home/u/proj/**)'],
+    ['Grep', { pattern: 'x', path: 'C:\\dev\\foo' }, 'Read(//c/dev/foo/**)'],
+    ['Glob', { pattern: '**/*.ts', path: 'C:\\dev\\foo\\src' }, 'Read(//c/dev/foo/src/**)'],
+    ['Edit', { file_path: 'C:\\dev\\foo\\a.ts' }, 'Edit(//c/dev/foo/**)'],
+    ['Write', { file_path: 'C:\\dev\\foo\\a.ts', content: '' }, 'Edit(//c/dev/foo/**)'],
+    ['NotebookEdit', { notebook_path: 'C:\\dev\\foo\\n.ipynb' }, 'Edit(//c/dev/foo/**)'],
+  ])('%s %j から %s を作る', (tool, input, rule) => {
+    expect(deriveRule(req(tool, input), HOME)).toMatchObject({ ok: true, rule });
+  });
+
+  it.each([
+    ['Grep', { pattern: 'x' }, 'パスを読み取れなかった'],
+    ['Read', { file_path: 'a.ts' }, '絶対パスでない'],
+    ['Read', { file_path: 'C:\\dev\\a.ts' }, '浅すぎる'],
+    ['Read', { file_path: 'C:\\a.ts' }, '浅すぎる'],
+    ['Read', { file_path: 'C:\\Users\\me\\a.txt' }, 'ホームフォルダー'],
+    ['Grep', { pattern: 'x', path: 'C:\\Users' }, '浅すぎる'],
+    ['Read', { file_path: 'C:\\dev\\[x]\\a.ts' }, '特殊な文字'],
+    ['Read', { file_path: 'C:\\dev\\foo\\..\\..\\a.ts' }, '..'],
+  ])('%s %j からは作らない（%s）', (tool, input, reason) => {
+    const result = deriveRule(req(tool, input), HOME);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toContain(reason);
+  });
+
+  it('入力が JSON でない（省略されている）ときは作らない', () => {
+    expect(deriveRule(req('Read', '{"file_path":"C:\\\\dev\\\\fo…'), HOME).ok).toBe(false);
+  });
+});
+
+describe('denyOverlaps（パスのルール）', () => {
+  const candidate = { tool: 'Read', prefix: '//c/dev/foo/**' };
+
+  it('一部だけ重なる deny（ファイル名・別の場所）には当たらない', () => {
+    expect(denyOverlaps(candidate, ['Read(.env)', 'Read(**/.env)', 'Read(~/.ssh/*)', 'Read(//c/dev/foo/secrets/**)', 'Read(*.key)'], CTX)).toEqual([]);
+  });
+
+  it('ツール全体の deny、または同じか親のフォルダー以下全部の deny には当たる', () => {
+    expect(denyOverlaps(candidate, ['Read'], CTX)).toEqual(['Read']);
+    expect(denyOverlaps(candidate, ['Read(//c/dev/**)'], CTX)).toEqual(['Read(//c/dev/**)']);
+    expect(denyOverlaps(candidate, ['Read(//C/Dev/Foo/**)'], CTX)).toEqual(['Read(//C/Dev/Foo/**)']);
+    expect(denyOverlaps(candidate, ['Read(//c/dev/foo)'], CTX)).toEqual(['Read(//c/dev/foo)']);
+  });
+
+  it('作業フォルダー基準・ホーム基準の deny も解決して照合する', () => {
+    const secrets = { tool: 'Read', prefix: '//c/dev/foo/secrets/x/**' };
+    expect(denyOverlaps(secrets, ['Read(./secrets/**)'], CTX)).toEqual(['Read(./secrets/**)']);
+    expect(denyOverlaps(secrets, ['Read(/secrets/**)'], CTX)).toEqual(['Read(/secrets/**)']);
+    const ssh = { tool: 'Read', prefix: '//c/users/me/.ssh/keys/**' };
+    expect(denyOverlaps(ssh, ['Read(~/.ssh/**)'], CTX)).toEqual(['Read(~/.ssh/**)']);
+  });
+
+  it('ツールが違う deny には当たらない', () => {
+    expect(denyOverlaps(candidate, ['Edit(//c/dev/**)', 'Edit'], CTX)).toEqual([]);
+  });
+
+  it('保存済みのルールを parseRuleForCheck で戻しても同じ照合になる（confirm の再照合）', () => {
+    const parsed = parseRuleForCheck('Read(//c/dev/foo/**)');
+    expect(parsed).toEqual(candidate);
+    expect(denyOverlaps(parsed ?? candidate, ['Read(.env)', 'Read(//c/dev/**)'], CTX)).toEqual(['Read(//c/dev/**)']);
+  });
+
+  it('proposeRule: .env などの deny があっても、フォルダー以下の Read を提案できる', () => {
+    const result = proposeRule(req('Read', { file_path: 'C:\\dev\\foo\\a.ts' }), ['Read(.env)', 'Read(~/.ssh/*)', 'Read(~/.aws/**)'], CTX);
+    expect(result).toMatchObject({ ok: true, rule: 'Read(//c/dev/foo/**)' });
+  });
+
+  it('proposeRule: 親フォルダーが丸ごと deny なら断る', () => {
+    const result = proposeRule(req('Write', { file_path: 'C:\\dev\\foo\\a.ts' }), ['Edit(//c/dev/**)'], CTX);
+    expect(result).toMatchObject({ ok: false, denyHits: ['Edit(//c/dev/**)'] });
   });
 });
