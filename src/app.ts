@@ -582,8 +582,9 @@ export async function startBridgeApp(opts: BridgeAppOptions): Promise<RunningApp
     throw e;
   }
   logger.info('Slack ブリッジ稼働中');
-  await publishHomeAll(true, startedAt);
-  await inbox?.start();
+  // 起動の途中で終了処理（stdin の終了など）が始まっていたら、それ以上は始めない（止めた後に投稿やタイマーを残さない）
+  if (stopped === undefined) await publishHomeAll(true, startedAt);
+  if (stopped === undefined) await inbox?.start();
 
   return { stop };
 }
