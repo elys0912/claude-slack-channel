@@ -459,6 +459,43 @@ export interface BridgeAppOptions {
  * 通常モード: Slack と Claude Code（MCP）をつないで中継を始める。
  * MCP の接続か Socket Mode の開始に失敗したら、後片付け（lock.release → relay.denyAll → bridge.stop → server.close）をしてから投げ直す。
  */
+/**
+ * ホームタブの更新。opts.home が無いか、bridge がホームを出せなければ何もしない。
+ * publishHomeAll: users 全員のホームを書き換える。onHomeOpened: ホームが開かれたら最新の状態で出し直す
+ */
+function wireHome(
+  opts: BridgeAppOptions,
+  ruleStore: AllowRuleStore | undefined,
+  startedAt: Date
+): {
+  publishHomeAll: (running: boolean, since: Date) => Promise<void>;
+  onHomeOpened: (user: string, allowed: boolean) => Promise<void>;
+} {
+  const { bridge, home } = opts;
+  const view = (running: boolean, since: Date): unknown =>
+    buildHomeView({
+      running,
+      since,
+      workDir: opts.workDir ?? '',
+      channelCount: home?.channelCount ?? 0,
+      botUserId: home?.botUserId,
+      custom: home?.loadCustom?.(),
+      ruleCount: ruleStore?.list().length,
+      replyTimeoutMin: Math.round((opts.replyTimeoutMs ?? 0) / MS_PER_MINUTE),
+      now: new Date(),
+    });
+  return {
+    publishHomeAll: async (running, since) => {
+      if (!home || !bridge.publishHome) return;
+      for (const user of home.users) await bridge.publishHome(user, view(running, since));
+    },
+    onHomeOpened: async (user, allowed) => {
+      if (!home || !bridge.publishHome) return;
+      await bridge.publishHome(user, allowed ? view(true, startedAt) : buildForbiddenHomeView());
+    },
+  };
+}
+
 export async function startBridgeApp(opts: BridgeAppOptions): Promise<RunningApp> {
   const { bridge, logger } = opts;
 
@@ -552,26 +589,7 @@ export async function startBridgeApp(opts: BridgeAppOptions): Promise<RunningApp
   const wiring: Wiring = { bridge, server, relay, logger, watchdog, screen, rules, status, session, sessionAllow };
 
   // --- ホームタブ -------------------------------------------------------------
-  const homeView = (running: boolean, since: Date): unknown =>
-    buildHomeView({
-      running,
-      since,
-      workDir: opts.workDir ?? '',
-      channelCount: opts.home?.channelCount ?? 0,
-      botUserId: opts.home?.botUserId,
-      custom: opts.home?.loadCustom?.(),
-      ruleCount: ruleStore?.list().length,
-      replyTimeoutMin: Math.round((opts.replyTimeoutMs ?? 0) / MS_PER_MINUTE),
-      now: new Date(),
-    });
-  const publishHomeAll = async (running: boolean, since: Date): Promise<void> => {
-    if (!opts.home || !bridge.publishHome) return;
-    for (const user of opts.home.users) await bridge.publishHome(user, homeView(running, since));
-  };
-  const onHomeOpened = async (user: string, allowed: boolean): Promise<void> => {
-    if (!opts.home || !bridge.publishHome) return;
-    await bridge.publishHome(user, allowed ? homeView(true, startedAt) : buildForbiddenHomeView());
-  };
+  const { publishHomeAll, onHomeOpened } = wireHome(opts, ruleStore, startedAt);
 
   let stopped: Promise<void> | undefined;
   const stop = (): Promise<void> =>
