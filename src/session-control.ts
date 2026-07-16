@@ -103,6 +103,11 @@ export class SessionControl {
   }
 
   stop(): void {
+    this.clearExitCheck();
+  }
+
+  /** /exit の後の「まだ終了していない」の確認を取り消す */
+  private clearExitCheck(): void {
     if (this.confirmTimer !== undefined) clearTimeout(this.confirmTimer);
     this.confirmTimer = undefined;
   }
@@ -130,7 +135,7 @@ export class SessionControl {
   }
 
   private scheduleExitCheck(at: ThreadRef): void {
-    this.stop();
+    this.clearExitCheck();
     // このプロセスがまだ動いていれば、Claude Code は終了していない
     this.confirmTimer = setTimeout(() => {
       this.confirmTimer = undefined;
