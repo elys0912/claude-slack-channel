@@ -578,6 +578,43 @@ describe('停止', () => {
     expect(socket.disconnected).toBe(1);
   });
 
+  it('起動の途中（ホームタブの更新中）に終了処理が始まったら、hook の読み取りを始めない', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'app-stop-early-'));
+    const hooks = path.join(dir, 'hooks.jsonl');
+    try {
+      const web = makeWeb();
+      const socket = makeSocket();
+      const logger = new Logger({ stderr: false });
+      const bridge = new SlackBridge({ botToken: 'xoxb-TEST-DUMMY', appToken: 'xapp-TEST-DUMMY', access: ACCESS, logger, web, socket });
+      await bridge.init();
+      let stop: (() => Promise<void>) | undefined;
+      let stopping: Promise<void> | undefined;
+      const publish = bridge.publishHome.bind(bridge);
+      vi.spyOn(bridge, 'publishHome').mockImplementation(async (user, view) => {
+        stopping ??= stop?.();
+        await publish(user, view);
+      });
+      const [, serverTransport] = InMemoryTransport.createLinkedPair();
+      await startBridgeApp({
+        bridge,
+        logger,
+        transport: serverTransport,
+        onCleanupReady: (s) => (stop = s),
+        hookInboxFile: hooks,
+        hookPollMs: 10,
+        home: { users: ACCESS.allowFrom, workDir: 'C:\\dev\\app', channelCount: 0 },
+      });
+      await stopping;
+      web.calls.length = 0;
+
+      fs.writeFileSync(hooks, JSON.stringify({ at: Date.now(), hook_event_name: 'SessionEnd', reason: 'other' }) + '\n');
+      await new Promise((r) => setTimeout(r, 60));
+      expect(web.calls.filter((c) => c.method === 'chat.postMessage')).toEqual([]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('startBridgeApp は Socket Mode を 1 回だけ開始する', async () => {
     const h = await startHarness();
     expect(h.socket.started).toBe(1);

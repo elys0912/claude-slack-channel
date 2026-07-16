@@ -337,7 +337,7 @@ Push-Location $projectDir
 try {
     do {
         $resume = $resumeArgs.Count -gt 0
-        $args = $resumeArgs + $claudeArgs
+        $launchArgs = $resumeArgs + $claudeArgs
         if ($resume) {
             # 手元に人がいない前提なので、警告ダイアログは画面を見張って自動で答える。
             # Start-Process -ArgumentList は要素を空白でつなぐだけなので、空白を含みうる値は引用符で囲む
@@ -349,7 +349,7 @@ try {
                 '-LogFile', (Quote-Arg (Join-Path $stateDir 'logs\dialog-answer.log'))
             ) | Out-Null
         }
-        & $claude @args
+        & $claude @launchArgs
         $code = $LASTEXITCODE
         $again = Test-Path -LiteralPath $restartFlag
         if ($again) {
