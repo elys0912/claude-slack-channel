@@ -1,14 +1,20 @@
-// eslint の設定（flat config）。型情報を使う推奨ルールを src / scripts / test に適用する
+// eslint の設定（flat config）。型情報を使う推奨ルールは tsconfig の対象（src / scripts / test の .ts）にだけ適用する。
+// それ以外の JS / TS（tsconfig 外に置かれたスクリプトなど）は型情報なしのルールだけ当てる
+// （型情報付きのルールを tsconfig 外のファイルに当てると、そのファイル 1 つで lint 全体が止まる）
 import js from '@eslint/js';
 import tseslint from 'typescript-eslint';
+
+/** tsconfig.test.json の対象 */
+const TYPED_FILES = ['src/**/*.ts', 'scripts/**/*.ts', 'test/**/*.ts'];
 
 export default tseslint.config(
   // .local/ は git 管理外のローカル用メモ・スパイク置き場（型情報の対象外なので lint しない）
   { ignores: ['dist/**', 'node_modules/**', '.local/**', 'eslint.config.js', 'vitest.config.ts'] },
   js.configs.recommended,
-  ...tseslint.configs.recommendedTypeChecked,
+  ...tseslint.configs.recommended,
+  ...tseslint.configs.recommendedTypeChecked.map((config) => ({ ...config, files: TYPED_FILES })),
   {
-    files: ['src/**/*.ts', 'scripts/**/*.ts', 'test/**/*.ts'],
+    files: TYPED_FILES,
     languageOptions: {
       parserOptions: {
         project: './tsconfig.test.json',
