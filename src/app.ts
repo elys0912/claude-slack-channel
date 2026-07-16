@@ -64,13 +64,13 @@ export interface Wiring {
   server: AppServer;
   relay: AppRelay;
   logger: Logger;
-  watchdog?: AppWatchdog | undefined;
-  /** ターミナル画面の確認・選択（無ければ !screen と画面のボタンは使えない） */
-  screen?: AppScreen | undefined;
-  /** 許可リストへの追加（無ければ「今後も許可」は今回の許可だけになる） */
+  watchdog: AppWatchdog;
+  /** ターミナル画面の確認・選択（コンソールが無ければ、読めない旨を返す） */
+  screen: AppScreen;
+  /** 許可リストへの追加（無ければ「今後も許可」は今回の許可だけになり、!rules は使えない） */
   rules?: AppRules | undefined;
-  /** `!status` の文面。無ければ !status は使えない */
-  status?: (() => string) | undefined;
+  /** `!status` の文面 */
+  status: () => string;
   /** `!restart` / `!compact` / `!clear`。無ければ使えない */
   session?: AppSession | undefined;
   /** 「このセッション中は全部許可」（.env で有効にしたボットだけ）。無ければボタンも !lock も使えない */
@@ -79,6 +79,18 @@ export interface Wiring {
 
 /** Claude に渡さず、ブリッジ自身が処理するコマンド（`!restart force` だけ引数を取る） */
 const COMMAND_RE = /^\s*!(help|screen|rules|status|restart(?:\s+force)?|compact|clear|lock)\s*$/i;
+/** COMMAND_RE が受け付けるコマンド（小文字・空白 1 つに正規化した形） */
+const COMMANDS = ['help', 'screen', 'rules', 'status', 'restart', 'restart force', 'compact', 'clear', 'lock'] as const;
+export type Command = (typeof COMMANDS)[number];
+
+function isCommand(name: string): name is Command {
+  return (COMMANDS as readonly string[]).includes(name);
+}
+
+/** switch の網羅チェック。種類を足して case を書き忘れると、ここで型エラーになる */
+export function assertNever(value: never): never {
+  throw new Error(`想定外の値: ${JSON.stringify(value)}`);
+}
 
 /** `!help` の文面。Slack では `/` で始まる文は Slack のコマンドとして扱われ Claude Code まで届かないので、その案内も添える */
 export const HELP_TEXT = [
@@ -103,9 +115,10 @@ export const HELP_TEXT = [
 const APP_FOOTER_RE = /\s+\*[^*\n]+\*\s+<@U[A-Z0-9]+(?:\|[^>]*)?>\s*$/;
 
 /** 本文がブリッジのコマンドならその名前（小文字・空白 1 つに正規化）を返す。アプリの署名が付いていても同じコマンドとみなす */
-export function parseCommand(content: string): string | undefined {
+export function parseCommand(content: string): Command | undefined {
   const m = COMMAND_RE.exec(content) ?? COMMAND_RE.exec(content.replace(APP_FOOTER_RE, ''));
-  return m?.[1]?.toLowerCase().replace(/\s+/g, ' ');
+  const name = m?.[1]?.toLowerCase().replace(/\s+/g, ' ');
+  return name !== undefined && isCommand(name) ? name : undefined;
 }
 
 // --- Claude → Slack（MCP ツールの実体） ----------------------------------------
@@ -211,30 +224,36 @@ export async function handleMessage(wiring: Wiring, result: GateResult, raw: Inb
     case 'deliver':
       if (raw.channel && raw.threadTs) relay.rememberThread(raw.channel, raw.threadTs);
       await server.pushMessage(result.content, result.meta);
-      if (raw.channel && raw.threadTs) watchdog?.delivered({ channel: raw.channel, threadTs: raw.threadTs });
+      if (raw.channel && raw.threadTs) watchdog.delivered({ channel: raw.channel, threadTs: raw.threadTs });
       if (raw.channel && raw.ts) await bridge.addReaction(raw.channel, raw.ts, REACTION.SEEN);
       return;
+
+    default:
+      assertNever(result);
   }
 }
 
 /** ブリッジ自身のコマンド。使えない環境ではその旨をスレッドに返す */
-async function handleCommand({ bridge, screen, rules, status, session, sessionAllow, logger }: Wiring, command: string, at: ThreadRef, byUserId: string): Promise<void> {
+async function handleCommand(
+  { bridge, screen, rules, status, session, sessionAllow, logger }: Wiring,
+  command: Command,
+  at: ThreadRef,
+  byUserId: string
+): Promise<void> {
   const unavailable = (name: string): Promise<unknown> => bridge.postText(at.channel, `⚠️ このブリッジでは ${name} を使えない`, at.threadTs);
   switch (command) {
     case 'help':
       await bridge.postText(at.channel, HELP_TEXT, at.threadTs);
       return;
     case 'screen':
-      if (screen) await screen.show(at.channel, at.threadTs);
-      else await unavailable('!screen');
+      await screen.show(at.channel, at.threadTs);
       return;
     case 'rules':
       if (rules) await rules.list(at.channel, at.threadTs);
       else await unavailable('!rules');
       return;
     case 'status':
-      if (status) await bridge.postText(at.channel, status(), at.threadTs);
-      else await unavailable('!status');
+      await bridge.postText(at.channel, status(), at.threadTs);
       return;
     case 'restart':
     case 'restart force':
@@ -262,7 +281,7 @@ async function handleCommand({ bridge, screen, rules, status, session, sessionAl
       }
       return;
     default:
-      return;
+      assertNever(command);
   }
 }
 
@@ -311,11 +330,11 @@ export async function handleAction(wiring: Wiring, parsed: ActionParse, ctx: Act
       return;
 
     case 'screen_show':
-      if (at && wiring.screen) await wiring.screen.show(at.channel, at.threadTs);
+      if (at) await wiring.screen.show(at.channel, at.threadTs);
       return;
 
     case 'screen_pick':
-      if (at && wiring.screen) await wiring.screen.pick(parsed.snapshotId, parsed.index, at, byUserId);
+      if (at) await wiring.screen.pick(parsed.snapshotId, parsed.index, at, byUserId);
       return;
 
     case 'rule_confirm':
@@ -325,6 +344,9 @@ export async function handleAction(wiring: Wiring, parsed: ActionParse, ctx: Act
     case 'rule_remove':
       if (at && wiring.rules) await wiring.rules.remove(parsed.rule, at, byUserId);
       return;
+
+    default:
+      assertNever(parsed);
   }
 }
 
