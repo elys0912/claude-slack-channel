@@ -56,6 +56,7 @@ async function startHarness(
     | 'killParent'
     | 'sessionAllowAll'
     | 'sessionTag'
+    | 'workDir'
   > = {}
 ): Promise<Harness> {
   const web = makeWeb();
@@ -602,7 +603,7 @@ describe('停止', () => {
         onCleanupReady: (s) => (stop = s),
         hookInboxFile: hooks,
         hookPollMs: 10,
-        home: { users: ACCESS.allowFrom, workDir: 'C:\\dev\\app', channelCount: 0 },
+        home: { users: ACCESS.allowFrom, channelCount: 0 },
       });
       await stopping;
       web.calls.length = 0;
@@ -969,7 +970,7 @@ async function client_sendBash(h: Harness, command: string, requestId = 'abcde')
 
 describe('ホームタブ', () => {
   let h: Harness;
-  const home = { users: ACCESS.allowFrom, workDir: 'C:\\dev', channelCount: 0 };
+  const home = { users: ACCESS.allowFrom, channelCount: 0 };
   const publishes = () => h.web.calls.filter((c) => c.method === 'views.publish');
 
   function homeOpened(user: string, tab = 'home', team = 'T123ABC'): Record<string, unknown> {
@@ -983,7 +984,7 @@ describe('ホームタブ', () => {
 
   beforeEach(async () => {
     // startHarness は起動前に web.calls を空にするので、起動時の publish は残る
-    h = await startHarness(ACCESS, undefined, { home });
+    h = await startHarness(ACCESS, undefined, { home, workDir: 'C:\\dev' });
   });
 
   afterEach(async () => {
@@ -1044,7 +1045,8 @@ describe('!status / !restart / !compact / !clear / !help', () => {
       console: { read: async () => screen, sendKeys: async () => undefined, sendCommand: async (c) => void commands.push(c) },
       restartFlagFile: flag,
       killParent: () => void killed++,
-      home: { users: ACCESS.allowFrom, workDir: 'C:\\dev\\app', channelCount: 0 },
+      // home は渡さない（ホームタブ無しでも !status に作業フォルダーが出る）
+      workDir: 'C:\\dev\\app',
     });
     h.web.calls.length = 0;
   });

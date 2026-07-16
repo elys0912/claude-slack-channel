@@ -107,9 +107,9 @@ async function main(dir: string, logger: Logger): Promise<void> {
     onCleanupReady: (stop) => installShutdown(logger, stop),
     replyTimeoutMs: replyTimeoutMs(),
     console: consoleAccess(logger),
+    workDir: process.cwd(),
     home: {
       users: access.allowFrom,
-      workDir: process.cwd(),
       channelCount: access.channels?.length ?? 0,
       botUserId,
       loadCustom: () => {
