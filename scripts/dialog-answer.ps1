@@ -19,6 +19,11 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $consoleScript = Join-Path $PSScriptRoot 'console.ps1'
+# console.ps1 は画面を UTF-8 で書き出す。子プロセスの出力は [Console]::OutputEncoding で読まれるので合わせる
+# （既定の cp932 のままだと日本語が化けて、日本語の Pattern が一致しない）。
+# このコンソールの出力コードページは console.ps1 も同じ値にするので、claude.exe の表示への影響は増えない。
+# 1 周は console.ps1 の起動込みで約 0.4 秒 + IntervalMs（2026-10-03 計測）。ダイアログを待つには十分なので、毎周起動のままにする
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 
 function Invoke-Console {
     param([string[]]$Arguments)
