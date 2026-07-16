@@ -17,7 +17,8 @@ function ps(command: string): string {
   return r.stdout.trim();
 }
 
-describe.runIf(process.platform === 'win32')('scripts/common.ps1 の Read-RestartSessionId', () => {
+// powershell.exe の起動は CI の初回だと 5 秒を超えることがある
+describe.runIf(process.platform === 'win32')('scripts/common.ps1 の Read-RestartSessionId', { timeout: 30000 }, () => {
   let dir: string;
   let flag: string;
 
