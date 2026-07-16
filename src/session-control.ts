@@ -1,6 +1,8 @@
 // Slack からの `!restart` / `!compact` / `!clear`。Claude Code にスラッシュコマンドを送る手段は channel プロトコルに無いので、
 // ターミナルの入力欄に固定のコマンド（/exit・/compact・/clear）を打ち込む。自由な文字入力は受け付けない。
-// 再起動は、状態ディレクトリに restart.flag を置いてから /exit を送り、start.ps1 がフラグを見て --continue で起動し直す。
+// 再起動は、状態ディレクトリに restart.flag を置いてから /exit を送り、start.ps1 がフラグを見て起動し直す。
+// 印には今の会話の session_id（hook の記録から分かれば）を書き、start.ps1 は --resume <id> で同じ会話を開く
+// （--continue はフォルダーで最新の会話を開くので、同じフォルダーの VS Code などの会話を開いてしまう）。
 import fs from 'node:fs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -33,6 +35,8 @@ export interface SessionControlOptions {
   logger: Logger;
   /** 親プロセス（claude.exe）を止める（`!restart force`）。省略時は defaultKillParent */
   killParent?: ((logger: Logger) => void | Promise<void>) | undefined;
+  /** 今の会話の session_id（hook の記録から分かったもの）。印に書く。分からなければ start.ps1 は --continue で起動し直す */
+  sessionId?: (() => string | undefined) | undefined;
   /** /exit の後に終了を確かめるまでの時間（テスト用） */
   exitConfirmMs?: number | undefined;
 }
@@ -49,7 +53,7 @@ export class SessionControl {
    * 再起動する。restart.flag を置いて /exit を送る（force なら claude.exe を止める）。
    * Claude Code が終わればこの MCP サーバーも終わり、start.ps1 がフラグを見て起動し直す。投げない。
    * 印は終了より前に置く必要があるので先に書き、/exit を送れなかった・強制終了に失敗したときは消す
-   * （残すと、後で手元で終了したときに start.ps1 が --continue で勝手に起動し直す）
+   * （残すと、後で手元で終了したときに start.ps1 が勝手に起動し直す）
    */
   async restart(at: ThreadRef, byUserId: string, force: boolean): Promise<void> {
     const { logger } = this.opts;
@@ -62,7 +66,7 @@ export class SessionControl {
 
     if (force) {
       logger.warn(`!restart force by=${byUserId}: claude.exe を止める`);
-      await this.say(at, '🔁 Claude Code を強制終了して起動し直す（会話は --continue で引き継ぐ）');
+      await this.say(at, '🔁 Claude Code を強制終了して起動し直す（会話は引き継ぐ）');
       try {
         await (this.opts.killParent ?? defaultKillParent)(logger);
       } catch (e) {
@@ -78,7 +82,7 @@ export class SessionControl {
       return;
     }
     logger.info(`!restart by=${byUserId}: /exit を送った`);
-    await this.say(at, '🔁 /exit を送った。終了したら start.ps1 が --continue で起動し直す（開始の知らせが来るまで待つこと）');
+    await this.say(at, '🔁 /exit を送った。終了したら start.ps1 が会話を引き継いで起動し直す（開始の知らせが来るまで待つこと）');
     this.scheduleExitCheck(at);
   }
 
@@ -145,7 +149,8 @@ export class SessionControl {
   }
 
   private writeFlag(): void {
-    fs.writeFileSync(this.opts.restartFlagFile, JSON.stringify({ at: new Date().toISOString() }) + '\n');
+    const sessionId = this.opts.sessionId?.();
+    fs.writeFileSync(this.opts.restartFlagFile, JSON.stringify({ at: new Date().toISOString(), sessionId }) + '\n');
   }
 
   private async say(at: ThreadRef, text: string): Promise<void> {

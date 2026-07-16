@@ -28,6 +28,7 @@ const HookEventSchema = z.looseObject({
   error_details: z.string().optional(),
   trigger: z.string().optional(),
   cwd: z.string().optional(),
+  session_tag: z.string().optional(),
 });
 
 export interface HookInboxOptions {
@@ -35,6 +36,8 @@ export interface HookInboxOptions {
   logger: Logger;
   /** 1 件ずつ、記録された順に呼ぶ。投げても次へ進む */
   onEvent: (event: HookEvent) => void | Promise<void>;
+  /** 指定すると、session_tag がこれと同じ行だけ扱う（同じ状態ディレクトリを使う別のセッションの hook を混ぜない） */
+  sessionTag?: string | undefined;
   pollMs?: number | undefined;
   replayWindowMs?: number | undefined;
   now?: (() => number) | undefined;
@@ -44,6 +47,7 @@ export class HookInbox {
   private readonly file: string;
   private readonly logger: Logger;
   private readonly onEvent: HookInboxOptions['onEvent'];
+  private readonly sessionTag: string | undefined;
   private readonly pollMs: number;
   private readonly replayWindowMs: number;
   private readonly now: () => number;
@@ -62,6 +66,7 @@ export class HookInbox {
     this.file = opts.file;
     this.logger = opts.logger;
     this.onEvent = opts.onEvent;
+    this.sessionTag = opts.sessionTag;
     this.pollMs = opts.pollMs ?? DEFAULT_POLL_MS;
     this.replayWindowMs = opts.replayWindowMs ?? DEFAULT_REPLAY_WINDOW_MS;
     this.now = opts.now ?? Date.now;
@@ -139,6 +144,7 @@ export class HookInbox {
       return;
     }
     const event: HookEvent = parsed.data;
+    if (this.sessionTag !== undefined && event.session_tag !== this.sessionTag) return;
     if (!accept(event)) return;
     const key = `${event.session_id ?? ''}:${event.hook_event_name}:${event.notification_type ?? ''}:${event.at}`;
     if (this.seen.seen(key)) return;

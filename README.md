@@ -163,7 +163,7 @@ Claude Code を起動したいプロジェクトを並べる（`projects.json` �
 - 起動時に experimental channels の警告ダイアログが出たら、**「1」（I am using this for local development）** を選ぶ（起動スクリプトもその旨を表示する。ダイアログ自体は Claude Code 側の挙動で未確認）。
 - `dist` が無いときだけ自動でビルドする。**`git pull` で更新したあとは `npm run build` を手で実行すること**（古い `dist` のまま起動しちゃうから）。
 - 起動したら、Slack でこのボットに DM を送るか、`channels` に書いたチャンネルでボットにメンションして話しかければいいわ。
-- Slack から `!restart` されると、claude.exe の終了後に `--continue` を付けて起動し直す（[セッションの再起動・圧縮・クリア](#セッションの再起動圧縮クリアrestart--compact--clear)）。
+- Slack から `!restart` されると、claude.exe の終了後に同じ会話を開いて（`--resume <session_id>`）起動し直す（[セッションの再起動・圧縮・クリア](#セッションの再起動圧縮クリアrestart--compact--clear)）。
   その起動の警告ダイアログは `scripts\dialog-answer.ps1` が画面を見張って自動で答える。
 
 ### セッションを並べる
@@ -367,15 +367,19 @@ Claude への返事を待ち始めた時刻、回答待ちの実行許可の件�
 ターミナルの入力欄に **固定のコマンドだけ** を打ち込む（`!screen` と同じ `scripts\console.ps1` 経由。自由な文字入力はできない）。
 
 - `!restart`: 状態ディレクトリに `restart.flag` を置き、入力欄に `/exit` + Enter を送る。claude.exe が終わるとブリッジも終わり、
-  `start.ps1` が印を見て `--continue` を付けて起動し直す（会話は引き継ぐ）。起動の警告ダイアログは `dialog-answer.ps1` が答える。
+  `start.ps1` が印を見て起動し直す（会話は引き継ぐ）。起動の警告ダイアログは `dialog-answer.ps1` が答える。
+  印にはブリッジが hook の記録から知った今の会話の `session_id` を書き、`start.ps1` は `--resume <session_id>` でその会話を開く。
+  id が分からなければ `--continue`（フォルダーで最新の会話）になる。`--continue` だと、同じフォルダーで VS Code などの会話が後から作られているとそちらを開いてしまうため。
   新しいセッションの hook が「🟢 セッションを開始した」を Slack に出すまで待つこと。20 秒たっても終わらなければその旨を知らせる。
 - `!restart force`: `/exit` を送らず claude.exe を強制終了する（ターミナルが応答中・画面が読めないとき用）。
-  会話の記録は逐次保存されているので `--continue` で引き継げるが、直前の応答は失われる。
+  `taskkill /T /F` で claude.exe の子プロセス（ほかの MCP サーバー・Bash の子など）もまとめて止める。親が `claude.exe` / `node.exe` でなければ止めない（手で起動したシェルを巻き込まないため）。
+  会話の記録は逐次保存されているので引き継げるが、直前の応答は失われる。
+  起動し直した新しいブリッジは、旧ブリッジのロックが残っていても、持ち主のプロセスが死んでいれば取る。生きていても最大 10 秒は取り直しを試してから縮退モードに入る。
 - `!compact`: 入力欄に `/compact` + Enter を送る。終わると hook が「🧹 会話を圧縮した」を出す。
 - `!clear`: 入力欄に `/clear` + Enter を送る。会話は捨てられ、新しい会話になる（元に戻せない。残したい文脈があるなら `!compact`）。
   終わると hook が「🧹 会話をクリアした」を出す。
 - `/exit`・`/compact`・`/clear` は、画面が **空の入力欄で待っているときだけ** 送る（応答中・選択画面・打ちかけの文字があるときは送らず、その旨を返す）。
-- 起動し直したあとの `--continue` と development channels の組み合わせ、ダイアログの自動応答（`development channel` という文字列を画面で探す）は
+- 起動し直したあとの `--resume` / `--continue` と development channels の組み合わせ、ダイアログの自動応答（`development channel` という文字列を画面で探す）は
   Claude Code の版によって変わりうる。動かなくなったら `start.ps1` の `$DevChannelDialogPattern` を直す。
 
 ### Claude Code 側の出来事の知らせ（hook）
@@ -384,6 +388,8 @@ Slack からは見えない Claude Code 側の出来事を、Claude Code の hoo
 
 - 起動スクリプトが `--settings` に渡す設定へ hook を注入する。hook は `dist\src\hook.js` を実行して、状態ディレクトリの `hooks.jsonl` に 1 行追記するだけ。
   ブリッジが 1.5 秒ごとにその増えた分を読んで Slack に出す（stdout は MCP 専用なので、hook はブリッジと直接は話さない）。
+- `start.ps1` は起動ごとに一意の値を環境変数 `SLACK_CHANNEL_SESSION_TAG` に入れ、hook はそれを行の `session_tag` に記録する。
+  ブリッジは自分と同じ値の行だけを扱う（同じ状態ディレクトリを使う別のセッションの終了・入力待ちを混ぜない）。`start.ps1` を使わずに起動したブリッジは全部の行を扱う。
 - 宛先は、最後に話しかけられたスレッド。まだ話しかけられていなければ許可ユーザー全員の DM。
 - 知らせるもの:
   - ターミナル側の入力待ち（Slack に中継されない許可の確認・elicitation・サブエージェントの質問）: **🖥 画面を確認** ボタン付き。Slack に中継中の許可があるときは重ねて出さない
@@ -516,7 +522,7 @@ deny は allow より必ず優先される（評価順は deny → ask → allow
 | `access.json` | 状態ディレクトリ | `teamId`（`T...`）、`allowFrom`（`U...` の配列）、`channels`（`C...` / `G...` の配列、省略可）。これ以外のキーはエラー |
 | `home.json` | 状態ディレクトリ（省略可） | ホームタブの文面の差し替え（[アプリのホームタブ](#アプリのホームタブ)） |
 | `allow-extra.json` | 状態ディレクトリ | Slack の「今後も許可」で足したルール（`{"allow": [...]}`）。ブリッジが書き、起動スクリプトが allow に足す |
-| `restart.flag` | 状態ディレクトリ | `!restart` が置く印。`start.ps1` が終了時に見て、あれば消して `--continue` で起動し直す |
+| `restart.flag` | 状態ディレクトリ | `!restart` が置く印（`{"at": ..., "sessionId": ...}`）。`start.ps1` が終了時に見て、あれば消して `--resume <sessionId>`（無ければ `--continue`）で起動し直す |
 | `hooks.jsonl` | 状態ディレクトリ | Claude Code の hook が追記する出来事の記録（1 行 1 JSON）。ブリッジが読んで Slack に知らせる。1MB を超えると `hooks.jsonl.1` に退避 |
 | `logs\bridge.log` | 状態ディレクトリ | ログ（下記） |
 | `logs\dialog-answer.log` | 状態ディレクトリ | `!restart` の後、警告ダイアログに自動で答えたか（答えた・キーを送れなかった・時間切れ） |

@@ -281,11 +281,17 @@ $env:ENABLE_CLAUDEAI_MCP_SERVERS = 'false'
 # hook（dist/src/hook.js）は claude.exe の環境を引き継ぐので、ここで状態ディレクトリを渡す。
 # 渡さないと -StateDir のセッションの知らせが既定の状態ディレクトリ（別のボット）に書かれる
 $env:SLACK_CHANNEL_STATE_DIR = $stateDir
+# このスクリプトの起動ごとに一意の値。hook は hooks.jsonl の行に記録し、ブリッジは同じ値の行だけを扱う
+# （同じ状態ディレクトリを使う別のセッションの終了・入力待ちを混ぜない）。起動し直しても同じ値のまま
+$sessionTag = '{0}-{1}' -f (Get-Date -Format 'yyyyMMddHHmmss'), ([guid]::NewGuid().ToString('N').Substring(0, 8))
+$env:SLACK_CHANNEL_SESSION_TAG = $sessionTag
 
 $extraServers = Read-ExtraMcpServers
 # ブリッジには状態ディレクトリと設定ファイルを環境変数で明示して渡す（claude.exe の環境の引き継ぎに頼らない）
 $mcpConfig = Write-McpConfig -FileName "$sessionName\mcp.json" -ServerName $ServerName -ScriptPath $mainJs `
-    -ExtraServers $extraServers -Env @{ SLACK_CHANNEL_STATE_DIR = $stateDir; SLACK_CHANNEL_SETTINGS_FILE = $settingsFile }
+    -ExtraServers $extraServers -Env @{
+        SLACK_CHANNEL_STATE_DIR = $stateDir; SLACK_CHANNEL_SETTINGS_FILE = $settingsFile; SLACK_CHANNEL_SESSION_TAG = $sessionTag
+    }
 $effectiveSettings = Get-EffectiveSettings -ExtraServers $extraServers
 
 # 各フラグの意味は README の「権限の設計」を参照
@@ -310,11 +316,11 @@ $restartFlag = Join-Path $stateDir $RestartFlagName
 if ($DryRun) {
     Write-Host "[DryRun] 実行されるコマンドライン:"
     Write-Host (Format-CommandLine -Exe $claude -Arguments $claudeArgs)
-    Write-Host "[DryRun] 終了時に $restartFlag があれば、--continue を付けて起動し直す（ダイアログは scripts\dialog-answer.ps1 が答える）"
+    Write-Host "[DryRun] 終了時に $restartFlag があれば、--resume <印の session_id>（無ければ --continue）を付けて起動し直す（ダイアログは scripts\dialog-answer.ps1 が答える）"
     exit 0
 }
 
-# --- 起動（Slack の !restart で印が置かれていたら --continue で起動し直す） ------------------
+# --- 起動（Slack の !restart で印が置かれていたら、同じ会話を開いて起動し直す） ------------------
 
 # Start-Process -ArgumentList に渡す値を、空白を含んでも 1 つの引数として届くよう引用符で囲む
 function Quote-Arg {
@@ -325,11 +331,13 @@ function Quote-Arg {
 # 前回の残り（起動し直す前に手で止めた等）は捨てる
 Remove-Item -LiteralPath $restartFlag -Force -ErrorAction SilentlyContinue
 
-$resume = $false
+# 起動し直すときに付ける引数（初回は空）
+$resumeArgs = @()
 Push-Location $projectDir
 try {
     do {
-        $args = if ($resume) { @('--continue') + $claudeArgs } else { $claudeArgs }
+        $resume = $resumeArgs.Count -gt 0
+        $args = $resumeArgs + $claudeArgs
         if ($resume) {
             # 手元に人がいない前提なので、警告ダイアログは画面を見張って自動で答える。
             # Start-Process -ArgumentList は要素を空白でつなぐだけなので、空白を含みうる値は引用符で囲む
@@ -345,10 +353,14 @@ try {
         $code = $LASTEXITCODE
         $again = Test-Path -LiteralPath $restartFlag
         if ($again) {
+            # 印に session_id があれば --resume でその会話を開く。--continue はこのフォルダーで最新の会話を開くので、
+            # 同じフォルダーで VS Code などの会話が後から作られていると、そちらを開いてしまう
+            $sessionId = Read-RestartSessionId -Path $restartFlag
             Remove-Item -LiteralPath $restartFlag -Force -ErrorAction SilentlyContinue
-            $resume = $true
+            # @() で包む（要素 1 つの配列を if の結果で代入すると文字列になり、後の + $claudeArgs が文字列の連結になる）
+            $resumeArgs = @(if ($sessionId) { '--resume', $sessionId } else { '--continue' })
             Write-Host ""
-            Write-Host "[start] Slack からの指示で起動し直す（--continue で会話を引き継ぐ）"
+            Write-Host "[start] Slack からの指示で起動し直す（$($resumeArgs -join ' ') で会話を引き継ぐ）"
         }
     } while ($again)
     exit $code

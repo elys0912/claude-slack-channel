@@ -90,7 +90,7 @@ export const HELP_TEXT = [
   '• `!compact` … /compact を送る（会話を要約して縮める）',
   '• `!clear` … /clear を送る（会話を捨てて新しい会話にする）',
   '• `!lock` … 「このセッション中は全部許可」を解除する（使えるボットだけ）',
-  '• `!restart` … /exit を送って起動し直す（会話は --continue で引き継ぐ）',
+  '• `!restart` … /exit を送って起動し直す（会話は引き継ぐ）',
   '• `!restart force` … Claude Code を強制終了して起動し直す（応答しないとき用）',
   '',
   '`/` で始まる文は Slack のコマンドとして扱われ、Claude Code には届かない。スラッシュコマンドは上の `!` 版を使うこと。',
@@ -422,7 +422,9 @@ export interface BridgeAppOptions {
   hookInboxFile?: string | undefined;
   /** hooks.jsonl を読みに行く間隔（ミリ秒。テスト用。省略時は hook-inbox.ts の既定） */
   hookPollMs?: number | undefined;
-  /** `!restart` が置く印（状態ディレクトリの restart.flag。start.ps1 が見て --continue で起動し直す）。省略時は !restart・!compact・!clear を使えない */
+  /** hook の記録のうち扱う行の session_tag（start.ps1 が環境変数 SLACK_CHANNEL_SESSION_TAG で渡す）。省略時は全部扱う */
+  sessionTag?: string | undefined;
+  /** `!restart` が置く印（状態ディレクトリの restart.flag。start.ps1 が見て起動し直す）。省略時は !restart・!compact・!clear を使えない */
   restartFlagFile?: string | undefined;
   /** `!restart force` で claude.exe を止める手段（テスト用。省略時は taskkill でプロセスツリーごと止める） */
   killParent?: SessionControlOptions['killParent'];
@@ -478,12 +480,16 @@ export async function startBridgeApp(opts: BridgeAppOptions): Promise<RunningApp
 
   // --- hook の記録 → Slack への知らせ -------------------------------------------
   const notice = new NoticePoster(bridge, () => relay.lastThread, logger);
+  /** 今の会話の session_id（自分のセッションの hook の記録で最後に見たもの）。!restart で同じ会話を開き直すのに使う */
+  let sessionId: string | undefined;
   const inbox = opts.hookInboxFile
     ? new HookInbox({
         file: opts.hookInboxFile,
         logger,
         pollMs: opts.hookPollMs,
+        sessionTag: opts.sessionTag,
         onEvent: async (event) => {
+          if (event.session_id) sessionId = event.session_id;
           // !clear などで新しい会話になったら、「全部許可」を解除する（会話ごとに許可し直す）
           if (event.hook_event_name === 'SessionStart' && event.source === 'clear' && sessionAllow?.disable()) {
             logger.info('全部許可を解除（新しい会話）');
@@ -518,7 +524,7 @@ export async function startBridgeApp(opts: BridgeAppOptions): Promise<RunningApp
     });
   };
   const session = opts.restartFlagFile
-    ? new SessionControl({ console: opts.console, restartFlagFile: opts.restartFlagFile, slack: bridge, logger, killParent: opts.killParent })
+    ? new SessionControl({ console: opts.console, restartFlagFile: opts.restartFlagFile, slack: bridge, logger, killParent: opts.killParent, sessionId: () => sessionId })
     : undefined;
   const wiring: Wiring = { bridge, server, relay, logger, watchdog, screen, rules, status, session, sessionAllow };
 

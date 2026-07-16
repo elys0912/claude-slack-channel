@@ -155,6 +155,31 @@ describe('SessionControl', () => {
   });
 });
 
+describe('restart.flag の中身', () => {
+  it('sessionId を渡せば印に書き、無ければ書かない', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'flag-content-'));
+    const flag = path.join(dir, 'restart.flag');
+    try {
+      const make = (sessionId: (() => string | undefined) | undefined) =>
+        new SessionControl({
+          console: undefined,
+          restartFlagFile: flag,
+          slack: { postText: async () => ({ ts: [] }) },
+          logger: new Logger({ stderr: false }),
+          killParent: () => undefined,
+          sessionId,
+        });
+      await make(() => 'c2097ecd-29b0-4cee-9f3e-a9aeace64bc3').restart(AT, 'U1', true);
+      expect(JSON.parse(fs.readFileSync(flag, 'utf8'))).toMatchObject({ sessionId: 'c2097ecd-29b0-4cee-9f3e-a9aeace64bc3' });
+
+      await make(undefined).restart(AT, 'U1', true);
+      expect(JSON.parse(fs.readFileSync(flag, 'utf8'))).not.toHaveProperty('sessionId');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('parseTasklistName（!restart force で親の名前を確かめる）', () => {
   it('tasklist の CSV から pid の行のイメージ名を読む', () => {
     const csv = '"claude.exe","4321","Console","1","250,000 K"\r\n';
