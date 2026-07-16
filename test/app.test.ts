@@ -46,7 +46,16 @@ async function startHarness(
   replyTimeoutMs?: number,
   extra: Pick<
     BridgeAppOptions,
-    'console' | 'allowExtraFile' | 'denyFiles' | 'home' | 'hookInboxFile' | 'hookPollMs' | 'restartFlagFile' | 'killParent' | 'sessionAllowAll'
+    | 'console'
+    | 'allowExtraFile'
+    | 'denyFiles'
+    | 'home'
+    | 'hookInboxFile'
+    | 'hookPollMs'
+    | 'restartFlagFile'
+    | 'killParent'
+    | 'sessionAllowAll'
+    | 'sessionTag'
   > = {}
 ): Promise<Harness> {
   const web = makeWeb();
@@ -1170,6 +1179,75 @@ describe('hook の記録（hooks.jsonl）からの知らせ', () => {
     await wait(60);
     expect(posts()).toHaveLength(1);
     expect(String(posts()[0]?.args.text)).toContain('返事をしないまま');
+  });
+});
+
+describe('自分のセッションの hook だけ扱う（session_tag）と、!restart で同じ会話を開き直す（session_id）', () => {
+  let h: Harness;
+  let dir: string;
+  let file: string;
+  let flag: string;
+  const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const posts = () => h.web.calls.filter((c) => c.method === 'chat.postMessage');
+  const hookLine = (fields: Record<string, unknown>) => JSON.stringify({ at: Date.now(), ...fields }) + '\n';
+  const MINE = 'c2097ecd-29b0-4cee-9f3e-a9aeace64bc3';
+  const OTHER = '0d1e2f3a-4b5c-4d6e-8f90-a1b2c3d4e5f6';
+
+  beforeEach(async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'app-tag-'));
+    file = path.join(dir, 'hooks.jsonl');
+    flag = path.join(dir, 'restart.flag');
+    h = await startHarness(ACCESS, undefined, {
+      hookInboxFile: file,
+      hookPollMs: 20,
+      sessionTag: 'tag-mine',
+      restartFlagFile: flag,
+      console: { read: async () => '❯ ', sendKeys: async () => undefined, sendCommand: async () => undefined },
+    });
+    h.web.calls.length = 0;
+  });
+
+  afterEach(async () => {
+    await h.client.close();
+    await h.stop();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('タグが違う・無い行は知らせない。同じタグの行だけ知らせる', async () => {
+    fs.appendFileSync(
+      file,
+      hookLine({ hook_event_name: 'SessionEnd', reason: 'prompt_input_exit', session_id: OTHER, session_tag: 'tag-other' }) +
+        hookLine({ hook_event_name: 'SessionEnd', reason: 'prompt_input_exit', session_id: OTHER })
+    );
+    await wait(80);
+    expect(posts()).toEqual([]);
+
+    fs.appendFileSync(file, hookLine({ hook_event_name: 'SessionEnd', reason: 'prompt_input_exit', session_id: MINE, session_tag: 'tag-mine' }));
+    await wait(80);
+    expect(posts().length).toBeGreaterThan(0);
+  });
+
+  it('!restart の印に、自分のタグの行で最後に見た session_id を書く（別のタグの id は使わない）', async () => {
+    fs.appendFileSync(
+      file,
+      hookLine({ hook_event_name: 'SessionStart', source: 'startup', session_id: MINE, session_tag: 'tag-mine' }) +
+        hookLine({ hook_event_name: 'SessionStart', source: 'startup', session_id: OTHER, session_tag: 'tag-other' })
+    );
+    await wait(80);
+
+    h.socket.emit('slack_event', dmEnvelope('!restart', { ts: '90.1' }));
+    await flush();
+    await flush();
+    const written = JSON.parse(fs.readFileSync(flag, 'utf8')) as { sessionId?: string };
+    expect(written.sessionId).toBe(MINE);
+  });
+
+  it('session_id がまだ分からなければ、印に id を書かない（start.ps1 は --continue にする）', async () => {
+    h.socket.emit('slack_event', dmEnvelope('!restart', { ts: '91.1' }));
+    await flush();
+    await flush();
+    const written = JSON.parse(fs.readFileSync(flag, 'utf8')) as Record<string, unknown>;
+    expect(written).not.toHaveProperty('sessionId');
   });
 });
 
