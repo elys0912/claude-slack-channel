@@ -6,7 +6,7 @@ import { loadAccess, loadHomeCustom, loadTokens, stateDir } from './config.js';
 import type { ParsedAccess, Tokens } from './config.js';
 import { errMessage } from './errors.js';
 import { Logger } from './log.js';
-import { InstanceLock } from './lock.js';
+import { InstanceLock, acquireWithRetry, isProcessAlive } from './lock.js';
 import { SlackBridge } from './slack.js';
 import { startBridgeApp, startDegradedApp } from './app.js';
 import { replyTimeoutMs } from './watchdog.js';
@@ -23,6 +23,9 @@ const EXIT_SETTLE_MS = 250;
 const SHUTDOWN_GRACE_MS = 2000;
 /** stdin の終了を取りこぼしていないか確認する間隔 */
 const STDIN_POLL_MS = 5000;
+/** ロックが取れないとき、縮退モードに入る前に取り直しを試す時間（旧ブリッジの終了処理は SHUTDOWN_GRACE_MS で終わる） */
+const LOCK_RETRY_MS = 10000;
+const LOCK_RETRY_INTERVAL_MS = 500;
 
 function createLogger(dir: string): Logger {
   const logger = new Logger({ file: path.join(dir, 'logs', 'bridge.log') });
@@ -50,9 +53,11 @@ async function abort(logger: Logger, what: string, e: unknown, cleanup: () => Pr
 // --- 起動 ---------------------------------------------------------------------
 
 async function main(dir: string, logger: Logger): Promise<void> {
-  // 同時に動く Slack ブリッジは1つだけ。2つ目は Slack に繋がず縮退モードで動く
-  const lock = new InstanceLock(path.join(dir, 'instance.lock'));
-  const lockResult = lock.tryAcquire();
+  // 同時に動く Slack ブリッジは1つだけ。2つ目は Slack に繋がず縮退モードで動く。
+  // 起動し直し（!restart）では旧ブリッジの終了処理と重なるので、少し待ってから諦める。
+  // 強制終了（!restart force）で解放されずに残ったロックは、持ち主の pid が死んでいれば取る
+  const lock = new InstanceLock(path.join(dir, 'instance.lock'), { isAlive: isProcessAlive });
+  const lockResult = await acquireWithRetry(lock, { timeoutMs: LOCK_RETRY_MS, intervalMs: LOCK_RETRY_INTERVAL_MS });
   const degraded = !lockResult.acquired;
   if (!lockResult.acquired) {
     process.stderr.write(
