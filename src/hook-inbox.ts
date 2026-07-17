@@ -2,9 +2,9 @@
 // Windows の fs.watch は取りこぼすので、一定間隔でサイズを見て増えた分だけ読む。
 import fs from 'node:fs';
 import { StringDecoder } from 'node:string_decoder';
-import { z } from 'zod';
 import type { Logger } from './log.js';
 import { EventDedupe } from './gate.js';
+import { HookEventSchema } from './hook-event.js';
 import type { HookEvent } from './hook-event.js';
 import { errMessage } from './errors.js';
 
@@ -22,21 +22,6 @@ export const READ_CHUNK_MAX = 1024 * 1024;
 export const PARTIAL_MAX = 64 * 1024;
 /** hook.ts が回した旧ファイルの名前（hooks.jsonl → hooks.jsonl.1） */
 const ROTATED_SUFFIX = '.1';
-
-const HookEventSchema = z.looseObject({
-  at: z.number(),
-  hook_event_name: z.string().min(1),
-  session_id: z.string().optional(),
-  notification_type: z.string().optional(),
-  message: z.string().optional(),
-  source: z.string().optional(),
-  reason: z.string().optional(),
-  error: z.string().optional(),
-  error_details: z.string().optional(),
-  trigger: z.string().optional(),
-  cwd: z.string().optional(),
-  session_tag: z.string().optional(),
-});
 
 export interface HookInboxOptions {
   file: string;

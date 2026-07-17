@@ -45,6 +45,8 @@ export function hookToNotice(event: HookEvent, ctx: NoticeContext): HookNotice |
     case 'SessionStart':
       return sessionStartNotice(event);
     case 'SessionEnd':
+      // /clear では SessionEnd（reason=clear）の直後に SessionStart（source=clear）が来て「会話をクリアした」を出すので、終了は出さない
+      if (event.reason === 'clear') return undefined;
       return { text: `🛑 Claude Code のセッションが終了した（${event.reason ?? '理由不明'}）`, screenButton: false };
     default:
       return undefined;

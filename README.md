@@ -396,7 +396,7 @@ Slack からは見えない Claude Code 側の出来事を、Claude Code の hoo
   - Claude が Slack に返事をしないまま応答を終えた（`Stop`）、または入力待ちのまま止まっている（`idle_prompt`）: Slack への返事を待っているときだけ
   - 応答が失敗した（`StopFailure`）: 使用量の上限（rate limit）・混雑・認証・請求などの種別と、あれば詳細
   - 使用量の上限からの自動再開の案内（`quota_auto_resume_*`）
-  - セッションの開始（作業フォルダー付き）・終了・会話のクリア・圧縮
+  - セッションの開始（作業フォルダー付き）・終了・会話のクリア・圧縮（`/clear` のときは終了を出さず「会話をクリアした」だけ）
 - 使用量の上限で止まったあとの自動再開（`autoContinueAtUsageLimit`）は、Claude Code の managed settings かデスクトップアプリでしか設定できない（CLI の設定や `--settings` では効かない）。
   上限に達したらここで知らせるので、再開の操作は手元でやること。
 - `node` が PATH に無いと hook は注入されない（起動スクリプトが警告を出す）。hook のイベント名や欄は Claude Code の版で変わりうるので、知らせが出ないときは `hooks.jsonl` に何が記録されているかを見ること。
