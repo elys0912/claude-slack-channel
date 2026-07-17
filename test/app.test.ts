@@ -814,9 +814,7 @@ describe('無応答の見張り（replyTimeoutMs）', () => {
   it('Claude が何も返さないまま待ち時間を過ぎたら、そのスレッドに警告を投稿する', async () => {
     h.socket.emit('slack_event', dmEnvelope('hello', { ts: '40.1', thread_ts: '40.0' }));
     await flush();
-    await wait(120);
-
-    expect(warnings()).toHaveLength(1);
+    await vi.waitFor(() => expect(warnings()).toHaveLength(1));
     expect(warnings()[0]?.args).toMatchObject({ channel: DM1, thread_ts: '40.0' });
   });
 
@@ -1152,11 +1150,26 @@ describe('!status / !restart / !compact / !clear / !help', () => {
   });
 });
 
+/**
+ * ここまでに hooks.jsonl に書いた行を、ブリッジが読み終えるまで待つ。必ず知らせる行（目印）を書き足し、その投稿が届くのを待つ。
+ * 行は書いた順に処理されるので、目印が届いた時点でそれより前の行は処理済み。目印の投稿は calls から取り除く
+ */
+async function drainHooks(h: Harness, file: string, fields: Record<string, unknown> = {}): Promise<void> {
+  const marker = `drain-${Math.random().toString(36).slice(2)}`;
+  fs.appendFileSync(file, JSON.stringify({ at: Date.now(), hook_event_name: 'StopFailure', error_details: marker, ...fields }) + '\n');
+  const isMarker = (c: { method: string; args: Record<string, unknown> }) =>
+    c.method === 'chat.postMessage' && String(c.args.text).includes(marker);
+  await vi.waitFor(() => expect(h.web.calls.some(isMarker)).toBe(true));
+  for (let i = h.web.calls.length - 1; i >= 0; i--) {
+    const call = h.web.calls[i];
+    if (call && isMarker(call)) h.web.calls.splice(i, 1);
+  }
+}
+
 describe('hook の記録（hooks.jsonl）からの知らせ', () => {
   let h: Harness;
   let dir: string;
   let file: string;
-  const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
   const posts = () => h.web.calls.filter((c) => c.method === 'chat.postMessage');
   const hookLine = (fields: Record<string, unknown>) => JSON.stringify({ at: Date.now(), session_id: 's1', ...fields }) + '\n';
 
@@ -1178,9 +1191,7 @@ describe('hook の記録（hooks.jsonl）からの知らせ', () => {
 
   it('ターミナル側の許可待ちは、画面を確認するボタン付きで許可ユーザー全員の DM に出す', async () => {
     fs.appendFileSync(file, hookLine({ hook_event_name: 'Notification', notification_type: 'permission_prompt', message: 'needs permission' }));
-    await wait(60);
-
-    expect(posts().map((p) => p.args.channel)).toEqual([DM1, DM2]);
+    await vi.waitFor(() => expect(posts().map((p) => p.args.channel)).toEqual([DM1, DM2]));
     expect(String(posts()[0]?.args.text)).toContain('ターミナル側で入力待ち');
     const blocks = posts()[0]?.args.blocks as { type: string; elements?: { action_id: string }[] }[];
     expect(blocks.at(-1)?.elements?.[0]?.action_id).toBe('screen_show');
@@ -1191,9 +1202,7 @@ describe('hook の記録（hooks.jsonl）からの知らせ', () => {
     await flush();
     h.web.calls.length = 0;
     fs.appendFileSync(file, hookLine({ hook_event_name: 'StopFailure', error: 'rate_limit' }));
-    await wait(60);
-
-    expect(posts()).toHaveLength(1);
+    await vi.waitFor(() => expect(posts()).toHaveLength(1));
     expect(posts()[0]?.args).toMatchObject({ channel: DM1, thread_ts: '70.1' });
     expect(String(posts()[0]?.args.text)).toContain('使用量の上限');
   });
@@ -1202,21 +1211,20 @@ describe('hook の記録（hooks.jsonl）からの知らせ', () => {
     await sendPermissionRequest(h.client);
     h.web.calls.length = 0;
     fs.appendFileSync(file, hookLine({ hook_event_name: 'Notification', notification_type: 'permission_prompt' }));
-    await wait(60);
+    await drainHooks(h, file);
     expect(posts()).toEqual([]);
   });
 
   it('Stop は Slack への返事が無いときだけ知らせる', async () => {
     fs.appendFileSync(file, hookLine({ hook_event_name: 'Stop' }));
-    await wait(60);
+    await drainHooks(h, file);
     expect(posts()).toEqual([]);
 
     h.socket.emit('slack_event', dmEnvelope('hello', { ts: '71.1' }));
     await flush();
     h.web.calls.length = 0;
     fs.appendFileSync(file, hookLine({ hook_event_name: 'Stop' }));
-    await wait(60);
-    expect(posts()).toHaveLength(1);
+    await vi.waitFor(() => expect(posts()).toHaveLength(1));
     expect(String(posts()[0]?.args.text)).toContain('返事をしないまま');
   });
 });
@@ -1226,7 +1234,6 @@ describe('自分のセッションの hook だけ扱う（session_tag）と、!r
   let dir: string;
   let file: string;
   let flag: string;
-  const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
   const posts = () => h.web.calls.filter((c) => c.method === 'chat.postMessage');
   const hookLine = (fields: Record<string, unknown>) => JSON.stringify({ at: Date.now(), ...fields }) + '\n';
   const MINE = 'c2097ecd-29b0-4cee-9f3e-a9aeace64bc3';
@@ -1258,12 +1265,12 @@ describe('自分のセッションの hook だけ扱う（session_tag）と、!r
       hookLine({ hook_event_name: 'SessionEnd', reason: 'prompt_input_exit', session_id: OTHER, session_tag: 'tag-other' }) +
         hookLine({ hook_event_name: 'SessionEnd', reason: 'prompt_input_exit', session_id: OTHER })
     );
-    await wait(80);
+    // 目印も自分のタグで書く（タグが違えば目印も届かない）
+    await drainHooks(h, file, { session_tag: 'tag-mine' });
     expect(posts()).toEqual([]);
 
     fs.appendFileSync(file, hookLine({ hook_event_name: 'SessionEnd', reason: 'prompt_input_exit', session_id: MINE, session_tag: 'tag-mine' }));
-    await wait(80);
-    expect(posts().length).toBeGreaterThan(0);
+    await vi.waitFor(() => expect(posts().length).toBeGreaterThan(0));
   });
 
   it('!restart の印に、自分のタグの行で最後に見た session_id を書く（別のタグの id は使わない）', async () => {
@@ -1272,7 +1279,8 @@ describe('自分のセッションの hook だけ扱う（session_tag）と、!r
       hookLine({ hook_event_name: 'SessionStart', source: 'startup', session_id: MINE, session_tag: 'tag-mine' }) +
         hookLine({ hook_event_name: 'SessionStart', source: 'startup', session_id: OTHER, session_tag: 'tag-other' })
     );
-    await wait(80);
+    // 目印は session_id 無しで書く（覚えている id を上書きしない）
+    await drainHooks(h, file, { session_tag: 'tag-mine' });
 
     h.socket.emit('slack_event', dmEnvelope('!restart', { ts: '90.1' }));
     await flush();
@@ -1294,7 +1302,6 @@ describe('このセッション中は全部許可', () => {
   let h: Harness;
   let dir: string;
   let hooks: string;
-  const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
   const posts = () => h.web.calls.filter((c) => c.method === 'chat.postMessage');
   const verdicts = () =>
     h.notifications.filter((x) => x.method === 'notifications/claude/channel/permission').map((x) => x.params);
@@ -1390,8 +1397,7 @@ describe('このセッション中は全部許可', () => {
     await enableByButton();
 
     fs.appendFileSync(hooks, JSON.stringify({ at: Date.now(), session_id: 's2', hook_event_name: 'SessionStart', source: 'clear' }) + '\n');
-    await wait(80);
-    expect(posts().some((p) => String(p.args.text).includes('全部許可」を解除した'))).toBe(true);
+    await vi.waitFor(() => expect(posts().some((p) => String(p.args.text).includes('全部許可」を解除した'))).toBe(true));
 
     h.web.calls.length = 0;
     await client_sendBash(h, 'npm test', 'fghij');
