@@ -117,9 +117,14 @@ export function keysToSelect(cursor: number, target: number): ConsoleKey[] {
 const EMPTY_PROMPT_RE = /^\s*[❯>](?:\s*|[\s\u00a0]+Try "[^"]*")$/;
 /** 入力欄を探す画面の末尾の行数 */
 const PROMPT_LOOKBACK = 8;
+/**
+ * 応答中の表示（スピナーの行の `esc to interrupt`）。Claude Code は応答中も入力欄を描くので、
+ * これがあれば空の入力欄があっても待っていない（/exit などを打ち込むと応答を壊す）
+ */
+const RESPONDING_RE = /esc to interrupt/i;
 
 /**
- * 画面が「何も打っていない入力欄で待っている」状態か（選択画面ではなく、末尾の数行に空の入力欄がある）。
+ * 画面が「何も打っていない入力欄で待っている」状態か（選択画面でも応答中でもなく、末尾の数行に空の入力欄がある）。
  * Slack から /exit や /compact を送ってよいかの確認に使う。入力欄に打ちかけの文字があれば false
  */
 export function hasEmptyPrompt(screen: string): boolean {
@@ -129,6 +134,7 @@ export function hasEmptyPrompt(screen: string): boolean {
     .map((l) => l.replace(/\s+$/, ''))
     .filter((l) => l.trim() !== '')
     .slice(-PROMPT_LOOKBACK);
+  if (tail.some((l) => RESPONDING_RE.test(l))) return false;
   return tail.some((l) => EMPTY_PROMPT_RE.test(l));
 }
 

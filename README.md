@@ -379,8 +379,10 @@ Claude への返事を待ち始めた時刻、回答待ちの実行許可の件�
 - `!clear`: 入力欄に `/clear` + Enter を送る。会話は捨てられ、新しい会話になる（元に戻せない。残したい文脈があるなら `!compact`）。
   終わると hook が「🧹 会話をクリアした」を出す。
 - `/exit`・`/compact`・`/clear` は、画面が **空の入力欄で待っているときだけ** 送る（応答中・選択画面・打ちかけの文字があるときは送らず、その旨を返す）。
-- 起動し直したあとの `--resume` / `--continue` と development channels の組み合わせ、ダイアログの自動応答（`development channel` という文字列を画面で探す）は
-  Claude Code の版によって変わりうる。動かなくなったら `start.ps1` の `$DevChannelDialogPattern` を直す。
+- 起動し直したあとの `--resume` / `--continue` と development channels の組み合わせ、ダイアログの自動応答は Claude Code の版によって変わりうる。
+  自動応答は、画面にタイトルの `development channel` と選択肢の `local development` の両方が出たときだけ答える（2.1.285 では「WARNING: Loading development channels」「I am using this for local development」）。
+  起動し直す前に画面を消すので、前のセッションの発言に反応することはない。動かなくなったら `start.ps1` の `$DevChannelDialogPattern` / `$DevChannelChoicePattern` を直す。
+- `/exit` などは画面に応答中の表示（`esc to interrupt`）があれば送らない（Claude Code は応答中も入力欄を描くため）。
 
 ### Claude Code 側の出来事の知らせ（hook）
 
@@ -593,6 +595,7 @@ deny は allow より必ず優先される（評価順は deny → ask → allow
 | 更新したのに挙動が変わらない | `npm run build` を実行してから起動し直す |
 | `!restart` したのに戻ってこない | `!status` で確認。/exit が効かなければ `!restart force`。起動し直しの警告ダイアログで止まっているなら、`dialog-answer.ps1` が探す文字列（`$DevChannelDialogPattern`）が画面の文言と合っていない可能性があるので、手元で画面を見て直す |
 | 使用量の上限や入力待ちの知らせが Slack に来ない | 状態ディレクトリの `hooks.jsonl` が増えているか見る。増えていなければ hook が動いていない（`%TEMP%\claude-slack-channel\channel-settings.merged.json` に `hooks` があるか、`node` に PATH が通っているか）。増えているのに来なければ、記録された `hook_event_name` / `notification_type` が対応表に無い可能性があるので、ログの `hooks.jsonl に読めない行がある` と合わせて確認する |
+| `!screen` / `!restart` / `!compact` / 警告ダイアログの自動応答が全部動かない | PowerShell が Constrained Language Mode だと `console.ps1` の `Add-Type` が失敗する。`powershell -NoProfile -Command '$ExecutionContext.SessionState.LanguageMode'` が `FullLanguage` か確かめる（2026-10-03 時点の手元は FullLanguage で動作）。それ以外なら、この機能はその PC では使えない |
 
 ## 開発
 
