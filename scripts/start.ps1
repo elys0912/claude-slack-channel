@@ -37,6 +37,8 @@ $RestartFlagName = 'restart.flag'
 # 起動し直すとき、experimental channels の警告ダイアログを自動で抜けるために画面で探す文字列（正規表現）。
 # ダイアログの文言が変わって抜けられなくなったら、ここを直す（start.ps1 自身が表示する文には含めないこと）
 $DevChannelDialogPattern = 'development channel'
+# 同じダイアログの選択肢「1」の文言（の一部）。Pattern と両方が画面にあるときだけ答える（発言などに Pattern が出ても誤爆しない）
+$DevChannelChoicePattern = 'local development'
 # ダイアログを待つ最大秒数
 $DevChannelDialogTimeoutSec = 90
 
@@ -339,13 +341,16 @@ try {
         $resume = $resumeArgs.Count -gt 0
         $launchArgs = $resumeArgs + $claudeArgs
         if ($resume) {
+            # 前のセッションの画面（Slack の発言など）が残っていると、dialog-answer.ps1 がそれに反応しうるので消しておく
+            Clear-Host
             # 手元に人がいない前提なので、警告ダイアログは画面を見張って自動で答える。
             # Start-Process -ArgumentList は要素を空白でつなぐだけなので、空白を含みうる値は引用符で囲む
             # （囲まないと 'development channel' が 2 つの引数に割れて、dialog-answer.ps1 が起動時に失敗する）
             Start-Process -FilePath 'powershell.exe' -NoNewWindow -ArgumentList @(
                 '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
                 '-File', (Quote-Arg (Join-Path $PSScriptRoot 'dialog-answer.ps1')),
-                '-Pattern', (Quote-Arg $DevChannelDialogPattern), '-TimeoutSec', $DevChannelDialogTimeoutSec,
+                '-Pattern', (Quote-Arg $DevChannelDialogPattern), '-ChoicePattern', (Quote-Arg $DevChannelChoicePattern),
+                '-TimeoutSec', $DevChannelDialogTimeoutSec,
                 '-LogFile', (Quote-Arg (Join-Path $stateDir 'logs\dialog-answer.log'))
             ) | Out-Null
         }
