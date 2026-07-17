@@ -39,6 +39,8 @@ $RestartFlagName = 'restart.flag'
 $DevChannelDialogPattern = 'development channel'
 # 同じダイアログの選択肢「1」の文言（の一部）。Pattern と両方が画面にあるときだけ答える（発言などに Pattern が出ても誤爆しない）
 $DevChannelChoicePattern = 'local development'
+# --resume で起動してからこの秒数以内に失敗で終わったら、引き継ぎに失敗したとみなして新しい会話で起動し直す
+$ResumeFailureSec = 30
 # ダイアログを待つ最大秒数
 $DevChannelDialogTimeoutSec = 90
 
@@ -318,7 +320,7 @@ $restartFlag = Join-Path $stateDir $RestartFlagName
 if ($DryRun) {
     Write-Host "[DryRun] 実行されるコマンドライン:"
     Write-Host (Format-CommandLine -Exe $claude -Arguments $claudeArgs)
-    Write-Host "[DryRun] 終了時に $restartFlag があれば、--resume <印の session_id>（無ければ --continue）を付けて起動し直す（ダイアログは scripts\dialog-answer.ps1 が答える）"
+    Write-Host "[DryRun] 終了時に $restartFlag があれば、--resume <印の session_id>（会話の記録が無ければ新しい会話）で起動し直す（ダイアログは scripts\dialog-answer.ps1 が答える）"
     exit 0
 }
 
@@ -333,14 +335,15 @@ function Quote-Arg {
 # 前回の残り（起動し直す前に手で止めた等）は捨てる
 Remove-Item -LiteralPath $restartFlag -Force -ErrorAction SilentlyContinue
 
-# 起動し直すときに付ける引数（初回は空）
+# 起動し直すときに付ける引数（初回・引き継ぐ会話が無いときは空）
 $resumeArgs = @()
+# Slack からの指示で起動し直している（手元に人がいない前提で、警告ダイアログに自動で答える）
+$relaunch = $false
 Push-Location $projectDir
 try {
     do {
-        $resume = $resumeArgs.Count -gt 0
         $launchArgs = $resumeArgs + $claudeArgs
-        if ($resume) {
+        if ($relaunch) {
             # 前のセッションの画面（Slack の発言など）が残っていると、dialog-answer.ps1 がそれに反応しうるので消しておく
             Clear-Host
             # 手元に人がいない前提なので、警告ダイアログは画面を見張って自動で答える。
@@ -354,18 +357,31 @@ try {
                 '-LogFile', (Quote-Arg (Join-Path $stateDir 'logs\dialog-answer.log'))
             ) | Out-Null
         }
+        $launchedAt = Get-Date
         & $claude @launchArgs
         $code = $LASTEXITCODE
         $again = Test-Path -LiteralPath $restartFlag
         if ($again) {
-            # 印に session_id があれば --resume でその会話を開く。--continue はこのフォルダーで最新の会話を開くので、
-            # 同じフォルダーで VS Code などの会話が後から作られていると、そちらを開いてしまう
+            # 印に session_id があり、その会話の記録があれば --resume でその会話を開く。
+            # 記録が無い（起動してから一度もやりとりしていない会話は保存されない）・id が分からないときは新しい会話で起動する。
+            # --continue は使わない（このフォルダーで最新の会話を開くので、同じフォルダーの VS Code などの会話を開いてしまう）
             $sessionId = Read-RestartSessionId -Path $restartFlag
             Remove-Item -LiteralPath $restartFlag -Force -ErrorAction SilentlyContinue
+            $relaunch = $true
             # @() で包む（要素 1 つの配列を if の結果で代入すると文字列になり、後の + $claudeArgs が文字列の連結になる）
-            $resumeArgs = @(if ($sessionId) { '--resume', $sessionId } else { '--continue' })
+            $resumeArgs = @(if ($sessionId -and (Test-SessionTranscript -SessionId $sessionId)) { '--resume', $sessionId })
             Write-Host ""
-            Write-Host "[start] Slack からの指示で起動し直す（$($resumeArgs -join ' ') で会話を引き継ぐ）"
+            if ($resumeArgs.Count -gt 0) {
+                Write-Host "[start] Slack からの指示で起動し直す（--resume $sessionId で会話を引き継ぐ）"
+            } else {
+                Write-Host "[start] Slack からの指示で起動し直す（引き継ぐ会話の記録が無いので、新しい会話で起動する）"
+            }
+        } elseif ($resumeArgs.Count -gt 0 -and $code -ne 0 -and ((Get-Date) - $launchedAt).TotalSeconds -lt $ResumeFailureSec) {
+            # --resume ですぐに失敗した（会話が見つからない等）。Slack から戻せなくならないよう、新しい会話で 1 回だけ起動し直す
+            $again = $true
+            $resumeArgs = @()
+            Write-Host ""
+            Write-Host "[start] --resume での起動に失敗した（exit=$code）。新しい会話で起動し直す"
         }
     } while ($again)
     exit $code

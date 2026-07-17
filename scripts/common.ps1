@@ -92,7 +92,7 @@ function Format-CommandLine {
 }
 
 # Slack の !restart が置いた印（restart.flag の JSON）から、会話の session_id を読む。
-# UUID の形でなければ（古い印・壊れた印・id が分からなかった）$null を返し、呼び出し側は --continue にする
+# UUID の形でなければ（古い印・壊れた印・id が分からなかった）$null を返し、呼び出し側は新しい会話で起動する
 function Read-RestartSessionId {
     param([string]$Path)
 
@@ -104,4 +104,17 @@ function Read-RestartSessionId {
     $id = [string]$flag.sessionId
     if ($id -match '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') { return $id }
     return $null
+}
+
+# session_id の会話の記録（<設定フォルダー>\projects\<フォルダー>\<id>.jsonl）があるか。
+# 起動してから一度もやりとりしていない会話は保存されないので、--resume しても「見つからない」で終わる
+function Test-SessionTranscript {
+    param([string]$SessionId, [string]$ConfigDir = $(if ($env:CLAUDE_CONFIG_DIR) { $env:CLAUDE_CONFIG_DIR } else { Join-Path $env:USERPROFILE '.claude' }))
+
+    $projects = Join-Path $ConfigDir 'projects'
+    if (-not (Test-Path -LiteralPath $projects)) { return $false }
+    $found = Get-ChildItem -LiteralPath $projects -Directory -ErrorAction SilentlyContinue |
+        Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName "$SessionId.jsonl") } |
+        Select-Object -First 1
+    return [bool]$found
 }
