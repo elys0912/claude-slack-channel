@@ -3,6 +3,7 @@ import type { ParsedAccess } from './config.js';
 import type { Verdict } from './types.js';
 import { neutralizeBroadcasts } from './format.js';
 import { TOKEN_ID_LENGTH } from './text.js';
+import { plainSection } from './blocks.js';
 
 export interface PermissionRequest {
   request_id: string;
@@ -332,7 +333,7 @@ export function buildExpiredBlocks(requestId: string): { text: string; blocks: u
 /** 1 行の知らせ（plain_text の section 1 つ） */
 function noticeBlocks(text: string): { text: string; blocks: unknown[] } {
   const safe = neutralizeBroadcasts(text);
-  return { text: safe, blocks: [{ type: 'section', text: { type: 'plain_text', text: safe } }] };
+  return { text: safe, blocks: [plainSection(safe)] };
 }
 
 /** 回答が無いまま自動で deny したときの表示。reason は「期限切れ」のような固定の文言（「〜のため自動で拒否した」に続く） */
