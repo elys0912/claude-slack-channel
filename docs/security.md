@@ -23,6 +23,11 @@ Slack から実行できる範囲を変える前（`-PermissionMode` を変え�
 起動する `claude.exe` にだけ、環境変数 `ENABLE_CLAUDEAI_MCP_SERVERS=false` を渡して、claude.ai 側のコネクターを読み込まないようにしている。
 また、Claude Code のセッションの中（VS Code 拡張など）から起動すると、親のセッションの目印になる環境変数（`CLAUDECODE` など）が引き継がれる。これがあると子セッションとして扱われ、`reply` ツールが使えなくなるので、消してから起動する。
 
+**作業フォルダーの local スコープにも `slackbridge` を登録する。** Claude Code 2.1.289 から、`--dangerously-load-development-channels server:<名前>` は、設定ファイル（user・project・local など）に同じ名前の MCP サーバーが無いと受け付けない。`--mcp-config` で渡したサーバーは数に入らない。
+そこで起動スクリプトは、起動の前に `claude mcp add -s local slackbridge -e SLACK_CHANNEL_PLACEHOLDER=1 -- node <clone 先>\dist\src\main.js` を作業フォルダーで実行する（登録済みなら何もしない）。登録先は `%USERPROFILE%\.claude.json` の、その作業フォルダーの欄。
+Slack のセッションは `--strict-mcp-config` なので、この登録は読み込まれず、`--mcp-config` のサーバーが動く。普段のセッションでは読み込まれるが、`SLACK_CHANNEL_PLACEHOLDER=1` のときのサーバーはツールを持たず、Slack にも状態ディレクトリにも触らない。
+要らなくなったら、作業フォルダーで `claude mcp remove -s local slackbridge` を実行する。
+
 **プロジェクト側の設定は効く。** `--setting-sources project,local` なので、作業フォルダーの `.claude/settings.json` / `.claude/settings.local.json` の allow はそのまま有効になる。
 緩い allow を入れたプロジェクトでは、Slack のセッションを起動しないようにする。Claude 自身が `.claude/` 以下を書き換えて許可を広げることは、deny で禁止してある。
 

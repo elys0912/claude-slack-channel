@@ -48,6 +48,7 @@ GitHub Actions（`.github/workflows/ci.yml`）は、main への push と pull re
 | `src/app.ts` | Slack・MCP・実行許可のリレーの配線（通常モードと縮退モード）、MCP ツールと受信イベントの処理、ホームタブの更新 |
 | `src/slack.ts` | Slack の Socket Mode での受信と Web API での送信、チャンネルのスレッドの記憶 |
 | `src/mcp.ts` | MCP channel サーバー（`reply` / `react` / `edit_message` / `download_file` ツール） |
+| `src/placeholder.ts` | 待つだけの `slackbridge`。起動スクリプトが local スコープに登録し、普段のセッションで読み込まれる |
 | `src/permission-relay.ts` | 実行許可のリレーの状態管理（配信・回答・結果の表示への書き換え・自動 deny） |
 | `src/permission.ts` | 実行許可のメッセージのブロックの組み立てと、ボタン操作の検証（純関数） |
 | `src/session-allow.ts` | 「このセッション中は全部許可」の状態と、ask との照合 |
