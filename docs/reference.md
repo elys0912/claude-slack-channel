@@ -17,7 +17,7 @@
 
 | ファイル | 場所 | 内容 |
 |---|---|---|
-| `.env` | 状態ディレクトリ | `SLACK_BOT_TOKEN`（`xoxb-`）、`SLACK_APP_TOKEN`（`xapp-`）。任意で `DOWNLOAD_DIR`（添付の保存先の絶対パス）と `SESSION_ALLOW_ALL`（`on` で「このセッション中は全部許可」ボタンを出す） |
+| `.env` | 状態ディレクトリ | `SLACK_BOT_TOKEN`（`xoxb-`）、`SLACK_APP_TOKEN`（`xapp-`）。任意で `DOWNLOAD_DIR`（添付の保存先の絶対パス）と `SESSION_ALLOW_ALL`（`on` で「このセッション中は全部許可」ボタンを出す。on / off 以外の値は off にし、ログに警告を出す） |
 | `access.json` | 状態ディレクトリ | `teamId`（`T...`）、`allowFrom`（`U...` の配列）、`channels`（`C...` / `G...` の配列、省略可）。ほかのキーがあるとエラーにする |
 | `home.json` | 状態ディレクトリ（省略可） | ホームタブの文面の差し替え（[アプリのホームタブ](usage.md#アプリのホームタブ)） |
 | `allow-extra.json` | 状態ディレクトリ | Slack の「今後も許可」で足したルール（`{"allow": [...]}`）。ブリッジが書き、起動スクリプトが今の方式で作れるものだけを allow に足す（作れないものは起動の通知で知らせる。ファイルは書き換えない） |

@@ -132,6 +132,13 @@ describe('loadTokens', () => {
     expect(loadTokens(dir).sessionAllowAll === true).toBe(expected);
   });
 
+  it('SESSION_ALLOW_ALL が on / off 以外なら、起動は止めずに off にして知らせる', () => {
+    fs.writeFileSync(path.join(dir, '.env'), 'SLACK_BOT_TOKEN=xoxb-TEST-DUMMY\nSLACK_APP_TOKEN=xapp-TEST-DUMMY\nSESSION_ALLOW_ALL=yes\n');
+    const warnings: string[] = [];
+    expect('sessionAllowAll' in loadTokens(dir, (m) => warnings.push(m))).toBe(false);
+    expect(warnings).toEqual(['.env の SESSION_ALLOW_ALL の値（3 文字）は on / off のどちらでもないので off にした']);
+  });
+
   it('SESSION_ALLOW_ALL が無ければ「全部許可」は使えない', () => {
     fs.writeFileSync(path.join(dir, '.env'), 'SLACK_BOT_TOKEN=xoxb-TEST-DUMMY\nSLACK_APP_TOKEN=xapp-TEST-DUMMY\n');
     expect('sessionAllowAll' in loadTokens(dir)).toBe(false);
