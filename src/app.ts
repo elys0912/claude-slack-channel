@@ -26,10 +26,11 @@ import { downloadAttachment } from './download.js';
 import type { DownloadDeps } from './download.js';
 import type { SlackFile } from './slack.js';
 import { HookInbox } from './hook-inbox.js';
+import type { HookEvent } from './hook-event.js';
 import { hookToNotice } from './hook-notices.js';
 import { NoticePoster } from './notice.js';
 import { Keepalive, keepaliveStatusLine } from './keepalive.js';
-import type { QuietHours } from './keepalive.js';
+import type { KeepaliveStatus, QuietHours } from './keepalive.js';
 import { formatTime } from './text.js';
 import { UsageWatch } from './usage-watch.js';
 import { takeCrashNotice } from './crash-notice.js';
@@ -167,8 +168,8 @@ export function createToolHandlers(
   onActivity?: () => void,
   download?: SlackDownloadDeps
 ): ToolHandlers {
-  const run = async (tool: string, action: () => Promise<string>, isAnswer = true): Promise<string> => {
-    if (isAnswer) onActivity?.();
+  /** 作業の途中で呼ぶツール。無応答の見張りは解かない */
+  const runWork = async (tool: string, action: () => Promise<string>): Promise<string> => {
     try {
       return await action();
     } catch (e) {
@@ -176,35 +177,40 @@ export function createToolHandlers(
       return `error: ${errMessage(e)}`;
     }
   };
+  /** 返事にあたるツール。成否によらず、先に onActivity を呼ぶ */
+  const runAnswer = async (tool: string, action: () => Promise<string>): Promise<string> => {
+    onActivity?.();
+    return runWork(tool, action);
+  };
 
   return {
     onReply: ({ chat_id, text, thread_ts }) =>
-      run('reply', async () => {
+      runAnswer('reply', async () => {
         const res = await bridge.postText(chat_id, text, thread_ts);
         // 送ったメッセージの ts。自分の返信を edit_message で直すときに使う
         return `sent (${res.ts.length} message(s)) ts=${res.ts.join(',')}`;
       }),
 
     onReact: ({ chat_id, message_id, emoji }) =>
-      run('react', async () => {
+      runAnswer('react', async () => {
         // Claude が `:eyes:` のようにコロン付きで渡してきても受け付ける
         await bridge.addReactionOrThrow(chat_id, message_id, emoji.replace(/^:|:$/g, ''));
         return 'reacted';
       }),
 
     onEdit: ({ chat_id, message_id, text }) =>
-      run('edit_message', async () => {
+      runAnswer('edit_message', async () => {
         await bridge.updateText(chat_id, message_id, text);
         return 'edited';
       }),
 
     onDownload: download
       ? ({ file_id, extract }) =>
-          run('download_file', async () => {
+          runWork('download_file', async () => {
             const result = await downloadAttachment(download, file_id, extract ?? false);
             logger.info(`download_file file=${file_id} extract=${extract ?? false}`);
             return result;
-          }, false)
+          })
       : undefined,
   };
 }
@@ -230,12 +236,16 @@ export function createDegradedDeps(logger: Logger): McpDeps {
 /** DM か許可チャンネルで届いたメッセージ。保留中の ID への `yes xxxxx` / `no xxxxx` なら許可の回答、それ以外は Claude へ中継する */
 export async function handleMessage(wiring: Wiring, result: GateResult, raw: InboundRef): Promise<void> {
   const { bridge, server, relay, logger, watchdog, onDelivered } = wiring;
+  /** 届いたメッセージのスレッド（返事の投稿先） */
+  const thread: ThreadRef | undefined = raw.channel && raw.threadTs ? { channel: raw.channel, threadTs: raw.threadTs } : undefined;
+  /** 届いたメッセージそのもの（リアクションを付ける先） */
+  const message = raw.channel && raw.ts ? { channel: raw.channel, ts: raw.ts } : undefined;
 
   // `!screen` などのコマンドは Claude に渡さずにここで処理する（Claude が止まっていても使えるように）
   const command = result.kind === 'deliver' ? parseCommand(result.content) : undefined;
-  if (command && raw.channel && raw.threadTs) {
-    if (raw.ts) await bridge.addReaction(raw.channel, raw.ts, REACTION.SEEN);
-    await handleCommand(wiring, command, { channel: raw.channel, threadTs: raw.threadTs }, raw.user ?? '');
+  if (command && thread) {
+    if (message) await bridge.addReaction(message.channel, message.ts, REACTION.SEEN);
+    await handleCommand(wiring, command, thread, raw.user ?? '');
     return;
   }
 
@@ -247,18 +257,18 @@ export async function handleMessage(wiring: Wiring, result: GateResult, raw: Inb
     case 'verdict':
       // gate 通過後に期限が切れた場合は Claude に送っていないので、リアクションも付けない
       if (!(await relay.answerByText(result.verdict, raw.user ?? ''))) return;
-      if (raw.channel && raw.ts) {
+      if (message) {
         const reaction = result.verdict.behavior === 'allow' ? REACTION.ALLOW : REACTION.DENY;
-        await bridge.addReaction(raw.channel, raw.ts, reaction);
+        await bridge.addReaction(message.channel, message.ts, reaction);
       }
       return;
 
     case 'deliver':
-      if (raw.channel && raw.threadTs) relay.rememberThread(raw.channel, raw.threadTs);
+      if (thread) relay.rememberThread(thread.channel, thread.threadTs);
       await server.pushMessage(result.content, result.meta);
-      if (raw.channel && raw.threadTs) watchdog.delivered({ channel: raw.channel, threadTs: raw.threadTs });
+      if (thread) watchdog.delivered(thread);
       onDelivered?.();
-      if (raw.channel && raw.ts) await bridge.addReaction(raw.channel, raw.ts, REACTION.SEEN);
+      if (message) await bridge.addReaction(message.channel, message.ts, REACTION.SEEN);
       return;
 
     default:
@@ -324,17 +334,20 @@ async function handleCommand(
         keepalive.setEnabled(command === 'keepalive on');
         logger.info(`keepalive を ${command === 'keepalive on' ? '有効' : '無効'}にした by=${byUserId}`);
       }
-      const s = keepalive.status();
-      const next = s.nextAt ? `次は ${formatTime(s.nextAt)}` : '予定なし（Claude が次に応答を終えたら決まる）';
-      const text = s.enabled
-        ? `♻️ キャッシュのつなぎ止め: 有効（${next}、送った回数 ${s.sent}/${s.max}）`
-        : '♻️ キャッシュのつなぎ止め: 無効（起動し直すと .env の設定に戻る）';
-      await bridge.postText(at.channel, text, at.threadTs);
+      await bridge.postText(at.channel, keepaliveStatusText(keepalive.status()), at.threadTs);
       return;
     }
     default:
       assertNever(command);
   }
+}
+
+/** `!keepalive` に返す状態の文 */
+function keepaliveStatusText(status: KeepaliveStatus): string {
+  if (!status.enabled) return '♻️ キャッシュのつなぎ止め: 無効（起動し直すと .env の設定に戻る）';
+
+  const next = status.nextAt ? `次は ${formatTime(status.nextAt)}` : '予定なし（Claude が次に応答を終えたら決まる）';
+  return `♻️ キャッシュのつなぎ止め: 有効（${next}、送った回数 ${status.sent}/${status.max}）`;
 }
 
 /** permission request のボタン（Allow / Deny / See more）が押されたとき */
@@ -521,10 +534,6 @@ export interface BridgeAppOptions {
 }
 
 /**
- * 通常モード: Slack と Claude Code（MCP）をつないで中継を始める。
- * MCP の接続か Socket Mode の開始に失敗したら、後片付け（lock.release → relay.denyAll → bridge.stop → server.close）をしてから投げ直す。
- */
-/**
  * ホームタブの更新。opts.home が無いか、bridge がホームを出せなければ何もしない。
  * publishHomeAll: users 全員のホームを書き換える。onHomeOpened: ホームが開かれたら最新の状態で出し直す
  */
@@ -561,6 +570,108 @@ function wireHome(
   };
 }
 
+/** hook の記録と中継から分かる、Claude の会話の状態。つなぎ止めと !restart が読む */
+interface TurnState {
+  /** Claude がターンの途中（中継してから、または手元で入力してから Stop まで） */
+  turnActive: boolean;
+  /** 使用量の上限に当たっている（StopFailure の rate_limit から、次に応答が終わるまで） */
+  limited: boolean;
+  /** 今の会話の session_id（自分のセッションの hook の記録で最後に見たもの）。!restart で同じ会話を開き直すのに使う */
+  sessionId: string | undefined;
+}
+
+/** applyHookEvent が状態を知らせる先と、知らせの投稿に使うもの */
+interface HookEventDeps {
+  keepalive: Keepalive | undefined;
+  usageWatch: UsageWatch | undefined;
+  sessionAllow: SessionAllowAll | undefined;
+  notice: NoticePoster;
+  watchdog: ResponseWatchdog;
+  relay: PermissionRelay;
+  logger: Logger;
+  /** 知らせに「画面を見る」ボタンを付けられるか（コンソールを読めるか） */
+  hasConsole: boolean;
+}
+
+/** hook の記録 1 行を、会話の状態とつなぎ止め・見張りに反映し、必要なら Slack に知らせる */
+async function applyHookEvent(event: HookEvent, state: TurnState, deps: HookEventDeps): Promise<void> {
+  const { keepalive, usageWatch, sessionAllow, notice, watchdog, relay, logger } = deps;
+  if (event.session_id) state.sessionId = event.session_id;
+  switch (event.hook_event_name) {
+    case 'UserPromptSubmit':
+      state.turnActive = true;
+      break;
+    case 'Stop':
+      state.turnActive = false;
+      state.limited = false;
+      usageWatch?.limitCleared();
+      keepalive?.requestEnded(event.at);
+      break;
+    case 'StopFailure':
+      state.turnActive = false;
+      if (event.error === 'rate_limit') {
+        state.limited = true;
+        usageWatch?.limitHit();
+      }
+      keepalive?.requestEnded(event.at);
+      break;
+    case 'SessionStart':
+      keepalive?.resetCount();
+      usageWatch?.contextReset();
+      break;
+    case 'PostCompact':
+      usageWatch?.contextReset();
+      break;
+  }
+
+  // !clear などで新しい会話になったら、「全部許可」を解除する（会話ごとに許可し直す）
+  if (event.hook_event_name === 'SessionStart' && event.source === 'clear' && sessionAllow?.disable()) {
+    logger.info('全部許可を解除（新しい会話）');
+    await notice.post('🔒 新しい会話になったので「このセッション中は全部許可」を解除した');
+  }
+
+  const found = hookToNotice(event, { waiting: watchdog.isWaiting(), pending: relay.pendingCount() });
+  if (!found) return;
+  logger.info(`hook を知らせる event=${event.hook_event_name} type=${event.notification_type ?? '-'}`);
+  await notice.post(found.text, noticeBlocks(found.text, found.screenButton && deps.hasConsole));
+}
+
+/** `!status` の文面を作るのに読むもの */
+interface StatusSources {
+  startedAt: Date;
+  workDir: string | undefined;
+  bridge: AppBridge;
+  watchdog: ResponseWatchdog;
+  relay: PermissionRelay;
+  inbox: HookInbox | undefined;
+  sessionAllow: SessionAllowAll | undefined;
+  keepalive: Keepalive | undefined;
+  usageWatch: UsageWatch | undefined;
+}
+
+/** `!status` の文面。呼ぶたびにその時点の状態から作る */
+function buildBridgeStatus(src: StatusSources): string {
+  const { watchdog, keepalive, usageWatch, sessionAllow } = src;
+  const waiting = watchdog.waitingSince();
+  return buildStatusText({
+    startedAt: src.startedAt,
+    workDir: src.workDir ?? '',
+    slackConnected: src.bridge.isConnected,
+    waitingSince: waiting === undefined ? undefined : new Date(waiting),
+    pendingPermissions: src.relay.pendingCount(),
+    lastHooks: src.inbox?.lastEvents(5) ?? [],
+    sessionAllowSince: sessionAllow ? (sessionAllow.current?.since ?? null) : undefined,
+    extraLines: [keepalive ? keepaliveStatusLine(keepalive.status()) : undefined, usageWatch?.statusLine()].filter(
+      (line): line is string => line !== undefined
+    ),
+    now: new Date(),
+  });
+}
+
+/**
+ * 通常モード: Slack と Claude Code（MCP）をつないで中継を始める。
+ * MCP の接続か Socket Mode の開始に失敗したら、後片付け（RunningApp.stop と同じ手順）をしてから投げ直す。
+ */
 export async function startBridgeApp(opts: BridgeAppOptions): Promise<RunningApp> {
   const { bridge, logger } = opts;
 
@@ -593,35 +704,17 @@ export async function startBridgeApp(opts: BridgeAppOptions): Promise<RunningApp
     },
   };
   const server: ChannelServer = opts.server ?? new ChannelServer(deps);
-  const sessionAllow = opts.sessionAllowAll
-    ? // deny に当たる操作は Claude Code が確認を出す前に止めるので、照合するのは ask だけ
-      // managed の ask も、--settings より優先して Claude Code が確認を求めるので照合する
-      new SessionAllowAll(() => [...(opts.denyFiles ?? []), ...(opts.managedSettingsFiles?.() ?? [])].flatMap((f) => readAsk(f)))
-    : undefined;
+  // deny に当たる操作は Claude Code が確認を出す前に止めるので、照合するのは ask だけ。
+  // managed の ask も、--settings より優先して Claude Code が確認を求めるので照合する
+  const loadAskRules = (): string[] =>
+    [...(opts.denyFiles ?? []), ...(opts.managedSettingsFiles?.() ?? [])].flatMap((f) => readAsk(f));
+  const sessionAllow = opts.sessionAllowAll ? new SessionAllowAll(loadAskRules) : undefined;
   const relay: PermissionRelay = new PermissionRelay(bridge, server, logger, undefined, sessionAllow);
   const startedAt = new Date();
+  const turn: TurnState = { turnActive: false, limited: false, sessionId: undefined };
 
-  // --- キャッシュのつなぎ止め ------------------------------------------------------
-  /** Claude がターンの途中（中継してから、または手元で入力してから Stop まで） */
-  let turnActive = false;
-  /** 使用量の上限に当たっている（StopFailure の rate_limit から、次に応答が終わるまで） */
-  let limited = false;
-  const keepalive =
-    opts.keepalive && opts.hookInboxFile
-      ? new Keepalive({
-          ...opts.keepalive,
-          send: () => server.pushMessage(KEEPALIVE_TEXT, { kind: 'keepalive' }),
-          isBusy: () => turnActive || watchdog.isWaiting() || relay.pendingCount() > 0,
-          // 使用量がしきい値を越えている間も送らない（合図でも使用量を使うため）
-          isLimited: () => limited || (usageWatch?.isHigh() ?? false),
-          logger,
-        })
-      : undefined;
-
-  // --- hook の記録 → Slack への知らせ -------------------------------------------
+  // --- hook の記録 → Slack への知らせ・使用量の見張り -------------------------------
   const notice = new NoticePoster(bridge, () => relay.lastThread, logger);
-  /** 今の会話の session_id（自分のセッションの hook の記録で最後に見たもの）。!restart で同じ会話を開き直すのに使う */
-  let sessionId: string | undefined;
   const usageWatch = opts.usageWatch
     ? new UsageWatch({
         ...opts.usageWatch,
@@ -630,72 +723,54 @@ export async function startBridgeApp(opts: BridgeAppOptions): Promise<RunningApp
         logger,
       })
     : undefined;
+
+  // --- キャッシュのつなぎ止め ------------------------------------------------------
+  const keepalive =
+    opts.keepalive && opts.hookInboxFile
+      ? new Keepalive({
+          ...opts.keepalive,
+          send: () => server.pushMessage(KEEPALIVE_TEXT, { kind: 'keepalive' }),
+          isBusy: () => turn.turnActive || watchdog.isWaiting() || relay.pendingCount() > 0,
+          // 使用量がしきい値を越えている間も送らない（合図でも使用量を使うため）
+          isLimited: () => turn.limited || (usageWatch?.isHigh() ?? false),
+          logger,
+        })
+      : undefined;
+
+  const hookDeps: HookEventDeps = {
+    keepalive,
+    usageWatch,
+    sessionAllow,
+    notice,
+    watchdog,
+    relay,
+    logger,
+    hasConsole: opts.console !== undefined,
+  };
   const inbox = opts.hookInboxFile
     ? new HookInbox({
         file: opts.hookInboxFile,
         logger,
         pollMs: opts.hookPollMs,
         sessionTag: opts.sessionTag,
-        onEvent: async (event) => {
-          if (event.session_id) sessionId = event.session_id;
-          switch (event.hook_event_name) {
-            case 'UserPromptSubmit':
-              turnActive = true;
-              break;
-            case 'Stop':
-              turnActive = false;
-              limited = false;
-              usageWatch?.limitCleared();
-              keepalive?.requestEnded(event.at);
-              break;
-            case 'StopFailure':
-              turnActive = false;
-              if (event.error === 'rate_limit') {
-                limited = true;
-                usageWatch?.limitHit();
-              }
-              keepalive?.requestEnded(event.at);
-              break;
-            case 'SessionStart':
-              keepalive?.resetCount();
-              usageWatch?.contextReset();
-              break;
-            case 'PostCompact':
-              usageWatch?.contextReset();
-              break;
-          }
-          // !clear などで新しい会話になったら、「全部許可」を解除する（会話ごとに許可し直す）
-          if (event.hook_event_name === 'SessionStart' && event.source === 'clear' && sessionAllow?.disable()) {
-            logger.info('全部許可を解除（新しい会話）');
-            await notice.post('🔒 新しい会話になったので「このセッション中は全部許可」を解除した');
-          }
-          const found = hookToNotice(event, { waiting: watchdog.isWaiting(), pending: relay.pendingCount() });
-          if (!found) return;
-          logger.info(`hook を知らせる event=${event.hook_event_name} type=${event.notification_type ?? '-'}`);
-          await notice.post(found.text, noticeBlocks(found.text, found.screenButton && opts.console !== undefined));
-        },
+        onEvent: (event) => applyHookEvent(event, turn, hookDeps),
       })
     : undefined;
 
   // --- !status / !restart / !compact / !clear -------------------------------------
-  const status = (): string => {
-    const waiting = watchdog.waitingSince();
-    return buildStatusText({
-      startedAt,
-      workDir: opts.workDir ?? '',
-      slackConnected: bridge.isConnected,
-      waitingSince: waiting === undefined ? undefined : new Date(waiting),
-      pendingPermissions: relay.pendingCount(),
-      lastHooks: inbox?.lastEvents(5) ?? [],
-      sessionAllowSince: sessionAllow ? (sessionAllow.current?.since ?? null) : undefined,
-      extraLines: [keepalive ? keepaliveStatusLine(keepalive.status()) : undefined, usageWatch?.statusLine()].filter(
-        (line): line is string => line !== undefined
-      ),
-      now: new Date(),
-    });
+  const statusSources: StatusSources = {
+    startedAt,
+    workDir: opts.workDir,
+    bridge,
+    watchdog,
+    relay,
+    inbox,
+    sessionAllow,
+    keepalive,
+    usageWatch,
   };
   const session = opts.restartFlagFile
-    ? new SessionControl({ console: opts.console, restartFlagFile: opts.restartFlagFile, bridge, logger, killParent: opts.killParent, sessionId: () => sessionId })
+    ? new SessionControl({ console: opts.console, restartFlagFile: opts.restartFlagFile, bridge, logger, killParent: opts.killParent, sessionId: () => turn.sessionId })
     : undefined;
   const wiring: Wiring = {
     bridge,
@@ -705,12 +780,12 @@ export async function startBridgeApp(opts: BridgeAppOptions): Promise<RunningApp
     watchdog,
     screen,
     rules,
-    status,
+    status: () => buildBridgeStatus(statusSources),
     session,
     sessionAllow,
     keepalive,
     onDelivered: () => {
-      turnActive = true;
+      turn.turnActive = true;
       keepalive?.resetCount();
     },
   };
@@ -756,18 +831,20 @@ export async function startBridgeApp(opts: BridgeAppOptions): Promise<RunningApp
     throw e;
   }
   logger.info('Slack ブリッジ稼働中');
-  // 起動の途中で終了処理（stdin の終了など）が始まっていたら、それ以上は始めない（止めた後に投稿やタイマーを残さない）
-  if (stopped === undefined) await publishHomeAll(true, startedAt);
-  if (stopped === undefined && ruleStore) await noticeRejectedRules(ruleStore, notice, logger);
-  if (stopped === undefined) await inbox?.start();
-  if (stopped === undefined && opts.crashFile) {
-    const crashed = takeCrashNotice(opts.crashFile);
-    if (crashed) {
-      logger.warn('想定外の終了から起動し直した');
-      await notice.post(crashed);
-    }
+
+  // 起動の途中で終了処理（stdin の終了など）が始まっていたら、それ以上は始めない（止めた後に投稿やタイマーを残さない）。
+  // 終了処理は await の間に始まり得るので、手順ごとに確かめ直す
+  const afterStart: (() => Promise<void> | void)[] = [
+    () => publishHomeAll(true, startedAt),
+    () => (ruleStore ? noticeRejectedRules(ruleStore, notice, logger) : undefined),
+    () => inbox?.start(),
+    () => (opts.crashFile ? noticeCrash(opts.crashFile, notice, logger) : undefined),
+    () => usageWatch?.start(),
+  ];
+  for (const step of afterStart) {
+    if (stopped !== undefined) break;
+    await step();
   }
-  if (stopped === undefined) usageWatch?.start();
 
   return { stop };
 }
@@ -783,6 +860,14 @@ async function noticeRejectedRules(store: AllowRuleStore, notice: NoticePoster, 
   logger.warn(`今の方式では作れない保存済みのルール ${rejected.length} 件を allow に入れていない: ${rejected.join(', ')}`);
   writeStderr(text);
   await notice.post(text);
+}
+
+/** start.ps1 が想定外の終了から起動し直したときの印（crash.json）があれば、読んで知らせる（印は takeCrashNotice が消す） */
+async function noticeCrash(file: string, notice: NoticePoster, logger: Logger): Promise<void> {
+  const crashed = takeCrashNotice(file);
+  if (!crashed) return;
+  logger.warn('想定外の終了から起動し直した');
+  await notice.post(crashed);
 }
 
 /** stderr（Claude Code の /mcp で見える）に 1 行書く。接頭辞と改行はここで付ける */
