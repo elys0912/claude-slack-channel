@@ -78,6 +78,7 @@ describe('ChannelServer の initialize', () => {
   it('instructions に安全上の規則が含まれる', () => {
     expect(INSTRUCTIONS).toContain('reply');
     expect(INSTRUCTIONS).toContain('access.json');
+    expect(INSTRUCTIONS).toContain('keepalive');
     expect(INSTRUCTIONS).toContain('トークン');
     expect(INSTRUCTIONS).toContain('データ');
   });

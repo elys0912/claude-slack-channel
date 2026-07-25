@@ -54,6 +54,7 @@ GitHub Actions（`.github/workflows/ci.yml`）は、main への push と pull re
 | `src/session-allow.ts` | 「このセッション中は全部許可」の状態と、ask との照合 |
 | `src/gate.ts` | 受信したメッセージを中継すべきかの判定（純関数） |
 | `src/watchdog.ts` | Claude の無応答の見張り |
+| `src/keepalive.ts` | キャッシュのつなぎ止め |
 | `src/hook.ts` | Claude Code の hook として起動され、`hooks.jsonl` に1行追記するコマンド |
 | `src/hook-event.ts` | `hooks.jsonl` の1行のスキーマ（zod）と型 |
 | `src/hook-inbox.ts` | `hooks.jsonl` の増えた分を読み、イベントとして渡す |
