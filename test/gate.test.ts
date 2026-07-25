@@ -197,6 +197,11 @@ describe('gate', () => {
     expect(result.kind === 'deliver' && result.meta.attachment_ids).toBe('F1AAA,F2BBB');
   });
 
+  it('スレッドへの返信を「チャンネル（DM）にも送る」で投稿したもの（thread_broadcast）も届ける', () => {
+    const result = gate(baseMsg({ subtype: 'thread_broadcast', text: '続けて' }), access, selfBotUserId, new EventDedupe());
+    expect(result.kind).toBe('deliver');
+  });
+
   it('delivers subtype file_share', () => {
     const dedupe = new EventDedupe();
     const result = gate(

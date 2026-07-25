@@ -1,7 +1,7 @@
 // 「♾ 今後も許可」から許可リスト（allow-extra.json）への追加を提案し、確認のうえ書き込む。`!rules` で一覧・削除もする。
 // 書き込んだルールは start.ps1 が次の起動時に channel-settings.json の allow へ足す（起動中のセッションには効かない）。
 import type { Logger } from './log.js';
-import { ACTION, numberedAction } from './permission.js';
+import { ACTION, PLAIN_TEXT_LIMIT, numberedAction } from './permission.js';
 import type { PermissionRequest } from './permission.js';
 import { AllowRuleStore, denyOverlaps, parseRuleForCheck, proposeRule } from './allow-rules.js';
 import { clip, newToken } from './text.js';
@@ -125,7 +125,8 @@ export class RuleRelay {
         channel,
         `Slack から追加したルール ${rules.length} 件`,
         [
-          section(`Slack から追加したルール（次に起動し直したときに反映）\n${shown.map((r) => `• ${r}`).join('\n')}${more}`),
+          // 長いルールがたまっても Slack に拒否されないよう、plain_text の上限に収める（件数は先頭に出し、削除はボタンで全件できる）
+          section(clip(`Slack から追加したルール（次に起動し直したときに反映）${more}\n${shown.map((r) => `• ${r}`).join('\n')}`, PLAIN_TEXT_LIMIT)),
           {
             type: 'actions',
             elements: shown.map((r, i) => ({

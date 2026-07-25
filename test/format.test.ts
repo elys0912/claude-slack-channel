@@ -6,10 +6,14 @@ describe('neutralizeBroadcasts', () => {
     expect(neutralizeBroadcasts('<!channel>')).toBe('@​channel');
   });
 
-  it('neutralizes <!here|here>', () => {
-    // <!here|here> のような label 付き形式は subteam 以外では通常使われないが
-    // <!here> 単体（label なし）は必ず無効化されることを確認する
+  it('neutralizes <!here>', () => {
     expect(neutralizeBroadcasts('<!here>')).toBe('@​here');
+  });
+
+  it('ラベル付きの <!here|here> / <!channel|channel> / <!everyone|x> も無効化する', () => {
+    expect(neutralizeBroadcasts('<!here|here>')).toBe('@​here');
+    expect(neutralizeBroadcasts('a <!channel|channel> b')).toBe('a @​channel b');
+    expect(neutralizeBroadcasts('<!everyone|x>')).toBe('@​everyone');
   });
 
   it('neutralizes <!everyone>', () => {

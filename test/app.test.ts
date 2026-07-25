@@ -110,6 +110,12 @@ async function startHarness(
   return harness;
 }
 
+/** ツールの結果の 1 つ目の文 */
+function toolText(res: Awaited<ReturnType<Client['callTool']>>): string {
+  const first = (res.content as { type: string; text?: string }[])[0];
+  return first?.text ?? '';
+}
+
 function dmEnvelope(text: string, overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     type: 'events_api',
@@ -423,9 +429,9 @@ describe('MCP → Slack', () => {
     await h.stop();
   });
 
-  it('reply は DM に投稿し "sent (N message(s))" を返す', async () => {
+  it('reply は DM に投稿し "sent (N message(s)) ts=<送ったメッセージの ts>" を返す（edit_message で自分の返信を直せるように）', async () => {
     const res = await h.client.callTool({ name: 'reply', arguments: { chat_id: DM1, text: 'hi', thread_ts: '10.1' } });
-    expect(res.content).toEqual([{ type: 'text', text: 'sent (1 message(s))' }]);
+    expect(toolText(res)).toMatch(/^sent \(1 message\(s\)\) ts=100\.\d+$/);
     expect(res.isError).toBeFalsy();
     const posts = h.web.calls.filter((c) => c.method === 'chat.postMessage');
     expect(posts).toEqual([
@@ -441,7 +447,7 @@ describe('MCP → Slack', () => {
     const res = await h.client.callTool({ name: 'reply', arguments: { chat_id: DM1, text } });
     const posts = h.web.calls.filter((c) => c.method === 'chat.postMessage');
     expect(posts.length).toBeGreaterThan(1);
-    expect(res.content).toEqual([{ type: 'text', text: `sent (${posts.length} message(s))` }]);
+    expect(toolText(res)).toMatch(new RegExp(`^sent \\(${posts.length} message\\(s\\)\\) ts=(100\\.\\d+,){${posts.length - 1}}100\\.\\d+$`));
   });
 
   it('許可外チャンネルへの reply は "error: ..." を返し、isError にはしない', async () => {
@@ -479,10 +485,16 @@ describe('MCP → Slack', () => {
     expect(h.web.calls).toEqual([{ method: 'reactions.add', args: { channel: DM1, timestamp: '10.1', name: 'eyes' } }]);
   });
 
-  it('react は reactions.add の失敗（already_reacted）でも reacted を返す', async () => {
+  it('react は reactions.add の失敗が already_reacted（もう付いている）なら reacted を返す', async () => {
     h.web.reactionError = platformError('already_reacted');
     const res = await h.client.callTool({ name: 'react', arguments: { chat_id: DM1, message_id: '10.1', emoji: 'eyes' } });
     expect(res.content).toEqual([{ type: 'text', text: 'reacted' }]);
+  });
+
+  it('react は already_reacted 以外の失敗（絵文字名の誤りなど）なら error を返す', async () => {
+    h.web.reactionError = platformError('invalid_name');
+    const res = await h.client.callTool({ name: 'react', arguments: { chat_id: DM1, message_id: '10.1', emoji: 'thumbs_up' } });
+    expect(res.content).toEqual([{ type: 'text', text: 'error: An API error occurred: invalid_name' }]);
   });
 
   it('edit_message は blocks を外して本文を書き換える', async () => {
@@ -669,7 +681,7 @@ describe('createToolHandlers 単体', () => {
         postText: async () => {
           throw new Error('boom');
         },
-        addReaction: async () => undefined,
+        addReactionOrThrow: async () => undefined,
         updateText: async () => {
           throw 'not-an-error';
         },
@@ -680,6 +692,37 @@ describe('createToolHandlers 単体', () => {
     expect(await handlers.onEdit({ chat_id: DM1, message_id: '1', text: 'x' })).toBe('error: not-an-error');
     expect(await handlers.onReact({ chat_id: DM1, message_id: '1', emoji: ':+1:' })).toBe('reacted');
     expect(errorSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('onActivity（無応答の見張りを解く）は返事にあたる reply / react / edit_message だけで呼び、download_file では呼ばない', async () => {
+    const onActivity = vi.fn();
+    const handlers = createToolHandlers(
+      {
+        postText: async () => ({ ts: ['1.0'] }),
+        addReactionOrThrow: async () => undefined,
+        updateText: async () => undefined,
+      },
+      new Logger({ stderr: false }),
+      onActivity,
+      {
+        bridge: {
+          fileInfo: async () => {
+            throw new Error('not found');
+          },
+          fetchFile: async () => {
+            throw new Error('not found');
+          },
+        },
+        dir: os.tmpdir(),
+      }
+    );
+    await handlers.onDownload?.({ file_id: 'F1' });
+    expect(onActivity).not.toHaveBeenCalled();
+
+    await handlers.onReply({ chat_id: DM1, text: 'x' });
+    await handlers.onReact({ chat_id: DM1, message_id: '1', emoji: 'eyes' });
+    await handlers.onEdit({ chat_id: DM1, message_id: '1', text: 'x' });
+    expect(onActivity).toHaveBeenCalledTimes(3);
   });
 });
 
@@ -743,7 +786,7 @@ describe('チャンネル（access.channels）', () => {
     expect(h.web.calls).toEqual([{ method: 'reactions.add', args: { channel: CH, timestamp: '30.1', name: REACTION.SEEN } }]);
 
     const res = await h.client.callTool({ name: 'reply', arguments: { chat_id: CH, text: 'hi', thread_ts: '30.1' } });
-    expect(res.content).toEqual([{ type: 'text', text: 'sent (1 message(s))' }]);
+    expect(toolText(res)).toMatch(/^sent \(1 message\(s\)\) ts=/);
   });
 
   it('非公開チャンネル（group）も受け付け、許可外のチャンネルと許可外ユーザーは無視する', async () => {
@@ -1129,7 +1172,7 @@ describe('!status / !restart / !compact / !clear / !help', () => {
     expect(texts().join('\n')).toContain('/exit を送った');
   });
 
-  it('入力待ちでなければ /exit を送らない（印は置いたまま）', async () => {
+  it('入力待ちでなければ /exit を送らず、置いた印を消す（残すと、後で手元で終了したときに起動し直す）', async () => {
     screen = 'Thinking…\n⠋ Working';
     h.socket.emit('slack_event', dmEnvelope('!restart', { ts: '82.1' }));
     await flush();
@@ -1137,6 +1180,7 @@ describe('!status / !restart / !compact / !clear / !help', () => {
 
     expect(commands).toEqual([]);
     expect(texts().join('\n')).toContain('入力待ちでない');
+    expect(fs.existsSync(flag)).toBe(false);
   });
 
   it('!restart force は印を置いて claude.exe を止める', async () => {
@@ -1331,7 +1375,7 @@ describe('自分のセッションの hook だけ扱う（session_tag）と、!r
     expect(written.sessionId).toBe(MINE);
   });
 
-  it('session_id がまだ分からなければ、印に id を書かない（start.ps1 は --continue にする）', async () => {
+  it('session_id がまだ分からなければ、印に id を書かない（start.ps1 は新しい会話で起動する）', async () => {
     h.socket.emit('slack_event', dmEnvelope('!restart', { ts: '91.1' }));
     await flush();
     await flush();
@@ -1405,6 +1449,18 @@ describe('このセッション中は全部許可', () => {
     expect(String(posts()[0]?.args.text)).toContain('自動許可: Bash');
     expect(posts()[0]?.args.thread_ts).toBe('20.0');
     expect(actionIds(posts()[0])).toEqual([]);
+  });
+
+  it('自動許可の記録は、実行許可のメッセージと同じく不可視文字を \\u{XXXX} で見せ、サロゲートペアの途中で切らない', async () => {
+    await start(true);
+    await enableByButton();
+
+    await client_sendBash(h, `echo a\u202Eb${'😀'.repeat(400)}`, 'fghij');
+    const record = JSON.stringify(posts()[0]?.args.blocks);
+    expect(record).toContain('a\\\\u{202E}b');
+    expect(record).not.toContain('\u202E');
+    // JSON.stringify は対になっていないサロゲートだけを \ud83d の形で書く
+    expect(record).not.toContain('\\ud83d');
   });
 
   it('deny は照合しない（Claude Code が確認の前に止めるため）。範囲付きの Read の deny があっても、別の場所の Read は自動許可する', async () => {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { Logger } from '../src/log.js';
-import { ScreenRelay } from '../src/screen-relay.js';
+import { ScreenRelay, buildChoiceBlocks } from '../src/screen-relay.js';
 import type { ConsoleAccess, ConsoleKey } from '../src/console.js';
 
 const CHROME = [
@@ -113,5 +113,19 @@ describe('ScreenRelay', () => {
     });
     await relay.show('C1', '9.0');
     expect(posts[0]).toContain('画面を読めない');
+  });
+});
+
+describe('buildChoiceBlocks', () => {
+  it('メッセージの text（通知に出る見出しの 1 行目）も、ブロックと同じくトークンを伏せる', () => {
+    const { text, blocks } = buildChoiceBlocks('snap0001', {
+      title: ['curl -H "Authorization: Bearer abcdefghijklmnop" ghp_abcdefghijklmnopqrstuvwxyz0123456789'],
+      options: [{ label: 'Yes' }, { label: 'No' }],
+      cursor: 0,
+    });
+    expect(text).toContain('Bearer ***');
+    expect(text).toContain('ghp_***');
+    expect(text).not.toContain('abcdefghijklmnop');
+    expect(JSON.stringify(blocks)).not.toContain('abcdefghijklmnop');
   });
 });

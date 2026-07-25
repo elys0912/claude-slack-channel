@@ -38,12 +38,12 @@ export const REACTION = {
 // --- 依存の型（テストで差し替えられるよう、使うメソッドだけに絞る） -------------
 
 /** MCP ツール（reply / react / edit_message）が使う Slack 側の操作 */
-export type ToolBridge = Pick<SlackBridge, 'postText' | 'addReaction' | 'updateText'>;
+export type ToolBridge = Pick<SlackBridge, 'postText' | 'addReactionOrThrow' | 'updateText'>;
 
 /** 受信処理・起動停止まで含めた Slack 側の操作 */
 export type AppBridge = Pick<
   SlackBridge,
-  'start' | 'stop' | 'postText' | 'postBlocks' | 'addReaction' | 'updateText' | 'postToAll' | 'updateBlocks'
+  'start' | 'stop' | 'postText' | 'postBlocks' | 'addReaction' | 'addReactionOrThrow' | 'updateText' | 'postToAll' | 'updateBlocks'
 > &
   Partial<Pick<SlackBridge, 'publishHome' | 'isConnected'>>;
 
@@ -127,7 +127,8 @@ export type ToolHandlers = Pick<McpDeps, 'onReply' | 'onReact' | 'onEdit' | 'onD
 
 /**
  * reply / react / edit_message / download_file の実体。失敗しても投げず、Claude が読めるエラー文を返す。
- * onActivity はツールが呼ばれるたびに（成否によらず）呼ぶ。無応答の見張りを解くのに使う。
+ * onActivity は返事にあたるツール（reply / react / edit_message）が呼ばれるたびに（成否によらず）呼ぶ。無応答の見張りを解くのに使う。
+ * download_file は作業の途中で呼ぶものなので、見張りは解かない（保存だけして返事をせずに終えたら、無応答の警告を出す）。
  * download が無ければ download_file は出さない。
  */
 export function createToolHandlers(
@@ -136,8 +137,8 @@ export function createToolHandlers(
   onActivity?: () => void,
   download?: DownloadDeps
 ): ToolHandlers {
-  const run = async (tool: string, action: () => Promise<string>): Promise<string> => {
-    onActivity?.();
+  const run = async (tool: string, action: () => Promise<string>, isAnswer = true): Promise<string> => {
+    if (isAnswer) onActivity?.();
     try {
       return await action();
     } catch (e) {
@@ -150,13 +151,14 @@ export function createToolHandlers(
     onReply: ({ chat_id, text, thread_ts }) =>
       run('reply', async () => {
         const res = await bridge.postText(chat_id, text, thread_ts);
-        return `sent (${res.ts.length} message(s))`;
+        // 送ったメッセージの ts。自分の返信を edit_message で直すときに使う
+        return `sent (${res.ts.length} message(s)) ts=${res.ts.join(',')}`;
       }),
 
     onReact: ({ chat_id, message_id, emoji }) =>
       run('react', async () => {
         // Claude が `:eyes:` のようにコロン付きで渡してきても受け付ける
-        await bridge.addReaction(chat_id, message_id, emoji.replace(/^:|:$/g, ''));
+        await bridge.addReactionOrThrow(chat_id, message_id, emoji.replace(/^:|:$/g, ''));
         return 'reacted';
       }),
 
@@ -172,7 +174,7 @@ export function createToolHandlers(
             const result = await downloadSlackFile(download, file_id, extract ?? false);
             logger.info(`download_file file=${file_id} extract=${extract ?? false}`);
             return result;
-          })
+          }, false)
       : undefined,
   };
 }

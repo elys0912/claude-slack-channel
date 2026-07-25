@@ -30,11 +30,22 @@ const RECONNECT_BACKOFF_FACTOR = 2;
 const WEB_API_TIMEOUT_MS = 15000;
 
 // 長時間ブロックしないよう、Web API のリトライは控えめにする
-// （Socket Mode 側の apps.connections.open は SDK の既定に任せる）
 const RETRY_CONFIG = { retries: 2, factor: 2, minTimeout: 500, maxTimeout: 5000 };
+// Socket Mode の接続（apps.connections.open）のリトライ。回数と倍率は SDK の既定（100 回・1.3 倍）のまま、
+// 間隔だけを再接続の上限（RECONNECT_MAX_MS）で頭打ちにする。既定は上限が無く、回線が長く切れた後は
+// 次の試行まで数分以上空いて、回線が戻っても反応しないため
+const SOCKET_RETRY_CONFIG = { retries: 100, factor: 1.3, maxTimeout: RECONNECT_MAX_MS };
 
 // 送信内容の URL を Slack にプレビュー展開させない（展開のための外部アクセスと、中身の意図しない表示を防ぐ）
 const NO_UNFURL = { unfurl_links: false, unfurl_media: false } as const;
+
+/**
+ * limit ごとに分けたチャンクのうち、空白だけでないもの。分けた結果、末尾が改行だけのチャンクになることがあり、
+ * そのまま送ると Slack に拒否されて、全部届いているのに失敗（sent=N）として返ってしまうため
+ */
+function nonBlankChunks(text: string, limit: number): string[] {
+  return chunkText(text, limit).filter((piece) => piece.trim() !== '');
+}
 
 /** threadTs があるときだけ chat.* に渡す thread_ts を作る */
 function threadParam(threadTs: string | undefined): { thread_ts?: string } {
@@ -275,6 +286,7 @@ export class SlackBridge {
           logger: toSlackLogger(this.logger, 'slack-socket'),
           // 再接続はこちらで行う（SDK の自動再接続と二重に張らないため）
           autoReconnectEnabled: false,
+          clientOptions: { retryConfig: SOCKET_RETRY_CONFIG },
         }) as unknown as SocketClientLike);
     }
     return this.socketClient;
@@ -557,7 +569,7 @@ export class SlackBridge {
   }
 
   /**
-   * テキストを送る。許可ユーザーの DM と access.channels 以外には送らない（投げる）。一斉メンションは無効化し、空なら何も送らない。
+   * テキストを送る。許可ユーザーの DM と access.channels 以外には送らない（投げる）。一斉メンションは無効化し、空白だけなら何も送らない。
    * まず markdown_text で 11000 文字ごとに送り、markdown_text が拒否されたら（isMarkdownRejection）
    * そのチャンク以降は text（& < > をエスケープ、3900 文字ごと）に切り替える。それ以外のエラーはそのまま投げる。
    * 長文は分割して順に送る。途中のチャンクで失敗した場合、1 通以上送れていれば
@@ -567,7 +579,7 @@ export class SlackBridge {
     this.assertAllowed(channel);
     const safe = neutralizeBroadcasts(text);
     const tsList: string[] = [];
-    if (safe === '') return { ts: tsList };
+    if (safe.trim() === '') return { ts: tsList };
 
     try {
       await this.postChunks(channel, safe, threadTs, tsList);
@@ -583,7 +595,7 @@ export class SlackBridge {
 
   /** postText の本体。送れたメッセージの ts を tsList に積む */
   private async postChunks(channel: string, safe: string, threadTs: string | undefined, tsList: string[]): Promise<void> {
-    const blocksOfMarkdown = chunkText(safe, MARKDOWN_LIMIT);
+    const blocksOfMarkdown = nonBlankChunks(safe, MARKDOWN_LIMIT);
     let useMarkdown = true;
 
     for (const piece of blocksOfMarkdown) {
@@ -605,7 +617,7 @@ export class SlackBridge {
         }
       }
       // text は上限が小さいので、さらに分割してから送る
-      for (const sub of chunkText(piece, TEXT_LIMIT)) {
+      for (const sub of nonBlankChunks(piece, TEXT_LIMIT)) {
         const res = await this.web.chat.postMessage({
           channel,
           text: escapeMrkdwn(sub),
@@ -686,11 +698,25 @@ export class SlackBridge {
     });
   }
 
-  /** リアクション付与。already_reacted 等で失敗しても投げない */
-  async addReaction(channel: string, ts: string, name: string): Promise<void> {
+  /**
+   * リアクション付与（MCP の react ツール用）。already_reacted（もう付いている）だけは成功とみなし、
+   * それ以外の失敗（絵文字名の誤り・メッセージが無い・権限不足など）は投げる
+   */
+  async addReactionOrThrow(channel: string, ts: string, name: string): Promise<void> {
     this.assertAllowed(channel);
     try {
       await this.web.reactions.add({ channel, timestamp: ts, name });
+    } catch (e) {
+      if (slackErrorCode(e) === 'already_reacted') return;
+      throw e;
+    }
+  }
+
+  /** リアクション付与（受信時の 👀 や回答の印）。失敗しても投げない（ログに残す） */
+  async addReaction(channel: string, ts: string, name: string): Promise<void> {
+    this.assertAllowed(channel);
+    try {
+      await this.addReactionOrThrow(channel, ts, name);
     } catch (e) {
       this.logger.warn(`reactions.add に失敗 name=${name}`, e);
     }

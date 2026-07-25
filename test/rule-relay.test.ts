@@ -117,6 +117,15 @@ describe('RuleRelay', () => {
     expect(rules).toEqual(['Bash(git status)']);
   });
 
+  it('長いルールがたまっても、一覧の文は plain_text の上限（3000 文字）に収め、ボタンは全件出す', async () => {
+    const { relay, rules, posts } = setup();
+    for (let i = 0; i < 20; i++) rules.push(`Read(//c/${'deep/'.repeat(40)}${i}/**)`);
+    await relay.list('C1', '9.0');
+    const blocks = posts[0]?.blocks as { type: string; text?: { text: string }; elements?: unknown[] }[];
+    expect(blocks[0]?.text?.text.length).toBeLessThanOrEqual(3000);
+    expect(blocks.find((b) => b.type === 'actions')?.elements).toHaveLength(20);
+  });
+
   it('一覧が空ならその旨を返す', async () => {
     const { relay, posts } = setup();
     await relay.list('C1', '9.0');

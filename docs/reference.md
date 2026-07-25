@@ -29,8 +29,8 @@
 | `projects.json` | `config\`（git の管理外） | `projects`: `{ name, path }` の配列。起動時の選択肢になる |
 | `extra-mcp.json` | `config\`（git の管理外） | Slack のセッションで一緒に使う MCP サーバー。`.mcp.json` と同じ `mcpServers` の形で書く（ひな形: `extra-mcp.example.json`）。登録したサーバーのツールは確認なしで実行される |
 | `channel-settings.json` | `config\` | Slack のセッション専用の Claude Code の設定 |
-| `mcp.json` | `%TEMP%\claude-slack-channel\<状態ディレクトリ名>\` | 起動スクリプトが起動のたびに作る MCP の設定（`!restart` で起動し直すときも作り直す） |
-| `channel-settings.merged.json` | `%TEMP%\claude-slack-channel\<状態ディレクトリ名>\` | `channel-settings.json` に、追加の allow と hook を足した設定。起動スクリプトが起動のたびに作る（`!restart` で起動し直すときも作り直す） |
+| `mcp.json` | `%TEMP%\claude-slack-channel\<状態ディレクトリ名>-<ハッシュ>\` | 起動スクリプトが起動のたびに作る MCP の設定（`!restart` で起動し直すときも作り直す） |
+| `channel-settings.merged.json` | `%TEMP%\claude-slack-channel\<状態ディレクトリ名>-<ハッシュ>\` | `channel-settings.json` に、追加の allow と hook を足した設定。起動スクリプトが起動のたびに作る（`!restart` で起動し直すときも作り直す） |
 
 ## 環境変数
 
@@ -61,9 +61,9 @@
 | 画面の選択肢ボタンの有効期限 | 5分 |
 | 許可リストへの追加の提案の有効期限 | 10分 |
 | 覚えておくチャンネルのスレッド | 1000件まで（古いものから忘れる。動いている間だけ） |
-| ロックのハートビート / 失効 | 10秒ごとに更新する。30秒間更新が無いか、ハートビートが現在時刻より5秒を超えて未来なら失効とみなす。持ち主のプロセスが死んでいれば、失効前でも取る |
+| ロックのハートビート / 失効 | 10秒ごとに更新する。30秒間更新が無いか、ハートビートが現在時刻より5秒を超えて未来なら失効とみなす。持ち主のプロセスが死んでいれば、失効前でも取る。更新の前に読み直し、別のブリッジに取られていたら（スリープ明けなど）書き戻さずに後片付けして終わる |
 | ロックが取れないときの取り直し | 起動時に最大10秒（0.5秒間隔）。取れなければ縮退モードに入る |
-| 再接続の待ち時間 | 1秒から倍々に延ばし、最大60秒 |
+| 再接続の待ち時間 | 1秒から倍々に延ばし、最大60秒。接続の URL を取る `apps.connections.open` の失敗は、SDK が1.3倍ずつ間隔を延ばして最大100回まで繰り返す（間隔の上限は同じ60秒） |
 | `hooks.jsonl` を読む間隔 / 起動時に読み直す範囲 | 1.5秒 / 起動の30秒前以降（そのうち、最後のセッションが始まった後の分だけ） |
 | `hooks.jsonl` を1回に読む量 / 改行の無い行を溜める上限 | 1MB（超えた古い分は読み飛ばす）/ 64KB（超えたら次の改行まで捨てる） |
 | `!restart` で `/exit` を送ってから「まだ終了していない」と通知するまで / 再起動フラグを消すまで | 20秒 / 60秒 |
@@ -83,7 +83,7 @@
 | `auth.test の team_id が access.json と一致しない` | `npm run check` で `team_id` を確かめ、`teamId` を直す |
 | `許可ユーザーの DM チャンネルを 1 件も開けなかった` | `allowFrom` の ID と、`im:write` スコープを確かめる |
 | `invalid_auth` | `SLACK_BOT_TOKEN` が無効になっている。`npm run check` で確かめ、トークンを取り直す |
-| `missing_scope` | **OAuth & Permissions** で7つのスコープ（`DOWNLOAD_DIR` を使うなら `files:read` も）が揃っているか確かめる。足りなければ足して再インストールする |
+| `missing_scope` | **OAuth & Permissions** で README の表のスコープ（manifest で作れば8つ。`DOWNLOAD_DIR` を使わず `files:read` を外したなら7つ）が揃っているか確かめる。足りなければ足して再インストールする |
 | ツールが「別のインスタンスが動いている」エラーを返す | 縮退モードで動いている。同じ状態ディレクトリで、別のセッションがブリッジを使っている。先のセッションを終了してから再起動する。縮退モードの間、実行許可はターミナル側で答える想定（Claude Code 側の挙動は確かめていない） |
 | 前のセッションを落とした直後に起動したら、縮退モードになった | 新しいブリッジは起動時に最大10秒ロックを取り直し、持ち主のプロセスが死んでいればロックを取る。それでも縮退になるなら、前のブリッジがまだ生きている（固まっている）可能性がある。タスクマネージャーで古い `node.exe`（`dist\src\main.js`）が残っていないか確かめ、止めてから再起動する |
 | 更新したのに挙動が変わらない | `npm run build` を実行してから再起動する |
@@ -112,7 +112,7 @@
 | 症状 | 対処 |
 |---|---|
 | `!restart` したのに戻ってこない | `!status` で状態を見る。`/exit` が効かなければ `!restart force` を使う。警告ダイアログで止まっているなら（初回の起動でも同じ）、`dialog-answer.ps1` が探す文字列（`start.ps1` の `$DevChannelDialogPattern` / `$DevChannelChoicePattern`）が画面の文言と合っていない可能性がある。手元で画面を見て直す |
-| 使用量の上限や入力待ちの通知が Slack に来ない | 状態ディレクトリの `hooks.jsonl` が増えているかを見る。増えていなければ hook が動いていない。`%TEMP%\claude-slack-channel\<状態ディレクトリ名>\channel-settings.merged.json` に `hooks` があるか、`node` に PATH が通っているかを確かめる。増えているのに通知が来なければ、記録された `hook_event_name` / `notification_type` が対応表に無い可能性がある。ログの `hooks.jsonl に読めない行がある` とあわせて確かめる |
+| 使用量の上限や入力待ちの通知が Slack に来ない | 状態ディレクトリの `hooks.jsonl` が増えているかを見る。増えていなければ hook が動いていない。`%TEMP%\claude-slack-channel\<状態ディレクトリ名>-<ハッシュ>\channel-settings.merged.json` に `hooks` があるか、`node` に PATH が通っているかを確かめる。増えているのに通知が来なければ、記録された `hook_event_name` / `notification_type` が対応表に無い可能性がある。ログの `hooks.jsonl に読めない行がある` とあわせて確かめる |
 | `!screen` / `!restart` / `!compact` / 警告ダイアログへの自動応答がどれも動かない | PowerShell が Constrained Language Mode だと、`console.ps1` の `Add-Type` が失敗する。`powershell -NoProfile -Command '$ExecutionContext.SessionState.LanguageMode'` の結果が `FullLanguage` かを確かめる。それ以外なら、その PC ではこれらの機能を使えない |
 
 ここで解決しないときは、GitHub の Issues に書いてほしい。`logs\bridge.log` の該当する行を添えると調べやすい（トークンは伏せてある）。

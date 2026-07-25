@@ -17,12 +17,21 @@ const LEVEL_ORDER: Record<LogLevel, number> = {
 const XOX_TOKEN_RE = /xox[a-z]-[\w-]+/g;
 const XAPP_TOKEN_RE = /xapp-[\w-]+/g;
 const BEARER_RE = /Bearer\s+\S+/g;
+// 画面の中継（!screen）にも使うので、ターミナルに出やすいほかの鍵の形も伏せる。
+// GitHub のトークン（ghp_ / gho_ / ghu_ / ghs_ / ghr_ と github_pat_）、AWS のアクセスキー ID（AKIA / ASIA + 16 文字）、
+// sk- で始まる API キー（Anthropic・OpenAI など。普通の語を伏せないよう 20 文字以上に限る）
+const GITHUB_TOKEN_RE = /\b(gh[pousr]_|github_pat_)[A-Za-z0-9_]{20,}/g;
+const AWS_ACCESS_KEY_RE = /\b(AKIA|ASIA)[A-Z0-9]{16}\b/g;
+const SK_API_KEY_RE = /\bsk-[A-Za-z0-9_-]{20,}/g;
 
 export function redact(s: string): string {
   return s
     .replace(XOX_TOKEN_RE, 'xox?-***')
     .replace(XAPP_TOKEN_RE, 'xapp-***')
-    .replace(BEARER_RE, 'Bearer ***');
+    .replace(BEARER_RE, 'Bearer ***')
+    .replace(GITHUB_TOKEN_RE, (_m, prefix: string) => `${prefix}***`)
+    .replace(AWS_ACCESS_KEY_RE, (_m, prefix: string) => `${prefix}***`)
+    .replace(SK_API_KEY_RE, 'sk-***');
 }
 
 // 循環参照があっても落ちない JSON.stringify

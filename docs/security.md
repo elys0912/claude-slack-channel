@@ -12,11 +12,11 @@ Slack から実行できる範囲を変える前（`-PermissionMode` を変え�
 
 | フラグ | 目的 |
 |---|---|
-| `--mcp-config %TEMP%\claude-slack-channel\<状態ディレクトリ名>\mcp.json` | `slackbridge` サーバーを読み込む。clone 先の絶対パスと状態ディレクトリを含むので、起動のたびに作り直す |
+| `--mcp-config %TEMP%\claude-slack-channel\<状態ディレクトリ名>-<ハッシュ>\mcp.json` | `slackbridge` サーバーを読み込む。clone 先の絶対パスと状態ディレクトリを含むので、起動のたびに作り直す |
 | `--strict-mcp-config` | `--mcp-config` 以外の MCP サーバー（ユーザー設定やプロジェクトの `.mcp.json`）を読み込まない。Slack のセッションでも使うサーバーは `config\extra-mcp.json` に書く（[使い方の詳細](usage.md#普段の-mcp-サーバーは-slack-のセッションでは読み込まれない)） |
 | `--no-chrome` | Claude in Chrome との連携を無効にする。有効なままだと、ブラウザ操作が必要になったときに「Claude wants to use your browser」の選択画面がターミナルに出て、Slack に中継されないまま止まる |
 | `--setting-sources project,local` | ユーザー設定（`~/.claude/settings.json`）を読まない。普段使いのために入れた緩い許可（`Bash(*)` など）を使って、Slack からの指示が確認なしで実行されるのを防ぐ |
-| `--settings config\channel-settings.json` | Slack のセッション専用の設定を重ねる。managed（組織の管理設定）を除けば、どの設定よりも優先される。`extra-mcp.json` のサーバーや「今後も許可」のルールがあるときは、それらを allow に加えた `channel-settings.merged.json`（`%TEMP%\claude-slack-channel\<状態ディレクトリ名>\` に作る）を代わりに渡す。`-SettingsFile` で別の設定ファイルに替えられる |
+| `--settings config\channel-settings.json` | Slack のセッション専用の設定を重ねる。managed（組織の管理設定）を除けば、どの設定よりも優先される。`extra-mcp.json` のサーバーや「今後も許可」のルールがあるときは、それらを allow に加えた `channel-settings.merged.json`（`%TEMP%\claude-slack-channel\<状態ディレクトリ名>-<ハッシュ>\` に作る）を代わりに渡す。`-SettingsFile` で別の設定ファイルに替えられる |
 | `--permission-mode default` | 許可リストに無い操作は毎回確認する。`-PermissionMode` で変えられる（下記） |
 | `--dangerously-load-development-channels server:slackbridge` | experimental の channels 機能を有効にする |
 
@@ -50,7 +50,7 @@ Slack のセッションは `--strict-mcp-config` なので、この登録は読
 - **deny**:
   - 読み取りの禁止（`Read(...)`）
     - Claude Code の設定と状態: `~/.claude/**`（状態ディレクトリの `~/.claude/channels/**` を含む）、`~/.claude.json`
-    - 認証情報: `~/.ssh/**`、`~/.git-credentials`、`~/.aws/**`、`~/.config/gh/**`、`~/.npmrc`、`~/.docker/**`
+    - 認証情報: `~/.ssh/**`、`~/.git-credentials`、`~/.aws/**`、`~/.config/gh/**`、`~/AppData/Roaming/GitHub CLI/**`（Windows の GitHub CLI の設定）、`~/.npmrc`、`~/.docker/**`
     - 秘密のファイル: どこにあっても `.env*`、`*.pem`、`*.key`
   - 編集の禁止（`Edit(...)`）: 状態ディレクトリの `~/.claude/channels/**`、プロジェクトの `./.claude/**`
   - 破壊的な git 操作: `git push --force` / `-f`、`git reset --hard`（Bash と PowerShell の両方）
@@ -101,7 +101,7 @@ deny は常に allow より優先される（評価順は deny → ask → allow
 - 送信者は、Slack のユーザー ID（`allowFrom`）とワークスペース ID（`teamId`）で判定する。ワークスペース ID は、イベントのワークスペースと、送信者が所属するワークスペースの両方を照合する。表示名やメールアドレスでは判定しない。
   ボタン操作では、押された場所が許可ユーザーとの DM か `channels` のチャンネルであることも確かめる。
 - トークンは状態ディレクトリの `.env` にだけ置く。環境変数からは読まず、MCP の設定ファイルにも書かない。
-- ログに出るトークン（`xox` + 英小文字1字 + `-` で始まるもの全般、`xapp-`、`Bearer ...`）は伏せ字にする。
+- ログに出るトークン（`xox` + 英小文字1字 + `-` で始まるもの全般、`xapp-`、`Bearer ...`）と、GitHub のトークン（`ghp_` など・`github_pat_`）、AWS のアクセスキー ID（`AKIA` / `ASIA`）、`sk-` で始まる API キーは伏せ字にする。`!screen` で送る画面も同じ範囲を伏せる。
 - 送信するテキストの `@channel` / `@here` / `@everyone` / ユーザーグループへのメンションは無効にする。
 - Slack から届くメッセージは信頼できない入力として扱い、上の権限の設計で実行できる範囲を絞っている。
 
