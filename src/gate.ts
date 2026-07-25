@@ -104,7 +104,7 @@ function attachmentPlaceholder(files: FileInfo[] | undefined): string {
  *   3. channel_type が channel / group（公開・非公開チャンネル）で、access.channels に無い → drop(channel_not_allowed)
  *      channel_type がそれ以外で im でない（グループ DM など） → drop(not_im)
  *   4. bot のメッセージ・user 無し・自分自身 → drop(bot_or_self)
- *   5. subtype が file_share 以外 → drop(unsupported_subtype)
+ *   5. subtype が DELIVERED_SUBTYPES（file_share・thread_broadcast）以外 → drop(unsupported_subtype)
  *   6. user が allowFrom に無い → drop(user_not_allowed)
  *   6'. チャンネル（channel / group）で、ボットへのメンションが無く、ボットが関わっているスレッドへの返信でもない → drop(not_addressed)
  *   7. event_id が既出 → drop(duplicate_event)
@@ -128,12 +128,9 @@ export function gate(
   if (msg.userTeam !== undefined && msg.userTeam !== access.teamId) {
     return { kind: 'drop', reason: 'user_team_mismatch' };
   }
-  if (msg.channelType === 'channel' || msg.channelType === 'group') {
-    if (msg.channel === undefined || !(access.channels ?? []).includes(msg.channel)) {
-      return { kind: 'drop', reason: 'channel_not_allowed' };
-    }
-  } else if (msg.channelType !== 'im') {
-    return { kind: 'drop', reason: 'not_im' };
+  const channelDrop = channelDropReason(msg, access);
+  if (channelDrop !== undefined) {
+    return { kind: 'drop', reason: channelDrop };
   }
   if (msg.botId !== undefined || msg.user === undefined || msg.user === '' || msg.user === selfBotUserId) {
     return { kind: 'drop', reason: 'bot_or_self' };
@@ -146,16 +143,10 @@ export function gate(
     return { kind: 'drop', reason: 'user_not_allowed' };
   }
   const inChannel = msg.channelType !== 'im';
-  let text = msg.text;
-  if (inChannel) {
-    const mentioned = selfBotUserId !== undefined && mentionRe(selfBotUserId).test(text ?? '');
-    const inActiveThread =
-      msg.threadTs !== undefined && msg.channel !== undefined && (isActiveThread?.(msg.channel, msg.threadTs) ?? false);
-    if (!mentioned && !inActiveThread) {
-      return { kind: 'drop', reason: 'not_addressed' };
-    }
-    if (selfBotUserId !== undefined) text = (text ?? '').replace(mentionRe(selfBotUserId, 'g'), '').trim();
+  if (inChannel && !isAddressedToBot(msg, selfBotUserId, isActiveThread)) {
+    return { kind: 'drop', reason: 'not_addressed' };
   }
+  const text = inChannel ? stripBotMention(msg.text, selfBotUserId) : msg.text;
   if (msg.eventId !== undefined && dedupe.seen(msg.eventId)) {
     return { kind: 'drop', reason: 'duplicate_event' };
   }
@@ -166,6 +157,33 @@ export function gate(
   }
 
   return { kind: 'deliver', content: contentOf(text, msg.files, inChannel), meta: buildMeta(msg) };
+}
+
+/** チャンネル種別で捨てる理由。許可したチャンネルか DM なら undefined */
+function channelDropReason(msg: InboundMessage, access: ParsedAccess): string | undefined {
+  if (msg.channelType === 'channel' || msg.channelType === 'group') {
+    const isAllowed = msg.channel !== undefined && (access.channels ?? []).includes(msg.channel);
+    return isAllowed ? undefined : 'channel_not_allowed';
+  }
+  return msg.channelType === 'im' ? undefined : 'not_im';
+}
+
+/** チャンネルの投稿がボットに話しかけたものか（ボットへのメンションがある、またはボットが関わっているスレッドへの返信） */
+function isAddressedToBot(
+  msg: InboundMessage,
+  selfBotUserId: string | undefined,
+  isActiveThread: ((channel: string, threadTs: string) => boolean) | undefined
+): boolean {
+  const mentioned = selfBotUserId !== undefined && mentionRe(selfBotUserId).test(msg.text ?? '');
+  const inActiveThread =
+    msg.threadTs !== undefined && msg.channel !== undefined && (isActiveThread?.(msg.channel, msg.threadTs) ?? false);
+  return mentioned || inActiveThread;
+}
+
+/** チャンネルの本文からボットへのメンションを取り除く。自分の user ID が分からなければそのまま */
+function stripBotMention(text: string | undefined, selfBotUserId: string | undefined): string | undefined {
+  if (selfBotUserId === undefined) return text;
+  return (text ?? '').replace(mentionRe(selfBotUserId, 'g'), '').trim();
 }
 
 /** Claude に渡す本文。本文が空なら添付の代わりの文言、チャンネルでメンションだけの投稿（添付も無い）なら本文なしの文言 */
