@@ -3,7 +3,7 @@ import './stdio-guard.js';
 
 import path from 'node:path';
 import { loadAccess, loadHomeCustom, loadTokens, stateDir } from './config.js';
-import type { ParsedAccess, Tokens } from './config.js';
+import type { ParsedAccess, EnvSettings } from './config.js';
 import { errMessage } from './errors.js';
 import { Logger, parseLogLevel } from './log.js';
 import { InstanceLock, acquireWithRetry, isProcessAlive } from './lock.js';
@@ -95,7 +95,7 @@ async function main(dir: string, logger: Logger): Promise<void> {
     logger.warn(`ロック取得に失敗（保持者 pid=${lockResult.holder.pid}）。縮退モードで起動する`);
   }
 
-  let tokens: Tokens;
+  let tokens: EnvSettings;
   let access: ParsedAccess;
   try {
     tokens = loadTokens(dir, envWarner(logger));
@@ -148,7 +148,7 @@ async function main(dir: string, logger: Logger): Promise<void> {
 }
 
 /** SlackBridge を作って接続を確かめる。失敗したら止めてから投げる */
-async function initBridge(tokens: Tokens, access: ParsedAccess, logger: Logger): Promise<{ bridge: SlackBridge; botUserId: string }> {
+async function initBridge(tokens: EnvSettings, access: ParsedAccess, logger: Logger): Promise<{ bridge: SlackBridge; botUserId: string }> {
   const bridge = new SlackBridge({ botToken: tokens.botToken, appToken: tokens.appToken, access, logger });
   try {
     const init = await bridge.init();
@@ -163,7 +163,7 @@ async function initBridge(tokens: Tokens, access: ParsedAccess, logger: Logger):
 /** 通常のブリッジの設定（ロック・終了処理・MCP サーバーの渡し方は呼び出し側で足す） */
 function bridgeAppOptions(
   dir: string,
-  tokens: Tokens,
+  tokens: EnvSettings,
   access: ParsedAccess,
   logger: Logger,
   bridge: SlackBridge,
