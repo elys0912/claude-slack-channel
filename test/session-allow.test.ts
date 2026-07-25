@@ -109,7 +109,23 @@ describe('matchingRule', () => {
     expect(matchingRule(req('PowerShell', { command }), [PS_PUSH])).toBe(PS_PUSH);
   });
 
-  it.each(['git -C x push', 'git --no-pager push', 'git.exe -c a=b push', 'git $x origin', 'git pu* origin', 'git pu?h'])(
+  it.each([
+    'Get-Date | where Name -eq x',
+    'Get-Date | WHERE Name -eq x',
+    'Get-Date | ? Name -eq x',
+    'Get-Date | Where-Object Name -eq x',
+  ])('Where-Object とその別名（%s）を含むものは、解釈しないので当たりにする', (command) => {
+    expect(matchingRule(req('PowerShell', { command }), [PS_PUSH])).toBe(PS_PUSH);
+  });
+
+  it.each(['start x', 'saps x', 'Start-Process x', 'iex x', 'Invoke-Expression x', 'icm x', 'Invoke-Command x', 'sajb x', 'Start-Job x'])(
+    '先頭が PowerShell のラッパーか、その別名（%s）なら当たりにする',
+    (command) => {
+      expect(matchingRule(req('PowerShell', { command }), [PS_PUSH])).toBe(PS_PUSH);
+    }
+  );
+
+  it.each(['git -C x push','git --no-pager push', 'git.exe -c a=b push', 'git $x origin', 'git pu* origin', 'git pu?h'])(
     'サブコマンドの位置がオプションか、展開で変わりうる語（%s）なら当たりにする',
     (command) => {
       expect(matchingRule(req('Bash', { command }), [PUSH])).toBe(PUSH);

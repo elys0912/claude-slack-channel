@@ -344,6 +344,14 @@ describe('denyOverlaps / proposeRule', () => {
     expect(denyOverlaps({ tool: 'PowerShell', prefix: 'del' }, psDeny)).toEqual(['PowerShell(rm:*)']);
   });
 
+  it('ツール名の大文字小文字が違っても、シェルの別名は正規化して deny と重なる', () => {
+    const psDeny = ['powershell(Get-ChildItem:*)'];
+    expect(denyOverlaps({ tool: 'PowerShell', prefix: 'ls' }, psDeny)).toEqual(psDeny);
+    expect(denyOverlaps({ tool: 'powershell', prefix: 'ls' }, psDeny)).toEqual(psDeny);
+    expect(denyOverlaps({ tool: 'BASH', prefix: 'del' }, ['bash(rm:*)'])).toEqual(['bash(rm:*)']);
+    expect(denyOverlaps(parseRuleForCheck('powershell(dir)') ?? { tool: '', prefix: undefined }, psDeny)).toEqual(psDeny);
+  });
+
   it('正規化で綴りが変わっても、そのままの綴りで重なるものは重なる', () => {
     expect(denyOverlaps({ tool: 'Bash', prefix: 'ls' }, ['Bash(l:*)'])).toEqual(['Bash(l:*)']);
   });

@@ -145,7 +145,7 @@ Slack のセッションは `--strict-mcp-config` で起動する。そのため
     語はバックスラッシュを取り除き、コマンド名は小文字にして末尾の `.exe` / `.cmd` などと版番号を剥がして比べる（`git.exe push`・`git pus\h` も当たる）。PowerShell の別名（`rm` / `del` / `mv` / `cp` / `sc` など）は本来のコマンドレットに直して比べる（`PowerShell(Remove-Item:*)` は `del x` にも当たる。Bash の `rm` も `Remove-Item` とみなす）。行の継続（`\` + 改行、バッククォート + 改行）は、つないでから分ける。
   - 次のものは、コマンドの組み立てを解釈しないので当たると判定する。
     - 引用符（`"` / `'`）・バッククォート・波かっこ・丸かっこを含むコマンド（`git "push"`、`if ($true) { git push }`、`(git status)`）
-    - 制御構文の語（`if` / `then` / `for` / `foreach` / `while` / `do` / `try` など）や、スクリプトブロックを取るコマンドレット（`ForEach-Object` / `%` / `Where-Object`）を含むコマンド
+    - 制御構文の語（`if` / `then` / `for` / `foreach` / `while` / `do` / `try` など）や、スクリプトブロックを取るコマンドレットとその別名（`ForEach-Object` / `%` / `Where-Object` / `where` / `?`）を含むコマンド
     - 部分の先頭が環境変数の代入（`FOO=1 git push`）、ラッパー（`sudo` / `env` / `sh` / `cmd` / `powershell` / `Invoke-Expression` / `Start-Job` / `runas` / `npx` など）、パスで始まる語のもの
     - コマンド名の後ろがオプション（`git -C x push`）か、展開で変わりうる語（`git $x`・`git pu*`）のもの
   - `Read` / `Edit` の中身付きのルールは、パスがそのフォルダー以下（`//`・`~/`・`./`・`/` 基準）のときに当たる。ファイル名だけのルール（`.env`・`*.pem`）なら、名前が一致するときに当たる。
