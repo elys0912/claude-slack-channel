@@ -781,8 +781,13 @@ async function noticeRejectedRules(store: AllowRuleStore, notice: NoticePoster, 
   const text = buildRejectedRulesText(rejected);
   if (text === undefined) return;
   logger.warn(`今の方式では作れない保存済みのルール ${rejected.length} 件を allow に入れていない: ${rejected.join(', ')}`);
-  process.stderr.write(`[slackbridge] ${text}\n`);
+  writeStderr(text);
   await notice.post(text);
+}
+
+/** stderr（Claude Code の /mcp で見える）に 1 行書く。接頭辞と改行はここで付ける */
+export function writeStderr(message: string): void {
+  process.stderr.write(`[slackbridge] ${message}\n`);
 }
 
 /** 縮退中にロックを取り直す間隔（lock.ts のロックの失効 staleMs の既定と同じ） */

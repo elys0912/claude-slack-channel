@@ -8,9 +8,9 @@ import { errMessage } from './errors.js';
 import { Logger, parseLogLevel } from './log.js';
 import { InstanceLock, acquireWithRetry, isProcessAlive } from './lock.js';
 import { SlackBridge } from './slack.js';
-import { startBridgeApp, startDegradedApp } from './app.js';
+import { DEGRADED_RELOCK_MS, startBridgeApp, startDegradedApp, writeStderr } from './app.js';
 import type { BridgeAppOptions } from './app.js';
-import { replyTimeoutMs } from './watchdog.js';
+import { MS_PER_MINUTE, replyTimeoutMs } from './watchdog.js';
 import { PowerShellConsole, findConsoleScript } from './console.js';
 import { HOOK_LOG_FILE, SESSION_TAG_ENV } from './hook-event.js';
 import { RESTART_FLAG_FILE } from './session-control.js';
@@ -32,13 +32,21 @@ const STDIN_POLL_MS = 5000;
 const LOCK_RETRY_MS = 10000;
 const LOCK_RETRY_INTERVAL_MS = 500;
 
+const MS_PER_SECOND = 1000;
+
+/** 状態ディレクトリのファイル名 */
+const LOCK_FILE = 'instance.lock';
+const ALLOW_EXTRA_FILE = 'allow-extra.json';
+/** ブリッジのログ（状態ディレクトリからの相対） */
+const BRIDGE_LOG_PATH = ['logs', 'bridge.log'];
+
 /** ログのレベルを変える環境変数（debug / info / warn / error。省略時は info）。start.ps1 が設定されていればブリッジに渡す */
 const LOG_LEVEL_ENV = 'SLACK_CHANNEL_LOG_LEVEL';
 
 function createLogger(dir: string): Logger {
   const raw = process.env[LOG_LEVEL_ENV];
   const level = parseLogLevel(raw);
-  const logger = new Logger({ file: path.join(dir, 'logs', 'bridge.log'), ...(level ? { level } : {}) });
+  const logger = new Logger({ file: path.join(dir, ...BRIDGE_LOG_PATH), ...(level ? { level } : {}) });
   logger.setName('bridge');
   // 値そのものは出さない（.env の SESSION_ALLOW_ALL の知らせと同じく、書き間違えた秘密の値をログに残さない）
   if (raw && !level) logger.warn(`${LOG_LEVEL_ENV} の値（${raw.trim().length} 文字）は使えないので info にする（debug / info / warn / error のどれか）`);
@@ -48,7 +56,7 @@ function createLogger(dir: string): Logger {
 /** .env の値を読み替えたときの知らせを、stderr（Claude Code の /mcp で見える）とログの両方に出す */
 function envWarner(logger: Logger): (message: string) => void {
   return (message) => {
-    process.stderr.write(`[slackbridge] ${message}\n`);
+    writeStderr(message);
     logger.warn(message);
   };
 }
@@ -64,7 +72,7 @@ async function exitWithError(code: number): Promise<never> {
 
 /** 起動を諦める。stderr（Claude Code の /mcp で見える）とログの両方に理由を残す */
 async function abort(logger: Logger, what: string, e: unknown, cleanup: () => Promise<void> | void): Promise<never> {
-  process.stderr.write(`[slackbridge] ${what}: ${errMessage(e)}\n`);
+  writeStderr(`${what}: ${errMessage(e)}`);
   logger.error(what, errMessage(e));
   await cleanup();
   return exitWithError(1);
@@ -78,10 +86,10 @@ async function main(dir: string, logger: Logger): Promise<void> {
   // 強制終了（!restart force）で解放されずに残ったロックは、持ち主の pid が死んでいれば取る。
   // 動いている間に別のインスタンスにロックを取られたら（スリープ明けなど）、Slack との接続を切って終わる（2 本の接続でメッセージが分かれないように）
   let stopApp: (() => Promise<void>) | undefined;
-  const lock = new InstanceLock(path.join(dir, 'instance.lock'), {
+  const lock = new InstanceLock(path.join(dir, LOCK_FILE), {
     isAlive: isProcessAlive,
     onLost: (holder) => {
-      process.stderr.write(`[slackbridge] 別のインスタンス（pid=${holder.pid}）がロックを取ったので、Slack との接続を切って終わる\n`);
+      writeStderr(`別のインスタンス（pid=${holder.pid}）がロックを取ったので、Slack との接続を切って終わる`);
       logger.error(`ロックを別のインスタンス（pid=${holder.pid}）に取られた。後片付けして終わる`);
       void stopApp?.();
     },
@@ -89,56 +97,43 @@ async function main(dir: string, logger: Logger): Promise<void> {
   const lockResult = await acquireWithRetry(lock, { timeoutMs: LOCK_RETRY_MS, intervalMs: LOCK_RETRY_INTERVAL_MS });
   const degraded = !lockResult.acquired;
   if (!lockResult.acquired) {
-    process.stderr.write(
-      `[slackbridge] 別のインスタンスが動いている（pid=${lockResult.holder.pid}）。Slack には接続せず、MCP サーバーのみ起動する（30 秒ごとにロックを取り直す）\n`
+    writeStderr(
+      `別のインスタンスが動いている（pid=${lockResult.holder.pid}）。Slack には接続せず、MCP サーバーのみ起動する（${DEGRADED_RELOCK_MS / MS_PER_SECOND} 秒ごとにロックを取り直す）`
     );
     logger.warn(`ロック取得に失敗（保持者 pid=${lockResult.holder.pid}）。縮退モードで起動する`);
   }
 
-  let tokens: EnvSettings;
-  let access: ParsedAccess;
+  let config: BridgeConfig;
   try {
-    tokens = loadTokens(dir, envWarner(logger));
-    access = loadAccess(dir);
+    config = loadConfig(dir, logger);
   } catch (e) {
     return abort(logger, '設定の読み込みに失敗', e, () => lock.release());
   }
 
+  const { env, access } = config;
   logger.info(
     `起動 pid=${process.pid} node=${process.version} stateDir=${dir} ` +
-      `allowFrom=${access.allowFrom.length}人 channels=${access.channels?.length ?? 0}件 download=${tokens.downloadDir ? 'on' : 'off'} allowAll=${tokens.sessionAllowAll ? 'on' : 'off'} degraded=${degraded}`
+      `allowFrom=${access.allowFrom.length}人 channels=${access.channels?.length ?? 0}件 download=${env.downloadDir ? 'on' : 'off'} allowAll=${env.sessionAllowAll ? 'on' : 'off'} degraded=${degraded}`
   );
 
   if (degraded) {
-    // 縮退中もロックを取り直し、取れたら同じ MCP サーバーのまま通常のブリッジに戻る（終了処理は縮退モードの stop が引き継ぐ）
-    const app = await startDegradedApp({
-      logger,
-      relock: {
-        lock,
-        promote: async (server) => {
-          // 縮退の間に .env や access.json を直していてもよいよう、戻るときに読み直す（読めなければ縮退のまま次の間隔で取り直す）
-          const fresh = { tokens: loadTokens(dir, envWarner(logger)), access: loadAccess(dir) };
-          const { bridge, botUserId } = await initBridge(fresh.tokens, fresh.access, logger);
-          return startBridgeApp({ ...bridgeAppOptions(dir, fresh.tokens, fresh.access, logger, bridge, botUserId), lock, server });
-        },
-      },
-    });
+    const stop = await startDegraded(dir, lock, logger);
     // 戻った後や戻る途中にロックを取られたら、縮退モードごと止める（戻る途中なら、終わるのを待ってから通常のブリッジを止める）
-    stopApp = app.stop;
-    installShutdown(logger, app.stop);
+    stopApp = stop;
+    installShutdown(logger, stop);
     return;
   }
 
-  let initialized: { bridge: SlackBridge; botUserId: string };
+  let initialized: InitializedBridge;
   try {
-    initialized = await initBridge(tokens, access, logger);
+    initialized = await initBridge(config, logger);
   } catch (e) {
     return abort(logger, 'Slack への接続確認に失敗', e, () => lock.release());
   }
 
   // 終了処理は Socket Mode の接続を待つ前に登録する。開始に失敗したら startBridgeApp が後片付けしてから投げる
   await startBridgeApp({
-    ...bridgeAppOptions(dir, tokens, access, logger, initialized.bridge, initialized.botUserId),
+    ...bridgeAppOptions(dir, config, logger, initialized),
     lock,
     onCleanupReady: (stop) => {
       stopApp = stop;
@@ -147,9 +142,46 @@ async function main(dir: string, logger: Logger): Promise<void> {
   });
 }
 
+/** 状態ディレクトリの .env と access.json の中身。いつも組で読み、組で渡す */
+interface BridgeConfig {
+  env: EnvSettings;
+  access: ParsedAccess;
+}
+
+/** .env と access.json を読む。読めない・形が違うときは投げる */
+function loadConfig(dir: string, logger: Logger): BridgeConfig {
+  return { env: loadTokens(dir, envWarner(logger)), access: loadAccess(dir) };
+}
+
+/**
+ * 縮退モードで起動し、後片付けの関数を返す。
+ * 縮退中もロックを取り直し、取れたら同じ MCP サーバーのまま通常のブリッジに戻る（終了処理は縮退モードの stop が引き継ぐ）
+ */
+async function startDegraded(dir: string, lock: InstanceLock, logger: Logger): Promise<() => Promise<void>> {
+  const app = await startDegradedApp({
+    logger,
+    relock: {
+      lock,
+      promote: async (server) => {
+        // 縮退の間に .env や access.json を直していてもよいよう、戻るときに読み直す（読めなければ縮退のまま次の間隔で取り直す）
+        const fresh = loadConfig(dir, logger);
+        const initialized = await initBridge(fresh, logger);
+        return startBridgeApp({ ...bridgeAppOptions(dir, fresh, logger, initialized), lock, server });
+      },
+    },
+  });
+  return app.stop;
+}
+
+/** 接続を確かめた SlackBridge と、ボット自身の user ID */
+interface InitializedBridge {
+  bridge: SlackBridge;
+  botUserId: string;
+}
+
 /** SlackBridge を作って接続を確かめる。失敗したら止めてから投げる */
-async function initBridge(tokens: EnvSettings, access: ParsedAccess, logger: Logger): Promise<{ bridge: SlackBridge; botUserId: string }> {
-  const bridge = new SlackBridge({ botToken: tokens.botToken, appToken: tokens.appToken, access, logger });
+async function initBridge({ env, access }: BridgeConfig, logger: Logger): Promise<InitializedBridge> {
+  const bridge = new SlackBridge({ botToken: env.botToken, appToken: env.appToken, access, logger });
   try {
     const init = await bridge.init();
     logger.info(`Slack 接続確認 OK bot=${init.botUserId} team=${init.teamId} dm=${init.dmChannelCount}件`);
@@ -163,11 +195,9 @@ async function initBridge(tokens: EnvSettings, access: ParsedAccess, logger: Log
 /** 通常のブリッジの設定（ロック・終了処理・MCP サーバーの渡し方は呼び出し側で足す） */
 function bridgeAppOptions(
   dir: string,
-  tokens: EnvSettings,
-  access: ParsedAccess,
+  { env, access }: BridgeConfig,
   logger: Logger,
-  bridge: SlackBridge,
-  botUserId: string
+  { bridge, botUserId }: InitializedBridge
 ): BridgeAppOptions {
   return {
     bridge,
@@ -188,24 +218,24 @@ function bridgeAppOptions(
         }
       },
     },
-    allowExtraFile: path.join(dir, 'allow-extra.json'),
+    allowExtraFile: path.join(dir, ALLOW_EXTRA_FILE),
     hookInboxFile: path.join(dir, HOOK_LOG_FILE),
     // start.ps1 から起動されたときだけ値がある。無ければ（手で起動したなど）今までどおり全部の行を扱う
     sessionTag: process.env[SESSION_TAG_ENV] || undefined,
     restartFlagFile: path.join(dir, RESTART_FLAG_FILE),
     crashFile: path.join(dir, CRASH_FILE),
-    usageWatch: tokens.usageWatch.enabled
-      ? { file: path.join(dir, USAGE_FILE), usageWarnPct: tokens.usageWatch.usageWarnPct, contextWarnPct: tokens.usageWatch.contextWarnPct }
+    usageWatch: env.usageWatch.enabled
+      ? { file: path.join(dir, USAGE_FILE), usageWarnPct: env.usageWatch.usageWarnPct, contextWarnPct: env.usageWatch.contextWarnPct }
       : undefined,
-    download: tokens.downloadDir
-      ? { info: (id) => bridge.fileInfo(id), fetch: (file, signal) => bridge.fetchFile(file, signal), dir: tokens.downloadDir }
+    download: env.downloadDir
+      ? { info: (id) => bridge.fileInfo(id), fetch: (file, signal) => bridge.fetchFile(file, signal), dir: env.downloadDir }
       : undefined,
-    sessionAllowAll: tokens.sessionAllowAll === true,
+    sessionAllowAll: env.sessionAllowAll === true,
     keepalive: {
-      enabled: tokens.keepalive.enabled && tokens.keepalive.max > 0,
-      afterMs: tokens.keepalive.afterMin * 60_000,
-      max: tokens.keepalive.max,
-      quiet: tokens.keepalive.quiet,
+      enabled: env.keepalive.enabled && env.keepalive.max > 0,
+      afterMs: env.keepalive.afterMin * MS_PER_MINUTE,
+      max: env.keepalive.max,
+      quiet: env.keepalive.quiet,
     },
     managedSettingsFiles: () => managedSettingsFiles(),
     // 起動スクリプトは作業フォルダーで claude.exe を起動し、MCP サーバーも同じ作業フォルダーで動く。
@@ -283,7 +313,7 @@ function startBridge(): void {
   });
 
   main(stateDirectory, logger).catch((e: unknown) => {
-    process.stderr.write(`[slackbridge] 起動に失敗: ${errMessage(e)}\n`);
+    writeStderr(`起動に失敗: ${errMessage(e)}`);
     logger.error('起動に失敗', e);
     void exitWithError(1);
   });
@@ -293,7 +323,7 @@ function startBridge(): void {
 // 状態ディレクトリにもロックにも触らずに待つだけ（src/placeholder.ts）
 if (isPlaceholder()) {
   runPlaceholder().catch((e: unknown) => {
-    process.stderr.write(`[slackbridge] 起動に失敗: ${errMessage(e)}\n`);
+    writeStderr(`起動に失敗: ${errMessage(e)}`);
     process.exit(1);
   });
 } else {
