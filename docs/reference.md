@@ -20,7 +20,7 @@
 | `.env` | 状態ディレクトリ | `SLACK_BOT_TOKEN`（`xoxb-`）、`SLACK_APP_TOKEN`（`xapp-`）。任意で `DOWNLOAD_DIR`（添付の保存先の絶対パス）と `SESSION_ALLOW_ALL`（`on` で「このセッション中は全部許可」ボタンを出す） |
 | `access.json` | 状態ディレクトリ | `teamId`（`T...`）、`allowFrom`（`U...` の配列）、`channels`（`C...` / `G...` の配列、省略可）。ほかのキーがあるとエラーにする |
 | `home.json` | 状態ディレクトリ（省略可） | ホームタブの文面の差し替え（[アプリのホームタブ](usage.md#アプリのホームタブ)） |
-| `allow-extra.json` | 状態ディレクトリ | Slack の「今後も許可」で足したルール（`{"allow": [...]}`）。ブリッジが書き、起動スクリプトが allow に足す |
+| `allow-extra.json` | 状態ディレクトリ | Slack の「今後も許可」で足したルール（`{"allow": [...]}`）。ブリッジが書き、起動スクリプトが今の方式で作れるものだけを allow に足す（作れないものは起動の通知で知らせる。ファイルは書き換えない） |
 | `restart.flag` | 状態ディレクトリ | 再起動フラグ（`{"at": ..., "sessionId": ...}`）。`start.ps1` はこれを消してから、`--resume <sessionId>`（会話の記録が無ければ新しい会話）で再起動する |
 | `hooks.jsonl` | 状態ディレクトリ | Claude Code の hook が追記する出来事の記録（1行に1つの JSON）。ブリッジが読んで Slack に通知する。1MB を超えると `hooks.jsonl.1` に退避する |
 | `logs\bridge.log` | 状態ディレクトリ | ブリッジのログ（下記） |
@@ -29,8 +29,8 @@
 | `projects.json` | `config\`（git の管理外） | `projects`: `{ name, path }` の配列。起動時の選択肢になる |
 | `extra-mcp.json` | `config\`（git の管理外） | Slack のセッションで一緒に使う MCP サーバー。`.mcp.json` と同じ `mcpServers` の形で書く（ひな形: `extra-mcp.example.json`）。登録したサーバーのツールは確認なしで実行される |
 | `channel-settings.json` | `config\` | Slack のセッション専用の Claude Code の設定 |
-| `mcp.json` | `%TEMP%\claude-slack-channel\<状態ディレクトリ名>\` | 起動スクリプトが毎回作る MCP の設定 |
-| `channel-settings.merged.json` | `%TEMP%\claude-slack-channel\<状態ディレクトリ名>\` | `channel-settings.json` に、追加の allow と hook を足した設定。起動スクリプトが毎回作る |
+| `mcp.json` | `%TEMP%\claude-slack-channel\<状態ディレクトリ名>\` | 起動スクリプトが起動のたびに作る MCP の設定（`!restart` で起動し直すときも作り直す） |
+| `channel-settings.merged.json` | `%TEMP%\claude-slack-channel\<状態ディレクトリ名>\` | `channel-settings.json` に、追加の allow と hook を足した設定。起動スクリプトが起動のたびに作る（`!restart` で起動し直すときも作り直す） |
 
 ## 環境変数
 
@@ -66,7 +66,7 @@
 | 再接続の待ち時間 | 1秒から倍々に延ばし、最大60秒 |
 | `hooks.jsonl` を読む間隔 / 起動時に読み直す範囲 | 1.5秒 / 起動の30秒前以降（そのうち、最後のセッションが始まった後の分だけ） |
 | `hooks.jsonl` を1回に読む量 / 改行の無い行を溜める上限 | 1MB（超えた古い分は読み飛ばす）/ 64KB（超えたら次の改行まで捨てる） |
-| `!restart` で `/exit` を送ってから「まだ終了していない」と通知するまで | 20秒 |
+| `!restart` で `/exit` を送ってから「まだ終了していない」と通知するまで / 再起動フラグを消すまで | 20秒 / 60秒 |
 | 警告ダイアログへの自動応答の待ち時間 | 90秒（`start.ps1` の `$DevChannelDialogTimeoutSec`） |
 
 ## トラブルシューティング

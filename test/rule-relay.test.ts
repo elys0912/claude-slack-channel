@@ -54,10 +54,10 @@ describe('RuleRelay', () => {
     const { relay, rules, posts, pressed } = setup();
     await relay.propose(bash('git status'), 'C1', '9.0');
     expect(posts[0]?.kind).toBe('blocks');
-    expect(posts[0]?.text).toContain('Bash(git status:*)');
+    expect(posts[0]?.text).toContain('Bash(git status)');
 
     await relay.confirm('prop0001', true, pressed, 'U1');
-    expect(rules).toEqual(['Bash(git status:*)']);
+    expect(rules).toEqual(['Bash(git status)']);
     expect(posts.at(-1)?.text).toContain('追加した');
   });
 
@@ -81,11 +81,11 @@ describe('RuleRelay', () => {
     expect(posts.at(-1)?.text).toContain('deny に当たる');
   });
 
-  it('危険なコマンドは候補を作らず理由を知らせる', async () => {
+  it('許可リストに無いコマンドは候補を作らず理由を知らせる', async () => {
     const { relay, posts } = setup();
     await relay.propose(bash('rm -rf dist'), 'C1', '9.0');
     expect(posts[0]?.kind).toBe('text');
-    expect(posts[0]?.text).toContain('危険なコマンド');
+    expect(posts[0]?.text).toContain('許可リストのコマンドを引数なしで呼んだものではない');
   });
 
   it('やめる・期限切れでは保存しない', async () => {
@@ -103,18 +103,18 @@ describe('RuleRelay', () => {
 
   it('一覧は削除ボタン（action_id は重複しない）付きで出し、削除できる', async () => {
     const { relay, rules, posts, pressed } = setup();
-    rules.push('Bash(git status:*)', 'WebFetch');
+    rules.push('Bash(git status)', 'WebFetch');
     await relay.list('C1', '9.0');
     const actions = (posts[0]?.blocks as { type: string; elements?: { action_id: string; value: string }[] }[]).find(
       (b) => b.type === 'actions'
     );
     expect(actions?.elements?.map((e) => [e.action_id, e.value])).toEqual([
-      ['rule_remove_0', 'Bash(git status:*)'],
+      ['rule_remove_0', 'Bash(git status)'],
       ['rule_remove_1', 'WebFetch'],
     ]);
 
     await relay.remove('WebFetch', pressed, 'U1');
-    expect(rules).toEqual(['Bash(git status:*)']);
+    expect(rules).toEqual(['Bash(git status)']);
   });
 
   it('一覧が空ならその旨を返す', async () => {

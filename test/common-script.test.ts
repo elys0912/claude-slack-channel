@@ -114,3 +114,78 @@ describe.runIf(process.platform === 'win32')('scripts/common.ps1 の Test-Placeh
     expect(test('C:\\dev')).toBe('False');
   });
 });
+
+// start.ps1 の New-ClaudeArgs が起動のたびに行う、merged.json の組み立て（D-SC-04 / D-DC-02）
+describe.runIf(process.platform === 'win32')('scripts/common.ps1 の Read-AllowExtra / Write-EffectiveSettings', { timeout: 30000 }, () => {
+  let dir: string;
+  let allowExtra: string;
+  let checker: string;
+  let settings: string;
+  let merged: string;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'effective-settings-'));
+    allowExtra = path.join(dir, 'allow-extra.json');
+    settings = path.join(dir, 'channel-settings.json');
+    merged = path.join(dir, 'out', 'channel-settings.merged.json');
+    // dist/src/allow-extra-check.js の代わり。`:*` を含むものを作れないルールとして返す（ビルドせずに組み立てだけを確かめる）
+    checker = path.join(dir, 'checker.cjs');
+    fs.writeFileSync(
+      checker,
+      [
+        "const fs = require('fs');",
+        "const allow = JSON.parse(fs.readFileSync(process.argv[2], 'utf8')).allow;",
+        "process.stdout.write(JSON.stringify({ usable: allow.filter((r) => !r.includes(':*')), rejected: allow.filter((r) => r.includes(':*')) }));",
+      ].join('\n')
+    );
+    fs.writeFileSync(settings, JSON.stringify({ permissions: { allow: ['Read(./**)'], deny: ['Read(.env)'], ask: ['Bash(git push:*)'] } }));
+  });
+
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  const read = (): string =>
+    ps(`$r = @(Read-AllowExtra -Path '${allowExtra}' -CheckerScript '${checker}' 3>$null); "$($r.Count)|$($r -join '|')"`);
+
+  it('Read-AllowExtra: ファイルが無ければ空。作れるものだけを返し、作れないものは警告に一覧を出す', () => {
+    expect(read()).toBe('0|');
+    fs.writeFileSync(allowExtra, JSON.stringify({ allow: ['Bash(git status)', 'Bash(git log:*)', 'WebFetch(domain:example.com)'] }));
+    expect(read()).toBe('2|Bash(git status)|WebFetch(domain:example.com)');
+    const warning = ps(
+      `Read-AllowExtra -Path '${allowExtra}' -CheckerScript '${checker}' 3>&1 | ` +
+        `Where-Object { $_ -is [System.Management.Automation.WarningRecord] } | ForEach-Object { $_.Message }`
+    );
+    expect(warning).toContain('Bash(git log:*)');
+    expect(warning).not.toContain('Bash(git status)');
+  });
+
+  it('Read-AllowExtra: 確かめられない（判定の失敗・判定のコマンドが無い）ときは空', () => {
+    fs.writeFileSync(allowExtra, JSON.stringify({ allow: ['Bash(git status)'] }));
+    const broken = path.join(dir, 'broken.cjs');
+    fs.writeFileSync(broken, "process.stdout.write(JSON.stringify({ error: 'JSON 構文が不正' })); process.exit(1);");
+    expect(ps(`$r = @(Read-AllowExtra -Path '${allowExtra}' -CheckerScript '${broken}' 3>$null); "$($r.Count)"`)).toBe('0');
+    expect(ps(`$r = @(Read-AllowExtra -Path '${allowExtra}' -CheckerScript '${path.join(dir, 'missing.cjs')}' 3>$null); "$($r.Count)"`)).toBe('0');
+  });
+
+  it('Write-EffectiveSettings: allow に足し、hook を入れ、deny と ask はそのまま。呼び直すとその時点の allow-extra.json を反映する', () => {
+    const build = (): { permissions: { allow: string[]; deny: string[]; ask: string[] }; hooks?: unknown } => {
+      ps(
+        `$extra = @(@('mcp__extra') + @(Read-AllowExtra -Path '${allowExtra}' -CheckerScript '${checker}' 3>$null)); ` +
+          `Write-EffectiveSettings -SettingsFile '${settings}' -OutFile '${merged}' -ExtraAllow $extra -Hooks @{ Stop = @(@{ hooks = @() }) }`
+      );
+      const text = fs.readFileSync(merged, 'utf8');
+      expect(text.charCodeAt(0)).not.toBe(0xfeff);
+      return JSON.parse(text) as { permissions: { allow: string[]; deny: string[]; ask: string[] }; hooks?: unknown };
+    };
+
+    fs.writeFileSync(allowExtra, JSON.stringify({ allow: ['Bash(git status)', 'PowerShell(npm.cmd:*)'] }));
+    const first = build();
+    expect(first.permissions).toEqual({ allow: ['Read(./**)', 'mcp__extra', 'Bash(git status)'], deny: ['Read(.env)'], ask: ['Bash(git push:*)'] });
+    expect(first.hooks).toHaveProperty('Stop');
+
+    // !rules で消した・♾ で足したあとに起動し直したとき
+    fs.writeFileSync(allowExtra, JSON.stringify({ allow: ['Bash(pwd)'] }));
+    expect(build().permissions.allow).toEqual(['Read(./**)', 'mcp__extra', 'Bash(pwd)']);
+  });
+});

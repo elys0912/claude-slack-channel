@@ -194,6 +194,16 @@ describe('buildPermissionBlocks', () => {
     expect(actions.elements.some((e) => e.action_id === 'perm_more')).toBe(false);
   });
 
+  it('♾ 今後も許可のボタンは、alwaysButton が true のときだけ付ける（既定は付けない）', () => {
+    const actionIdsOf = (blocks: unknown[]): string[] =>
+      (blocks.find((b) => (b as { type: string }).type === 'actions') as { elements: { action_id: string }[] }).elements.map(
+        (e) => e.action_id
+      );
+    expect(actionIdsOf(buildPermissionBlocks(sampleReq).blocks)).not.toContain('perm_always');
+    expect(actionIdsOf(buildPermissionBlocks(sampleReq, undefined, false, true).blocks)).toContain('perm_always');
+    expect(actionIdsOf(buildPermissionBlocks(sampleReq, undefined, false, false).blocks)).not.toContain('perm_always');
+  });
+
   it('sets action_id and value correctly on Allow/Deny buttons', () => {
     const { blocks } = buildPermissionBlocks(sampleReq);
     const actions = blocks.find((b) => (b as { type: string }).type === 'actions') as {

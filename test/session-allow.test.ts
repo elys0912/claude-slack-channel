@@ -1,3 +1,4 @@
+// このファイルは claude-slack-channel と claude-discord-channel で同じ内容にしている（直すときは両方を直す）。
 import { describe, expect, it } from 'vitest';
 import { SessionAllowAll, matchingRule } from '../src/session-allow.js';
 import type { PermissionRequest } from '../src/permission.js';
@@ -11,6 +12,9 @@ function req(tool: string, input: unknown): PermissionRequest {
   };
 }
 
+const PUSH = 'Bash(git push:*)';
+const PS_PUSH = 'PowerShell(git push:*)';
+
 describe('matchingRule', () => {
   it('ツール全体のルールは、そのツールの全リクエストに当たる', () => {
     expect(matchingRule(req('WebFetch', { url: 'https://example.com' }), ['WebFetch'])).toBe('WebFetch');
@@ -18,14 +22,14 @@ describe('matchingRule', () => {
   });
 
   it('シェルの中身付きルールは、コマンドがプレフィックスで始まるときだけ当たる', () => {
-    const rules = ['Bash(git push:*)', 'PowerShell(Remove-Item *)'];
-    expect(matchingRule(req('Bash', { command: 'git push origin main' }), rules)).toBe('Bash(git push:*)');
+    const rules = [PUSH, 'PowerShell(Remove-Item *)'];
+    expect(matchingRule(req('Bash', { command: 'git push origin main' }), rules)).toBe(PUSH);
     expect(matchingRule(req('Bash', { command: 'git status' }), rules)).toBeUndefined();
     expect(matchingRule(req('PowerShell', { command: 'remove-item foo' }), rules)).toBe('PowerShell(Remove-Item *)');
   });
 
   it('シェルでコマンドが読めなければ、安全側に倒して当たりにする', () => {
-    expect(matchingRule(req('Bash', '{"command":"git pu…'), ['Bash(git push:*)'])).toBe('Bash(git push:*)');
+    expect(matchingRule(req('Bash', '{"command":"git pu…'), [PUSH])).toBe(PUSH);
   });
 
   it('Read / Edit のルールは、それが効くツール全部に当たる（中身付きは安全側に倒して当たり）', () => {
@@ -35,7 +39,105 @@ describe('matchingRule', () => {
   });
 
   it('関係ないツールのルールには当たらない', () => {
-    expect(matchingRule(req('Bash', { command: 'ls' }), ['WebFetch', 'Read(.env)', 'not a rule('])).toBeUndefined();
+    expect(matchingRule(req('Bash', { command: 'ls' }), ['WebFetch', 'Read(.env)', 'mcp__a'])).toBeUndefined();
+  });
+
+  it('形の読めないルールは、判断できないので当たりにする', () => {
+    expect(matchingRule(req('Bash', { command: 'ls' }), ['not a rule('])).toBe('not a rule(');
+  });
+
+  it.each([
+    'cd repo && git push origin main',
+    'git status; git push',
+    'git status || git push',
+    'echo x | git push',
+    'tee x | git push',
+    'echo a & git push',
+    'git status\ngit push',
+    'git.exe push origin main',
+    'GIT.CMD push',
+  ])('複合コマンドは部分ごとに照合し、先頭の語は正規化する（%s）', (command) => {
+    expect(matchingRule(req('Bash', { command }), [PUSH])).toBe(PUSH);
+  });
+
+  it.each([
+    'FOO=1 ls',
+    'env ls',
+    'sudo ls',
+    'runas /user:x ls',
+    'cmd /c ls',
+    'powershell -Command ls',
+    'npx git push',
+    'watch ls',
+    './x.sh',
+    '/usr/bin/git status',
+    'C:\\tools\\x.exe ls',
+  ])('先頭が環境変数の代入・ラッパー・パスの部分（%s）は当たりにする', (command) => {
+    expect(matchingRule(req('Bash', { command }), [PUSH])).toBe(PUSH);
+  });
+
+  it.each([
+    // 引用符・エスケープでサブコマンドが綴り直されたもの（D-SD-02 の 1）
+    'git "push" origin',
+    "git 'push'",
+    'git p""ush',
+    'git pus\\h',
+    'git `push',
+    '"git" status',
+    'echo "a;b" ; git push',
+    // 継続・区切りの誤分割（D-SD-02 の 2）
+    'git `\npush',
+    'git \\\npush',
+    'git push`',
+    // 予約語・ブロックが先頭の部分（D-SD-02 の 3）
+    'if ($true) { git push }',
+    'try { git push } catch {}',
+    'foreach ($i in 1) { git push }',
+    'if true; then git push; fi',
+    'for i in 1; do git push; done',
+    'while true; do git push; done',
+    '(git status)',
+    'echo $(git push)',
+    // スクリプトブロックを取るコマンドレット（D-SD-02 の 4）
+    'Get-Date | ForEach-Object { git push }',
+    'Get-Date | % { git push }',
+    'Start-Job { git push }',
+    'Invoke-Expression "git push"',
+    'iex "git push"',
+  ])('引用符・バッククォート・かっこ・制御構文を含むもの（%s）は、解釈しないので当たりにする', (command) => {
+    expect(matchingRule(req('Bash', { command }), [PUSH])).toBe(PUSH);
+    expect(matchingRule(req('PowerShell', { command }), [PS_PUSH])).toBe(PS_PUSH);
+  });
+
+  it.each(['git -C x push', 'git --no-pager push', 'git.exe -c a=b push', 'git $x origin', 'git pu* origin', 'git pu?h'])(
+    'サブコマンドの位置がオプションか、展開で変わりうる語（%s）なら当たりにする',
+    (command) => {
+      expect(matchingRule(req('Bash', { command }), [PUSH])).toBe(PUSH);
+    }
+  );
+
+  it.each(['find . -exec git push', 'echo git push', 'xargs git push', 'nohup git push'])(
+    '部分の途中にプレフィックスの語が並ぶもの（%s）も当たりにする（確認が出るだけなので安全側）',
+    (command) => {
+      expect(matchingRule(req('Bash', { command }), [PUSH])).toBe(PUSH);
+    }
+  );
+
+  it('ワイルドカードを含むプレフィックスは当たりにする', () => {
+    expect(matchingRule(req('Bash', { command: 'ls' }), ['Bash(git * --force)'])).toBe('Bash(git * --force)');
+  });
+
+  it('どの部分にもプレフィックスの語の並びが無ければ当たらない', () => {
+    expect(matchingRule(req('Bash', { command: 'cd repo && git status | head -5' }), [PUSH])).toBeUndefined();
+    expect(matchingRule(req('Bash', { command: 'git pull' }), [PUSH])).toBeUndefined();
+    expect(matchingRule(req('PowerShell', { command: 'Get-ChildItem C:\\dev | Select-Object Name' }), [PS_PUSH])).toBeUndefined();
+  });
+
+  it('サーバー単位の MCP のルール（mcp__<サーバー> / mcp__<サーバー>__*）は、そのサーバーの全ツールに当たる', () => {
+    expect(matchingRule(req('mcp__github__create_issue', {}), ['mcp__github'])).toBe('mcp__github');
+    expect(matchingRule(req('mcp__github__create_issue', {}), ['mcp__github__*'])).toBe('mcp__github__*');
+    expect(matchingRule(req('mcp__githubx__create_issue', {}), ['mcp__github'])).toBeUndefined();
+    expect(matchingRule(req('mcp__github__get_issue', {}), ['mcp__github__get'])).toBeUndefined();
   });
 });
 
@@ -70,13 +172,13 @@ describe('matchingRule（パスの ask ルール）', () => {
 
 describe('SessionAllowAll', () => {
   it('有効にするまでは自動許可しない。有効なら ask に当たらないものだけ許可する', () => {
-    const s = new SessionAllowAll(() => ['Bash(git push:*)']);
+    const s = new SessionAllowAll(() => [PUSH]);
     expect(s.check(req('Bash', { command: 'ls' }))).toEqual({ allow: false });
 
     s.enable('U1', new Date(0));
     expect(s.current).toEqual({ since: new Date(0), byUserId: 'U1' });
     expect(s.check(req('Bash', { command: 'ls' }))).toEqual({ allow: true });
-    expect(s.check(req('Bash', { command: 'git push' }))).toEqual({ allow: false, rule: 'Bash(git push:*)' });
+    expect(s.check(req('Bash', { command: 'git push' }))).toEqual({ allow: false, rule: PUSH });
   });
 
   it('二度目の enable では開始時刻を変えない。disable は有効だったかを返す', () => {
@@ -89,11 +191,16 @@ describe('SessionAllowAll', () => {
     expect(s.current).toBeUndefined();
   });
 
-  it('ルールを読めなければ自動許可しない', () => {
+  it('ルールを読めなければ自動許可しない。全部許可のボタンも出せない（available が false）', () => {
     const s = new SessionAllowAll(() => {
       throw new Error('broken json');
     });
+    expect(s.available()).toBe(false);
     s.enable('U1');
     expect(s.check(req('Bash', { command: 'ls' })).allow).toBe(false);
+  });
+
+  it('ルールを読めれば available は true', () => {
+    expect(new SessionAllowAll(() => []).available()).toBe(true);
   });
 });

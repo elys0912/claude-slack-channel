@@ -154,3 +154,57 @@ function Test-PlaceholderServer {
     return ($entry.command -eq 'node' -and $entryArgs.Count -eq 1 -and $entryArgs[0] -ieq $ScriptPath -and
         [string]$entry.env.SLACK_CHANNEL_PLACEHOLDER -eq '1')
 }
+
+# 「今後も許可」で足したルール（状態ディレクトリの allow-extra.json）のうち、今の方式で作れるものだけを返す。
+# 判定はブリッジと同じ CheckerScript（dist/src/allow-extra-check.js）に任せ、作れないもの（前の方式で足したもの）は返さずに
+# 警告で一覧を出す。allow-extra.json は書き換えない。ファイルが無ければ空。判定できない（node が無い・ファイルが壊れている）
+# ときは、警告だけ出して空を返す（確かめられないルールは allow に入れない）
+function Read-AllowExtra {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$CheckerScript
+    )
+
+    if (-not (Test-Path -LiteralPath $Path)) { return @() }
+    # 結果は stdout の JSON で受け取る。node の stderr やコマンドが無いときのエラーで止まらないようにする
+    $ErrorActionPreference = 'Continue'
+    $result = $null
+    try {
+        $result = (& node $CheckerScript $Path 2>$null | Out-String) | ConvertFrom-Json
+    } catch {
+        $result = $null
+    }
+    if ($null -eq $result -or $null -ne $result.error) {
+        $reason = if ($null -ne $result) { $result.error } else { "node $CheckerScript で確かめられなかった" }
+        Write-Warning "allow-extra.json を読めなかったので、追加の許可ルールは使わない: $reason"
+        return @()
+    }
+    $rejected = @($result.rejected)
+    if ($rejected.Count -gt 0) {
+        Write-Warning ("allow-extra.json に、今の「今後も許可」の方式では作れないルールが $($rejected.Count) 件ある。" +
+            "allow には入れない（ファイルはそのまま。要らなければ !rules から消す）: $($rejected -join ', ')")
+    }
+    return @($result.usable)
+}
+
+# SettingsFile（channel-settings.json）の permissions.allow に ExtraAllow を足し、Hooks があれば hooks に入れた設定を、
+# OutFile（channel-settings.merged.json）に BOM なし UTF-8 で書く。deny と ask は SettingsFile のまま。読めない・書けないときは投げる
+function Write-EffectiveSettings {
+    param(
+        [Parameter(Mandatory)][string]$SettingsFile,
+        [Parameter(Mandatory)][string]$OutFile,
+        [string[]]$ExtraAllow = @(),
+        [hashtable]$Hooks = @{}
+    )
+
+    $settings = Get-Content -LiteralPath $SettingsFile -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($ExtraAllow.Count -gt 0) {
+        $settings.permissions.allow = @(@($settings.permissions.allow) + $ExtraAllow | Select-Object -Unique)
+    }
+    if ($Hooks.Count -gt 0) {
+        $settings | Add-Member -NotePropertyName 'hooks' -NotePropertyValue $Hooks -Force
+    }
+    New-Item -ItemType Directory -Path (Split-Path -Parent $OutFile) -Force | Out-Null
+    $json = $settings | ConvertTo-Json -Depth 10
+    [System.IO.File]::WriteAllText($OutFile, $json, [System.Text.UTF8Encoding]::new($false))
+}
