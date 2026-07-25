@@ -60,6 +60,8 @@ async function startHarness(
     | 'sessionTag'
     | 'workDir'
     | 'keepalive'
+    | 'usageWatch'
+    | 'crashFile'
   > = {}
 ): Promise<Harness> {
   const web = makeWeb();
@@ -1726,5 +1728,46 @@ describe('キャッシュのつなぎ止め', () => {
     await flush();
 
     expect(texts()).toEqual(['⚠️ このブリッジでは !keepalive を使えない']);
+  });
+});
+
+describe('使用量の見張りと、想定外の終了からの起動し直しの知らせ', () => {
+  let h: Harness | undefined;
+  let dir: string;
+  const texts = (): string[] =>
+    (h?.web.calls ?? [])
+      .filter((c) => c.method === 'chat.postMessage')
+      .map((c) => String(c.args.markdown_text ?? c.args.text));
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'app-usage-'));
+  });
+
+  afterEach(async () => {
+    await h?.client.close();
+    await h?.stop();
+    h = undefined;
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('起動時に crash.json があれば知らせて消す', async () => {
+    const crashFile = path.join(dir, 'crash.json');
+    fs.writeFileSync(crashFile, JSON.stringify({ at: Date.now(), exit_code: 1, count: 1, max: 3, window_min: 10, resumed: true }));
+    h = await startHarness(ACCESS, undefined, { crashFile });
+
+    expect(texts().some((t) => t.includes('想定外に終了した（exit code 1）'))).toBe(true);
+    expect(fs.existsSync(crashFile)).toBe(false);
+  });
+
+  it('usage.json の使用量がしきい値を越えたら知らせ、!status に使用量の行を出す', async () => {
+    const file = path.join(dir, 'usage.json');
+    const resetsAt = Math.floor(Date.now() / 1000) + 3600;
+    fs.writeFileSync(file, JSON.stringify({ at: Date.now(), five_hour: { used: 85, resets_at: resetsAt } }));
+    h = await startHarness(ACCESS, undefined, { usageWatch: { file, usageWarnPct: [80, 95], contextWarnPct: [70, 90], pollMs: 10 } });
+
+    await vi.waitFor(() => expect(texts().some((t) => t.startsWith('⚠️ 使用量（5 時間枠）が 85%'))).toBe(true));
+    h.socket.emit('slack_event', dmEnvelope('!status', { ts: '50.0' }));
+    await flush();
+    expect(texts().at(-1)).toContain('使用量: 5 時間枠 85%');
   });
 });

@@ -69,6 +69,14 @@ describe.runIf(process.platform === 'win32')('scripts/start.ps1 -DryRun', { time
     // 一時フォルダーは 8.3 形式の短い名前のことがあるので、実体のパスで比べる
     const passedStateDir = mcp.mcpServers.slackbridge?.env.SLACK_CHANNEL_STATE_DIR ?? '';
     expect(fs.realpathSync.native(passedStateDir)).toBe(fs.realpathSync.native(stateDir));
+    // 合成した設定に、使用量の記録（statusline）と、作業中を知るための UserPromptSubmit の hook が入る
+    const merged = JSON.parse(fs.readFileSync(path.join(sessionRoot, sessionDirs[0] ?? '', 'channel-settings.merged.json'), 'utf8')) as {
+      statusLine?: { type: string; command: string; refreshInterval: number };
+      hooks?: Record<string, unknown>;
+    };
+    expect(merged.statusLine?.command).toContain('statusline.js');
+    expect(merged.statusLine?.refreshInterval).toBe(60);
+    expect(Object.keys(merged.hooks ?? {})).toContain('UserPromptSubmit');
   });
 });
 

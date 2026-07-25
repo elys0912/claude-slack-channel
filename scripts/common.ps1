@@ -135,6 +135,81 @@ function Get-ResumeArgs {
     return @()
 }
 
+# .env の Key の値。前後の空白と囲みの引用符を外し、引用符の無い値の後ろの「 # コメント」も外す。無ければ $null。
+# src/config.ts の parseDotenv の簡易版（start.ps1 が読む AUTO_RESTART のような on / off の値だけに使う）
+function Read-DotEnvValue {
+    param([string]$Path, [string]$Key)
+
+    if (-not (Test-Path -LiteralPath $Path)) { return $null }
+    foreach ($line in [System.IO.File]::ReadAllLines($Path, [System.Text.Encoding]::UTF8)) {
+        if ($line -notmatch '^\s*(?:export\s+)?([^=#\s]+)\s*=(.*)$') { continue }
+        if ($Matches[1] -ne $Key) { continue }
+        $value = $Matches[2].Trim()
+        if ($value -match '^"(.*)"' -or $value -match "^'(.*)'") { return $Matches[1] }
+        return ($value -replace '\s+#.*$', '').Trim()
+    }
+    return $null
+}
+
+# 想定外の終了（exit code が 0 以外）で起動し直すか。.env の AUTO_RESTART が off / false / 0 なら起動し直さない（既定 on）
+function Test-AutoRestartEnabled {
+    param([string]$EnvFile)
+
+    $value = Read-DotEnvValue -Path $EnvFile -Key 'AUTO_RESTART'
+    return -not ($value -match '^(off|false|0)$')
+}
+
+# Times のうち、Now から WindowMin 分以内のものだけを返す（想定外の終了で起動し直した時刻の履歴を窓で切る）。
+# 要素が 0 や 1 つでも配列のまま返す
+function Select-RecentRestarts {
+    param([datetime[]]$Times = @(), [Parameter(Mandatory)][datetime]$Now, [Parameter(Mandatory)][int]$WindowMin)
+
+    return , @($Times | Where-Object { ($Now - $_).TotalMinutes -lt $WindowMin })
+}
+
+# hooks.jsonl の行のうち、session_tag が SessionTag のもので最後の session_id（UUID の形のもの）。無ければ $null。
+# 想定外の終了で起動し直すとき、同じ会話を --resume で開くのに使う（restart.flag は Slack の !restart のときしか無い）
+function Get-LastHookSessionId {
+    param([string]$HookLog, [string]$SessionTag)
+
+    if (-not (Test-Path -LiteralPath $HookLog)) { return $null }
+    $lines = [System.IO.File]::ReadAllLines($HookLog, [System.Text.Encoding]::UTF8)
+    for ($i = $lines.Count - 1; $i -ge 0; $i--) {
+        try {
+            # $event は PowerShell の自動変数なので、別の名前にする
+            $hookLine = $lines[$i] | ConvertFrom-Json
+        } catch {
+            continue
+        }
+        if ($SessionTag -and [string]$hookLine.session_tag -ne $SessionTag) { continue }
+        $id = [string]$hookLine.session_id
+        if ($id -match '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') { return $id }
+    }
+    return $null
+}
+
+# 想定外の終了から起動し直したことの印（crash.json）を BOM なし UTF-8 で書く。起動したブリッジが読んで知らせ、消す（src/crash-notice.ts）
+function Write-CrashRecord {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [int]$ExitCode,
+        [int]$Count,
+        [int]$Max,
+        [int]$WindowMin,
+        [bool]$Resumed
+    )
+
+    $record = [ordered]@{
+        at = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+        exit_code = $ExitCode
+        count = $Count
+        max = $Max
+        window_min = $WindowMin
+        resumed = $Resumed
+    }
+    [System.IO.File]::WriteAllText($Path, ($record | ConvertTo-Json -Compress), [System.Text.UTF8Encoding]::new($false))
+}
+
 # claude.exe に渡す引数。ResumeArgs を先頭に置き、ClaudeArgs（最後が --dangerously-load-development-channels）はその後ろに続ける。
 # 要素が 1 つでも配列のまま返す（呼び出し側の変数が文字列になり、+ が文字列の連結になるのを防ぐ）
 function Get-LaunchArgs {
@@ -231,14 +306,15 @@ function Read-AllowExtra {
     return @($result.usable)
 }
 
-# SettingsFile（channel-settings.json）の permissions.allow に ExtraAllow を足し、Hooks があれば hooks に入れた設定を、
+# SettingsFile（channel-settings.json）の permissions.allow に ExtraAllow を足し、Hooks があれば hooks に、StatusLine があれば statusLine に入れた設定を、
 # OutFile（channel-settings.merged.json）に BOM なし UTF-8 で書く。deny と ask は SettingsFile のまま。読めない・書けないときは投げる
 function Write-EffectiveSettings {
     param(
         [Parameter(Mandatory)][string]$SettingsFile,
         [Parameter(Mandatory)][string]$OutFile,
         [string[]]$ExtraAllow = @(),
-        [hashtable]$Hooks = @{}
+        [hashtable]$Hooks = @{},
+        [hashtable]$StatusLine = $null
     )
 
     $settings = Get-Content -LiteralPath $SettingsFile -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -247,6 +323,9 @@ function Write-EffectiveSettings {
     }
     if ($Hooks.Count -gt 0) {
         $settings | Add-Member -NotePropertyName 'hooks' -NotePropertyValue $Hooks -Force
+    }
+    if ($StatusLine) {
+        $settings | Add-Member -NotePropertyName 'statusLine' -NotePropertyValue $StatusLine -Force
     }
     New-Item -ItemType Directory -Path (Split-Path -Parent $OutFile) -Force | Out-Null
     $json = $settings | ConvertTo-Json -Depth 10

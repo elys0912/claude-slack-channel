@@ -14,6 +14,8 @@ import { replyTimeoutMs } from './watchdog.js';
 import { PowerShellConsole, findConsoleScript } from './console.js';
 import { HOOK_LOG_FILE, SESSION_TAG_ENV } from './hook-event.js';
 import { RESTART_FLAG_FILE } from './session-control.js';
+import { USAGE_FILE } from './statusline.js';
+import { CRASH_FILE } from './crash-notice.js';
 import { isPlaceholder, runPlaceholder } from './placeholder.js';
 import { managedSettingsFiles } from './allow-rules.js';
 
@@ -191,6 +193,10 @@ function bridgeAppOptions(
     // start.ps1 から起動されたときだけ値がある。無ければ（手で起動したなど）今までどおり全部の行を扱う
     sessionTag: process.env[SESSION_TAG_ENV] || undefined,
     restartFlagFile: path.join(dir, RESTART_FLAG_FILE),
+    crashFile: path.join(dir, CRASH_FILE),
+    usageWatch: tokens.usageWatch.enabled
+      ? { file: path.join(dir, USAGE_FILE), usageWarnPct: tokens.usageWatch.usageWarnPct, contextWarnPct: tokens.usageWatch.contextWarnPct }
+      : undefined,
     download: tokens.downloadDir
       ? { info: (id) => bridge.fileInfo(id), fetch: (file, signal) => bridge.fetchFile(file, signal), dir: tokens.downloadDir }
       : undefined,

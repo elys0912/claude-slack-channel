@@ -43,6 +43,11 @@ $DevChannelChoicePattern = 'local development'
 $ResumeFailureSec = 30
 # ダイアログを待つ最大秒数
 $DevChannelDialogTimeoutSec = 90
+# claude.exe が想定外に終了（exit code が 0 以外）したときに起動し直す上限。AutoRestartWindowMin 分の間に AutoRestartMax 回まで
+$AutoRestartMax = 3
+$AutoRestartWindowMin = 10
+# 想定外の終了から起動し直したときに置く印（src/crash-notice.ts の CRASH_FILE と同じ名前にすること）
+$CrashFileName = 'crash.json'
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $mainJs = Join-Path $repoRoot 'dist\src\main.js'
@@ -222,6 +227,19 @@ function Get-NodePath {
 # Claude Code の hook から呼ぶ記録コマンド（dist/src/hook.js）の設定。
 # セッションの開始・終了、応答の終了と失敗、通知（ターミナル側の入力待ち・使用量の上限）、圧縮を
 # 状態ディレクトリの hooks.jsonl に書き、ブリッジが Slack に知らせる。node が見つからなければ空
+# Claude Code の statusline から呼ぶ記録コマンド（dist/src/statusline.js）の設定。
+# コンテキストの使用率と使用量（5 時間枠・7 日枠）を状態ディレクトリの usage.json に書き、ブリッジが見張る。
+# refreshInterval は、待機中も枠のリセットを反映するため。node が見つからなければ $null（statusline を使わない）
+function Get-StatusLineSettings {
+    $statusLineJs = Join-Path $repoRoot 'dist\src\statusline.js'
+    $node = Get-Command node -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $node) {
+        Write-Warning "node が見つからないので使用量の見張りは使わない"
+        return $null
+    }
+    return @{ type = 'command'; command = ('"{0}" "{1}"' -f $node.Source, $statusLineJs); refreshInterval = 60 }
+}
+
 function Get-HookSettings {
     $hookJs = Join-Path $repoRoot 'dist\src\hook.js'
     $node = Get-Command node -ErrorAction SilentlyContinue
@@ -249,7 +267,7 @@ function Get-EffectiveSettings {
     $extra = @(@($ExtraServers.Keys | Sort-Object | ForEach-Object { "mcp__$_" }) + @(Get-AllowExtraRules))
     try {
         $merged = Join-Path (Get-TempDir) "$sessionName\channel-settings.merged.json"
-        Write-EffectiveSettings -SettingsFile $settingsFile -OutFile $merged -ExtraAllow $extra -Hooks (Get-HookSettings)
+        Write-EffectiveSettings -SettingsFile $settingsFile -OutFile $merged -ExtraAllow $extra -Hooks (Get-HookSettings) -StatusLine (Get-StatusLineSettings)
         return $merged
     } catch {
         Write-Warning "許可ルールと hook を足した設定を作れなかったので、channel-settings.json をそのまま使う: $($_.Exception.Message)"
@@ -377,6 +395,8 @@ Remove-Item -LiteralPath $restartFlag -Force -ErrorAction SilentlyContinue
 
 # 起動し直すときに付ける引数（初回・引き継ぐ会話が無いときは空）
 $resumeArgs = @()
+# 想定外の終了で起動し直した時刻（直近 AutoRestartWindowMin 分の分だけ数える）
+$restartTimes = @()
 # Slack からの指示で起動し直している（前のセッションの画面を消してから起動する）
 $relaunch = $false
 # 作業フォルダーにある powershell.exe を拾わないよう、OS 付属のものを絶対パスで起動する
@@ -426,6 +446,27 @@ try {
             $resumeArgs = @()
             Write-Host ""
             Write-Host "[start] --resume での起動に失敗した（exit=$code）。新しい会話で起動し直す"
+        } elseif ($code -ne 0 -and (Test-AutoRestartEnabled -EnvFile (Join-Path $stateDir '.env'))) {
+            # 想定外の終了（使用量の上限・クラッシュなど）。ブリッジも一緒に止まっているので、同じ会話で起動し直して知らせる
+            $restartTimes = @(Select-RecentRestarts -Times $restartTimes -Now (Get-Date) -WindowMin $AutoRestartWindowMin)
+            if ($restartTimes.Count -lt $AutoRestartMax) {
+                $restartTimes += (Get-Date)
+                $sessionId = Get-LastHookSessionId -HookLog (Join-Path $stateDir 'hooks.jsonl') -SessionTag $sessionTag
+                $resumeArgs = @(Get-ResumeArgs -SessionId $sessionId)
+                Write-CrashRecord -Path (Join-Path $stateDir $CrashFileName) -ExitCode $code -Count $restartTimes.Count `
+                    -Max $AutoRestartMax -WindowMin $AutoRestartWindowMin -Resumed ($resumeArgs.Count -gt 0)
+                $again = $true
+                $relaunch = $true
+                Write-Host ""
+                Write-Host "[start] 想定外の終了（exit=$code）。起動し直す（$AutoRestartWindowMin 分で $($restartTimes.Count)/$AutoRestartMax 回目）"
+            } else {
+                # 起動し直しを諦める。ブリッジが動いていないので、単発のコマンドで知らせる
+                $text = "🛑 Claude Code が $AutoRestartWindowMin 分で $AutoRestartMax 回、想定外に終了した（最後の exit code $code）。起動し直しを止めた。手元で確かめる"
+                Write-Host ""
+                Write-Host "[start] $text"
+                & (Get-NodePath) (Join-Path $repoRoot 'dist\src\notify-cli.js') $text
+                if ($LASTEXITCODE -ne 0) { Write-Warning "Slack に知らせられなかった" }
+            }
         }
     } while ($again)
     exit $code
