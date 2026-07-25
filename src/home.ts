@@ -1,11 +1,18 @@
 // Slack のアプリのホームタブに出す画面（Block Kit の view）を組み立てる純関数群（I/O なし）
+import type { ParsedHomeCustom } from './config.js';
 import { escapeMrkdwn } from './format.js';
-// Slack の上限（header の plain_text は 150、section の mrkdwn は 3000）に収める。サロゲートペアの途中では切らない
 import { clip, formatTime } from './text.js';
 
+// Slack の上限。clip で収め、サロゲートペアの途中では切らない
+/** header の plain_text の上限 */
+const HEADER_TEXT_MAX = 150;
+/** section・context の mrkdwn の上限 */
+const SECTION_TEXT_MAX = 3000;
+
 export interface HomeState {
-  /** 稼働中なら起動時刻、停止中なら停止時刻 */
+  /** 稼働中か */
   running: boolean;
+  /** 稼働中なら起動時刻、停止中なら停止時刻 */
   since: Date;
   /** Claude Code の作業フォルダー */
   workDir: string;
@@ -29,16 +36,9 @@ export interface HomeState {
  * ホームの文面の差し替え。どれも省略でき、省略した部分は既定の文面になる。
  * 文字列の中の `{since}` は起動（停止）時刻、`{mention}` はボットへのメンションに置き換える。
  * body を書くと、既定の「作業フォルダーなどの情報」と「使い方」は出さない。
+ * 形は home.json のスキーマ（config.ts の HomeCustomSchema）から作り、定義を 1 か所にする
  */
-export interface HomeCustom {
-  header?: string | undefined;
-  running?: string | undefined;
-  stopped?: string | undefined;
-  /** 開くたびにこの中から 1 つを選んで出す */
-  greetings?: string[] | undefined;
-  body?: string[] | undefined;
-  footer?: string | undefined;
-}
+export type HomeCustom = ParsedHomeCustom;
 
 function section(text: string): unknown {
   return { type: 'section', text: { type: 'mrkdwn', text } };
@@ -62,38 +62,47 @@ function fill(text: string, state: HomeState): string {
   return text.replaceAll('{since}', formatTime(state.since)).replaceAll('{mention}', botMention(state.botUserId));
 }
 
-/** home.json で文面を差し替えたホーム */
-function buildCustomHomeView(state: HomeState, custom: HomeCustom): unknown {
-  const statusLabel = state.running
+/** 稼働中・停止中の 1 行目 */
+function statusLabel(state: HomeState): string {
+  return state.running
     ? `🟢 *稼働中*（${formatTime(state.since)} から）`
     : `⏸ *停止中*（${formatTime(state.since)} に停止）`;
+}
+
+/** home.json で文面を差し替えたホーム */
+function buildCustomHomeView(state: HomeState, custom: HomeCustom): unknown {
   const statusNote = state.running ? custom.running : custom.stopped;
   const greetings = custom.greetings ?? [];
-  const pick = greetings.length > 0 ? greetings[Math.floor((state.random ?? Math.random)() * greetings.length)] : undefined;
+  const greeting = greetings.length > 0 ? greetings[randomIndex(state, greetings.length)] : undefined;
 
   const blocks: unknown[] = [
     custom.header
-      ? { type: 'header', text: { type: 'plain_text', text: clip(custom.header, 150), emoji: true } }
+      ? { type: 'header', text: { type: 'plain_text', text: clip(custom.header, HEADER_TEXT_MAX), emoji: true } }
       : HEADER,
-    section(clip([statusLabel, statusNote ? fill(statusNote, state) : undefined].filter(Boolean).join('\n'), 3000)),
+    section(clip([statusLabel(state), statusNote ? fill(statusNote, state) : undefined].filter(Boolean).join('\n'), SECTION_TEXT_MAX)),
   ];
-  if (pick !== undefined) blocks.push(section(clip(`💬 ${fill(pick, state)}`, 3000)));
+  if (greeting !== undefined) blocks.push(section(clip(`💬 ${fill(greeting, state)}`, SECTION_TEXT_MAX)));
   if (custom.body && custom.body.length > 0) {
-    blocks.push({ type: 'divider' }, section(clip(custom.body.map((l) => fill(l, state)).join('\n'), 3000)));
+    blocks.push({ type: 'divider' }, section(clip(custom.body.map((l) => fill(l, state)).join('\n'), SECTION_TEXT_MAX)));
   } else {
     blocks.push(...defaultDetailBlocks(state));
   }
   const footer = custom.footer ? `${fill(custom.footer, state)} ・ ` : '';
-  blocks.push(context(clip(`${footer}最終更新 ${formatTime(state.now)}`, 3000)));
+  blocks.push(context(clip(`${footer}最終更新 ${formatTime(state.now)}`, SECTION_TEXT_MAX)));
   return { type: 'home', blocks };
+}
+
+/** 0 以上 length 未満の乱数の添字 */
+function randomIndex(state: HomeState, length: number): number {
+  return Math.floor((state.random ?? Math.random)() * length);
 }
 
 /** 許可ユーザーに見せるホーム（稼働中・停止中） */
 export function buildHomeView(state: HomeState): unknown {
   if (state.custom) return buildCustomHomeView(state, state.custom);
   const status = state.running
-    ? `🟢 *稼働中*（${formatTime(state.since)} から）\nSlack からの話しかけを受け付けている。`
-    : `⏸ *停止中*（${formatTime(state.since)} に停止）\n手元でセッションを起動すると、また受け付けるようになる。`;
+    ? `${statusLabel(state)}\nSlack からの話しかけを受け付けている。`
+    : `${statusLabel(state)}\n手元でセッションを起動すると、また受け付けるようになる。`;
 
   const blocks: unknown[] = [
     HEADER,
