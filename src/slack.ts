@@ -50,6 +50,11 @@ function nonBlankChunks(text: string, limit: number): string[] {
   return chunkText(text, limit).filter((piece) => piece.trim() !== '');
 }
 
+/** activeThreads のキー */
+function threadKey(channel: string, threadTs: string): string {
+  return `${channel}:${threadTs}`;
+}
+
 /** threadTs があるときだけ chat.* に渡す thread_ts を作る */
 function threadParam(threadTs: string | undefined): { thread_ts?: string } {
   return threadTs ? { thread_ts: threadTs } : {};
@@ -537,14 +542,13 @@ export class SlackBridge {
 
   /** access.channels のチャンネルのスレッドに、ボットが関わっているか */
   isActiveThread(channel: string, threadTs: string): boolean {
-    return this.activeThreads.has(`${channel}:${threadTs}`);
+    return this.activeThreads.has(threadKey(channel, threadTs));
   }
 
   /** ボットが関わったスレッドとして覚える（access.channels のチャンネルだけ。DM は常に受け付けるので覚えない） */
   private markActiveThread(channel: string, threadTs: string): void {
     if (!(this.access.channels ?? []).includes(channel)) return;
-    const key = `${channel}:${threadTs}`;
-    this.activeThreads.set(key, true);
+    this.activeThreads.set(threadKey(channel, threadTs), true);
   }
 
   /** interactive の処理本体（ack は enqueue で済ませてある） */
@@ -601,11 +605,8 @@ export class SlackBridge {
         // URL をリンクの形にする。それで上限を超えるチャンクだけは元のまま送る
         const linked = linkifyMarkdownUrls(piece);
         try {
-          const res = await this.web.chat.postMessage({
-            channel,
+          const res = await this.postMessage(channel, threadTs, {
             markdown_text: linked.length <= MARKDOWN_HARD_LIMIT ? linked : piece,
-            ...threadParam(threadTs),
-            ...NO_UNFURL,
           });
           if (res.ts) tsList.push(res.ts);
           continue;
@@ -618,26 +619,24 @@ export class SlackBridge {
       }
       // text は上限が小さいので、さらに分割してから送る
       for (const sub of nonBlankChunks(piece, TEXT_LIMIT)) {
-        const res = await this.web.chat.postMessage({
-          channel,
-          text: escapeMrkdwn(sub),
-          ...threadParam(threadTs),
-          ...NO_UNFURL,
-        });
+        const res = await this.postMessage(channel, threadTs, { text: escapeMrkdwn(sub) });
         if (res.ts) tsList.push(res.ts);
       }
     }
   }
 
+  /** chat.postMessage の共通部分。リンクの展開（外部へのアクセス）は必ず止める */
+  private postMessage(
+    channel: string,
+    threadTs: string | undefined,
+    content: { markdown_text: string } | { text: string; blocks?: unknown[] }
+  ): Promise<{ ok?: boolean; ts?: string }> {
+    return this.web.chat.postMessage({ channel, ...content, ...threadParam(threadTs), ...NO_UNFURL });
+  }
+
   async postBlocks(channel: string, text: string, blocks: unknown[], threadTs?: string): Promise<{ ts: string }> {
     this.assertAllowed(channel);
-    const res = await this.web.chat.postMessage({
-      channel,
-      text: neutralizeBroadcasts(text),
-      blocks,
-      ...threadParam(threadTs),
-      ...NO_UNFURL,
-    });
+    const res = await this.postMessage(channel, threadTs, { text: neutralizeBroadcasts(text), blocks });
     const root = threadTs ?? res.ts;
     if (root) this.markActiveThread(channel, root);
     return { ts: res.ts ?? '' };
@@ -665,7 +664,9 @@ export class SlackBridge {
    */
   async fetchFile(file: SlackFile, signal?: AbortSignal): Promise<Response> {
     const target = new URL(file.url);
-    if (target.protocol !== 'https:' || !(target.hostname === 'slack.com' || target.hostname.endsWith('.slack.com'))) {
+    const isSlackHost = target.hostname === 'slack.com' || target.hostname.endsWith('.slack.com');
+    const isSlackHttps = target.protocol === 'https:' && isSlackHost;
+    if (!isSlackHttps) {
       throw new Error(`Slack 以外の URL には取りに行かない: ${target.hostname}`);
     }
     const res = await this.fetchFn(target, { headers: { Authorization: `Bearer ${this.botToken}` }, signal: signal ?? null });
@@ -740,8 +741,7 @@ export class SlackBridge {
           out.push({ channel, ts: res.ts });
         } else {
           const res = await this.postText(channel, text, threadTs);
-          const first = res.ts[0];
-          out.push({ channel, ts: first ?? '' });
+          out.push({ channel, ts: res.ts[0] ?? '' });
         }
       } catch (e) {
         this.logger.error(`DM への送信に失敗 channel=${channel}`, e);
