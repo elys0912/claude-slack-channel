@@ -10,11 +10,12 @@ import type { GateResult, InboundMessage } from './gate.js';
 import { parseBlockAction } from './permission.js';
 import type { ActionParse, BlockActionInput } from './permission.js';
 import { chunkText } from './chunk.js';
-import { escapeMrkdwn, neutralizeBroadcasts } from './format.js';
+import { escapeMrkdwn, linkifyMarkdownUrls, neutralizeBroadcasts } from './format.js';
 import { errMessage, slackErrorCode } from './errors.js';
 
 // markdown_text は Slack 側の上限が 12000。余裕をみて 11000 で切る。
 const MARKDOWN_LIMIT = 11000;
+const MARKDOWN_HARD_LIMIT = 12000;
 // text は 40000 まで入るが、実用上は 4000 前後で分割されるので 3900 で切る。
 const TEXT_LIMIT = 3900;
 
@@ -600,10 +601,12 @@ export class SlackBridge {
 
     for (const piece of blocksOfMarkdown) {
       if (useMarkdown) {
+        // URL をリンクの形にする。それで上限を超えるチャンクだけは元のまま送る
+        const linked = linkifyMarkdownUrls(piece);
         try {
           const res = await this.web.chat.postMessage({
             channel,
-            markdown_text: piece,
+            markdown_text: linked.length <= MARKDOWN_HARD_LIMIT ? linked : piece,
             ...threadParam(threadTs),
             ...NO_UNFURL,
           });

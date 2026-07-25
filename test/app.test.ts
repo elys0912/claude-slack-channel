@@ -442,6 +442,12 @@ describe('MCP → Slack', () => {
     ]);
   });
 
+  it('reply の生の URL は markdown_text で [URL](URL) の形にして送る（そのままだとリンクにならない）', async () => {
+    await h.client.callTool({ name: 'reply', arguments: { chat_id: DM1, text: '報告：https://claude.ai/artifact/AbC123' } });
+    const posts = h.web.calls.filter((c) => c.method === 'chat.postMessage');
+    expect(posts[0]?.args.markdown_text).toBe('報告：[https://claude.ai/artifact/AbC123](https://claude.ai/artifact/AbC123)');
+  });
+
   it('長い reply は分割され、件数が返る', async () => {
     const text = ('あ'.repeat(99) + '\n').repeat(300);
     const res = await h.client.callTool({ name: 'reply', arguments: { chat_id: DM1, text } });
