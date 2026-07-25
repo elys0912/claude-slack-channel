@@ -19,6 +19,7 @@ import type { PermissionRequest } from './permission.js';
 import type { SessionAllowAll } from './session-allow.js';
 import { deriveRule } from './allow-rules.js';
 import { clip } from './text.js';
+import { plainContext } from './blocks.js';
 
 /** 自動許可をスレッドに記録するとき、入力を載せる長さ */
 const AUTO_ALLOW_PREVIEW_MAX = 300;
@@ -166,9 +167,7 @@ export class PermissionRelay {
       const preview = truncatePlain(req.input_preview, AUTO_ALLOW_PREVIEW_MAX).text;
       const text = `🔓 自動許可: ${revealInvisible(req.tool_name)}\n${preview}`;
       try {
-        await this.slack.postBlocks(target.channel, `🔓 自動許可: ${req.tool_name}`, [
-          { type: 'context', elements: [{ type: 'plain_text', text: clip(text, AUTO_ALLOW_TEXT_MAX) }] },
-        ], target.threadTs);
+        await this.slack.postBlocks(target.channel, `🔓 自動許可: ${req.tool_name}`, [plainContext(clip(text, AUTO_ALLOW_TEXT_MAX))], target.threadTs);
       } catch (e) {
         this.logger.warn('自動許可の記録の投稿に失敗', e);
       }

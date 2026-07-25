@@ -11,7 +11,7 @@ import { clip, newToken } from './text.js';
 import type { PressedMessage } from './types.js';
 import { ACTION, PLAIN_TEXT_LIMIT, numberedAction } from './permission.js';
 import type { SlackBridge } from './slack.js';
-import { BUTTON_LABEL_MAX, plainSection } from './blocks.js';
+import { BUTTON_LABEL_MAX, button, plainContext, plainSection } from './blocks.js';
 import { ExpiringMap } from './expiring-map.js';
 
 /** 選択肢のボタンの有効期限 */
@@ -37,12 +37,7 @@ export interface ScreenRelayOptions {
 
 /** 無応答の警告などに付ける「画面を確認」ボタン */
 export function screenShowButton(): unknown {
-  return {
-    type: 'button',
-    text: { type: 'plain_text', text: '🖥 画面を確認' },
-    action_id: ACTION.SCREEN_SHOW,
-    value: 'show',
-  };
+  return button('🖥 画面を確認', ACTION.SCREEN_SHOW, 'show');
 }
 
 /** 知らせの blocks。withScreenButton なら「🖥 画面を確認」ボタンを添える */
@@ -152,16 +147,11 @@ export function buildChoiceBlocks(id: string, choice: ChoiceScreen): { text: str
     text,
     blocks: [
       plainSection(clip(`🖥 ターミナルの選択画面\n${heading}`, PLAIN_TEXT_LIMIT)),
-      { type: 'context', elements: [{ type: 'plain_text', text: clip(redact(details), PLAIN_TEXT_LIMIT) }] },
+      plainContext(clip(redact(details), PLAIN_TEXT_LIMIT)),
       {
         type: 'actions',
-        elements: choice.options.map((o, i) => ({
-          type: 'button',
-          text: { type: 'plain_text', text: clip(redact(o.label), BUTTON_LABEL_MAX) },
-          // 同じ actions ブロック内で action_id は重複できないので番号を付ける（受け側は接頭辞で判定）
-          action_id: numberedAction(ACTION.SCREEN_PICK, i),
-          value: `${id}.${i}`,
-        })),
+        // 同じ actions ブロック内で action_id は重複できないので番号を付ける（受け側は接頭辞で判定）
+        elements: choice.options.map((o, i) => button(clip(redact(o.label), BUTTON_LABEL_MAX), numberedAction(ACTION.SCREEN_PICK, i), `${id}.${i}`)),
       },
     ],
   };

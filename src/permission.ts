@@ -3,7 +3,7 @@ import type { ParsedAccess } from './config.js';
 import type { Verdict } from './types.js';
 import { neutralizeBroadcasts } from './format.js';
 import { TOKEN_ID_LENGTH } from './text.js';
-import { plainSection } from './blocks.js';
+import { button, plainContext, plainSection } from './blocks.js';
 import { isValidRequestId, DEFAULT_PREVIEW_LIMIT, truncatePlain, truncateHeadTail, PREVIEW_TRUNCATED_WARNING, orPlaceholder, TOKEN_ID_RE } from './permission-core.js';
 import type { PermissionRequest } from './permission-core.js';
 
@@ -49,16 +49,6 @@ export function preformattedBlock(text: string): unknown {
   };
 }
 
-function button(label: string, actionId: string, requestId: string, style?: 'primary' | 'danger'): unknown {
-  return {
-    type: 'button',
-    text: { type: 'plain_text', text: label },
-    ...(style ? { style } : {}),
-    action_id: actionId,
-    value: requestId
-  };
-}
-
 /**
  * 実行許可を求めるメッセージのブロックを組み立てる。不可視文字はどの欄も `\u{XXXX}` にして表示する。
  * - tool_name / description: plain_text の上限（3000）に収まるよう先頭だけ残し、末尾を … にする
@@ -96,18 +86,8 @@ export function buildPermissionBlocks(
     },
     preformattedBlock(previewResult.text),
     // 省略したときだけ警告行を足す（省略していなければ従来どおりのブロック構成）
-    ...(previewResult.truncated
-      ? [{ type: 'context', elements: [{ type: 'plain_text', text: PREVIEW_TRUNCATED_WARNING }] }]
-      : []),
-    {
-      type: 'context',
-      elements: [
-        {
-          type: 'plain_text',
-          text: `ID: ${req.request_id} ／ テキストで "yes ${req.request_id}" / "no ${req.request_id}" でも回答できる`
-        }
-      ]
-    },
+    ...(previewResult.truncated ? [plainContext(PREVIEW_TRUNCATED_WARNING)] : []),
+    plainContext(`ID: ${req.request_id} ／ テキストで "yes ${req.request_id}" / "no ${req.request_id}" でも回答できる`),
     {
       type: 'actions',
       elements: [
@@ -165,34 +145,29 @@ export function buildResolvedBlocks(
   };
 }
 
-export function buildExpiredBlocks(requestId: string): { text: string; blocks: unknown[] } {
-  const blocks: unknown[] = [
-    {
-      type: 'section',
-      text: { type: 'plain_text', text: `⌛ Permission request ${requestId} expired` }
-    }
-  ];
-  return {
-    text: neutralizeBroadcasts(`⌛ Permission request ${requestId} expired`),
-    blocks
-  };
-}
-
-/** 1 行の知らせ（plain_text の section 1 つ） */
-function noticeBlocks(text: string): { text: string; blocks: unknown[] } {
+/** 1 行の知らせ（plain_text の section 1 つ）。text も section も @channel などを無効にした文にする */
+function oneLineView(text: string): { text: string; blocks: unknown[] } {
   const safe = neutralizeBroadcasts(text);
   return { text: safe, blocks: [plainSection(safe)] };
 }
 
+/**
+ * 期限切れのボタンが押されたときの表示。
+ * requestId は parseBlockAction で検証済み（英小文字 5 文字）なので、section 側も neutralizeBroadcasts を通した文にしても表示は変わらない
+ */
+export function buildExpiredBlocks(requestId: string): { text: string; blocks: unknown[] } {
+  return oneLineView(`⌛ Permission request ${requestId} expired`);
+}
+
 /** 回答が無いまま自動で deny したときの表示。reason は「期限切れ」のような固定の文言（「〜のため自動で拒否した」に続く） */
 export function buildAutoDeniedBlocks(requestId: string, reason: string): { text: string; blocks: unknown[] } {
-  return noticeBlocks(`⌛ Permission request ${requestId}: ${reason}のため自動で拒否した`);
+  return oneLineView(`⌛ Permission request ${requestId}: ${reason}のため自動で拒否した`);
 }
 
 /** 回答を Claude に送れなかったときの表示（MCP の切断など。Claude 側は自分の期限で止まる） */
 export function buildVerdictFailedBlocks(requestId: string, behavior: 'allow' | 'deny'): { text: string; blocks: unknown[] } {
   const verb = behavior === 'allow' ? 'Allow' : 'Deny';
-  return noticeBlocks(`⚠️ Permission request ${requestId}: ${verb} を Claude に送れなかった。Claude Code のセッションを確認すること`);
+  return oneLineView(`⚠️ Permission request ${requestId}: ${verb} を Claude に送れなかった。Claude Code のセッションを確認すること`);
 }
 
 export interface BlockActionInput {

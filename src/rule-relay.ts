@@ -7,7 +7,7 @@ import { AllowRuleStore, denyOverlaps, parseRuleForCheck, proposeRule } from './
 import { clip, newToken } from './text.js';
 import type { PressedMessage } from './types.js';
 import type { SlackBridge } from './slack.js';
-import { BUTTON_LABEL_MAX, plainSection as section } from './blocks.js';
+import { BUTTON_LABEL_MAX, button, plainContext, plainSection as section } from './blocks.js';
 import { ExpiringMap } from './expiring-map.js';
 
 /** 追加の提案の有効期限 */
@@ -64,15 +64,12 @@ export class RuleRelay {
         text,
         [
           section(`♾ 許可リストにこのルールを追加する？\n${result.rule}`),
-          {
-            type: 'context',
-            elements: [{ type: 'plain_text', text: '追加すると、次に起動し直したときから確認なしで実行される。今回の操作は許可済み。' }],
-          },
+          plainContext('追加すると、次に起動し直したときから確認なしで実行される。今回の操作は許可済み。'),
           {
             type: 'actions',
             elements: [
-              { type: 'button', text: { type: 'plain_text', text: '追加する' }, style: 'primary', action_id: ACTION.RULE_ADD, value: id },
-              { type: 'button', text: { type: 'plain_text', text: 'やめる' }, action_id: ACTION.RULE_CANCEL, value: id },
+              button('追加する', ACTION.RULE_ADD, id, 'primary'),
+              button('やめる', ACTION.RULE_CANCEL, id),
             ],
           },
         ],
@@ -129,12 +126,7 @@ export class RuleRelay {
           section(clip(`Slack から追加したルール（次に起動し直したときに反映）${more}\n${shown.map((r) => `• ${r}`).join('\n')}`, PLAIN_TEXT_LIMIT)),
           {
             type: 'actions',
-            elements: shown.map((r, i) => ({
-              type: 'button',
-              text: { type: 'plain_text', text: clip(`🗑 ${r}`, BUTTON_LABEL_MAX) },
-              action_id: numberedAction(ACTION.RULE_REMOVE, i),
-              value: r,
-            })),
+            elements: shown.map((r, i) => button(clip(`🗑 ${r}`, BUTTON_LABEL_MAX), numberedAction(ACTION.RULE_REMOVE, i), r)),
           },
         ],
         threadTs
