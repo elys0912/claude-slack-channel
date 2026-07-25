@@ -49,6 +49,15 @@ export function preformattedBlock(text: string): unknown {
   };
 }
 
+export interface PermissionBlocksOptions {
+  /** input_preview を省略せずに出す長さ（既定 DEFAULT_PREVIEW_LIMIT） */
+  previewLimit?: number;
+  /** 「このセッション中は全部許可」ボタンを付けるか */
+  showSessionButton?: boolean;
+  /** 「♾ 今後も許可」ボタンを付けるか（許可リストに足せるルールを作れるリクエストだけ） */
+  showAlwaysButton?: boolean;
+}
+
 /**
  * 実行許可を求めるメッセージのブロックを組み立てる。不可視文字はどの欄も `\u{XXXX}` にして表示する。
  * - tool_name / description: plain_text の上限（3000）に収まるよう先頭だけ残し、末尾を … にする
@@ -58,11 +67,7 @@ export function preformattedBlock(text: string): unknown {
  */
 export function buildPermissionBlocks(
   req: PermissionRequest,
-  previewLimit: number = DEFAULT_PREVIEW_LIMIT,
-  /** 「このセッション中は全部許可」ボタンを付けるか */
-  sessionButton = false,
-  /** 「♾ 今後も許可」ボタンを付けるか（許可リストに足せるルールを作れるリクエストだけ） */
-  alwaysButton = false
+  { previewLimit = DEFAULT_PREVIEW_LIMIT, showSessionButton = false, showAlwaysButton = false }: PermissionBlocksOptions = {}
 ): { text: string; blocks: unknown[]; truncated: boolean } {
   const toolLabel = 'Tool: ';
   const toolNameResult = truncatePlain(orPlaceholder(req.tool_name, '(不明なツール)'), PLAIN_TEXT_LIMIT - toolLabel.length);
@@ -92,8 +97,8 @@ export function buildPermissionBlocks(
       type: 'actions',
       elements: [
         button('Allow', ACTION.ALLOW, req.request_id, 'primary'),
-        ...(alwaysButton ? [button('♾ 今後も許可', ACTION.ALLOW_ALWAYS, req.request_id)] : []),
-        ...(sessionButton ? [button('🔓 このセッション中は全部許可', ACTION.ALLOW_SESSION, req.request_id)] : []),
+        ...(showAlwaysButton ? [button('♾ 今後も許可', ACTION.ALLOW_ALWAYS, req.request_id)] : []),
+        ...(showSessionButton ? [button('🔓 このセッション中は全部許可', ACTION.ALLOW_SESSION, req.request_id)] : []),
         button('Deny', ACTION.DENY, req.request_id, 'danger'),
         // 省略した部分があるときだけ、全文を出すボタンを付ける
         ...(truncated ? [button('See more', ACTION.SEE_MORE, req.request_id)] : [])
@@ -231,7 +236,7 @@ function parseToolAction(actionId: string | undefined, value: string | undefined
 /**
  * block_actions のボタン操作を検証して解釈する。次の順に調べ、最初に外れた理由で ok: false を返す:
  * type が block_actions → team が access.teamId → 押した人が allowFrom → チャンネルが許可ユーザーの DM か access.channels
- * → （画面・許可リスト操作のボタンならその value の形）→ value が request_id の形 → action_id（perm_allow / perm_deny / perm_more / perm_always）。
+ * → （画面・許可リスト操作のボタンならその value の形）→ value が request_id の形 → action_id（perm_allow / perm_deny / perm_more / perm_always / perm_session）。
  * 保留中の ID かどうかはここでは見ない（呼び出し側の PermissionRelay が判断する）。
  */
 export function parseBlockAction(

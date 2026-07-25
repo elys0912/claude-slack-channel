@@ -105,7 +105,7 @@ describe('buildPermissionBlocks', () => {
 
   it('truncates a long input_preview and sets truncated=true, adding a See more button', () => {
     const longReq: PermissionRequest = { ...sampleReq, input_preview: 'x'.repeat(5000) };
-    const { blocks, truncated } = buildPermissionBlocks(longReq, 100);
+    const { blocks, truncated } = buildPermissionBlocks(longReq, { previewLimit: 100 });
     expect(truncated).toBe(true);
     const preformatted = blocks.find(
       (b): b is { type: string; elements: unknown[] } => (b as { type: string }).type === 'rich_text'
@@ -189,7 +189,7 @@ describe('buildPermissionBlocks', () => {
 
   it('切り詰めの境目でサロゲートペアや可視化したエスケープを割らない', () => {
     const preview = ('😀‮').repeat(2000);
-    const { blocks } = buildPermissionBlocks({ ...sampleReq, input_preview: preview }, 101);
+    const { blocks } = buildPermissionBlocks({ ...sampleReq, input_preview: preview }, { previewLimit: 101 });
     const text = previewOf(blocks);
     expect(text.length).toBeLessThanOrEqual(101);
     const [head = '', tail = ''] = text.split(/\n…（途中 \d+ 文字省略）…\n/);
@@ -210,8 +210,8 @@ describe('buildPermissionBlocks', () => {
         (e) => e.action_id
       );
     expect(actionIdsOf(buildPermissionBlocks(sampleReq).blocks)).not.toContain('perm_always');
-    expect(actionIdsOf(buildPermissionBlocks(sampleReq, undefined, false, true).blocks)).toContain('perm_always');
-    expect(actionIdsOf(buildPermissionBlocks(sampleReq, undefined, false, false).blocks)).not.toContain('perm_always');
+    expect(actionIdsOf(buildPermissionBlocks(sampleReq, { showSessionButton: false, showAlwaysButton: true }).blocks)).toContain('perm_always');
+    expect(actionIdsOf(buildPermissionBlocks(sampleReq, { showSessionButton: false, showAlwaysButton: false }).blocks)).not.toContain('perm_always');
   });
 
   it('sets action_id and value correctly on Allow/Deny buttons', () => {
