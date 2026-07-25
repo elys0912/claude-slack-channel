@@ -854,13 +854,11 @@ describe('createToolHandlers 単体', () => {
       new Logger({ stderr: false }),
       onActivity,
       {
-        bridge: {
-          fileInfo: async () => {
-            throw new Error('not found');
-          },
-          fetchFile: async () => {
-            throw new Error('not found');
-          },
+        info: async () => {
+          throw new Error('not found');
+        },
+        fetch: async () => {
+          throw new Error('not found');
         },
         dir: os.tmpdir(),
       }

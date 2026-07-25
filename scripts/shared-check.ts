@@ -1,5 +1,5 @@
 // 相手の repo（claude-slack-channel ⇔ claude-discord-channel）と同じ内容にしているファイル（shared-files.txt）が、
-// チャネルの名前の違いを除いて同じかを確かめる。CI の shared-check ジョブから実行する（初めは警告だけ）。
+// チャネルの名前の違いを除いて同じかを確かめる。CI の shared-check ジョブから実行する（違えば CI を失敗にする）。
 // 使い方: node dist/scripts/shared-check.js <相手の repo のパス>
 // このファイルは claude-slack-channel と claude-discord-channel で同じ内容にしている（直すときは両方を直す）。
 import fs from 'node:fs';

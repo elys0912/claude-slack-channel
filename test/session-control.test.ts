@@ -33,7 +33,7 @@ describe('SessionControl', () => {
     return new SessionControl({
       console,
       restartFlagFile: flag,
-      slack: { postText: async (_c, text) => ({ ts: [String(posted.push(text))] }) },
+      bridge: { postText: async (_c, text) => ({ ts: [String(posted.push(text))] }) },
       logger: new Logger({ stderr: false }),
       killParent: () => void killed++,
       exitConfirmMs,
@@ -54,6 +54,19 @@ describe('SessionControl', () => {
   afterEach(() => {
     vi.useRealTimers();
     fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('interrupt: 画面の状態によらず Esc を送る。コンソールが無い・送れないときは知らせて false', async () => {
+    const keys: string[][] = [];
+    const withKeys: ConsoleAccess = { ...fakeConsole(), sendKeys: async (k) => void keys.push(k) };
+    screen = 'Thinking… (esc to interrupt)';
+    expect(await make(withKeys).interrupt(AT, 'U1')).toBe(true);
+    expect(keys).toEqual([['Esc']]);
+
+    expect(await make(undefined).interrupt(AT, 'U1')).toBe(false);
+    const broken: ConsoleAccess = { ...fakeConsole(), sendKeys: async () => Promise.reject(new Error('gone')) };
+    expect(await make(broken).interrupt(AT, 'U1')).toBe(false);
+    expect(posted).toHaveLength(2);
   });
 
   it('restart: 印を置き、入力待ちなら /exit を送り、終了しなければ知らせる。印は 2 段目の時間まで残し、過ぎたら消す（D-SC-03）', async () => {
@@ -119,7 +132,7 @@ describe('SessionControl', () => {
     const s = new SessionControl({
       console: undefined,
       restartFlagFile: flag,
-      slack: { postText: async (_c, text) => ({ ts: [String(posted.push(text))] }) },
+      bridge: { postText: async (_c, text) => ({ ts: [String(posted.push(text))] }) },
       logger: new Logger({ stderr: false }),
       killParent: () => {
         throw new Error('EPERM');
@@ -146,7 +159,7 @@ describe('SessionControl', () => {
     const s = new SessionControl({
       console: fakeConsole(),
       restartFlagFile: path.join(dir, 'no-such-dir', 'restart.flag'),
-      slack: { postText: async (_c, text) => ({ ts: [String(posted.push(text))] }) },
+      bridge: { postText: async (_c, text) => ({ ts: [String(posted.push(text))] }) },
       logger: new Logger({ stderr: false }),
       killParent: () => void killed++,
     });
@@ -185,7 +198,7 @@ describe('restart.flag の中身', () => {
         new SessionControl({
           console: undefined,
           restartFlagFile: flag,
-          slack: { postText: async () => ({ ts: [] }) },
+          bridge: { postText: async () => ({ ts: [] }) },
           logger: new Logger({ stderr: false }),
           killParent: () => undefined,
           sessionId,

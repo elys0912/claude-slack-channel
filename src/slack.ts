@@ -11,7 +11,8 @@ import { parseBlockAction } from './permission.js';
 import type { ActionParse, BlockActionInput } from './permission.js';
 import { chunkText } from './chunk.js';
 import { escapeMrkdwn, linkifyMarkdownUrls, neutralizeBroadcasts } from './format.js';
-import { errMessage, slackErrorCode } from './errors.js';
+import { errMessage } from './errors.js';
+import { slackErrorCode } from './slack-errors.js';
 
 // markdown_text は Slack 側の上限が 12000。余裕をみて 11000 で切る。
 const MARKDOWN_LIMIT = 11000;

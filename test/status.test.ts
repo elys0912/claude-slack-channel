@@ -42,4 +42,11 @@ describe('buildStatusText', () => {
     expect(text).toContain('返事待ち: 無し');
     expect(text).toContain('直近の hook: 無し');
   });
+
+  it('チャネル固有の行（extraLines）を全部許可の後、hook の前に足す', () => {
+    const base = { startedAt: now, workDir: '', slackConnected: true, waitingSince: undefined, pendingPermissions: 0, lastHooks: [], now };
+    const lines = buildStatusText({ ...base, sessionAllowSince: null, extraLines: ['追加の行'] }).split('\n');
+    expect(lines.indexOf('追加の行')).toBe(lines.indexOf('全部許可: 無効') + 1);
+    expect(buildStatusText(base)).toBe(buildStatusText({ ...base, extraLines: [] }));
+  });
 });

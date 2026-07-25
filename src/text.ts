@@ -29,3 +29,9 @@ export function newToken(): string {
     .slice(0, TOKEN_ID_LENGTH)
     .padEnd(TOKEN_ID_LENGTH, '0');
 }
+
+/** 日時を `YYYY-MM-DD HH:mm`（ローカル時刻）にする */
+export function formatTime(d: Date): string {
+  const pad = (n: number): string => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}

@@ -1,5 +1,5 @@
 // `!status` の文面（純関数）
-import { formatTime } from './home.js';
+import { formatTime } from './text.js';
 import type { HookEvent } from './hook-event.js';
 import { MS_PER_MINUTE } from './watchdog.js';
 
@@ -15,6 +15,8 @@ export interface StatusState {
   lastHooks: HookEvent[];
   /** 「全部許可」。機能が無ければ undefined、無効なら null、有効なら開始時刻 */
   sessionAllowSince?: Date | null | undefined;
+  /** チャネル固有の行（全部許可の後に足す）。無ければ足さない */
+  extraLines?: string[] | undefined;
   now: Date;
 }
 
@@ -44,6 +46,7 @@ export function buildStatusText(state: StatusState): string {
             ? '全部許可: 無効'
             : `全部許可: 有効（${formatTime(state.sessionAllowSince)} から。!lock で解除）`,
         ]),
+    ...(state.extraLines ?? []),
     state.lastHooks.length > 0 ? `直近の hook:\n${state.lastHooks.map((e) => `  ${hookLine(e)}`).join('\n')}` : '直近の hook: 無し',
   ];
   return lines.join('\n');

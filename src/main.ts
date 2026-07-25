@@ -180,7 +180,9 @@ function bridgeAppOptions(
     // start.ps1 から起動されたときだけ値がある。無ければ（手で起動したなど）今までどおり全部の行を扱う
     sessionTag: process.env[SESSION_TAG_ENV] || undefined,
     restartFlagFile: path.join(dir, RESTART_FLAG_FILE),
-    download: tokens.downloadDir ? { bridge, dir: tokens.downloadDir } : undefined,
+    download: tokens.downloadDir
+      ? { info: (id) => bridge.fileInfo(id), fetch: (file, signal) => bridge.fetchFile(file, signal), dir: tokens.downloadDir }
+      : undefined,
     sessionAllowAll: tokens.sessionAllowAll === true,
     managedSettingsFiles: () => managedSettingsFiles(),
     // 起動スクリプトは作業フォルダーで claude.exe を起動し、MCP サーバーも同じ作業フォルダーで動く。

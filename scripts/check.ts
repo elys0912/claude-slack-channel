@@ -2,7 +2,8 @@
 // トークンそのものは絶対に表示しない（接頭辞だけ表示する）。
 import { WebClient } from '@slack/web-api';
 import { loadAccess, loadTokens, stateDir } from '../src/config.js';
-import { errMessage, slackErrorCode } from '../src/errors.js';
+import { errMessage } from '../src/errors.js';
+import { slackErrorCode } from '../src/slack-errors.js';
 
 /** `xoxb-abc...` → `xoxb-***`（トークン本体は出さない） */
 function tokenPrefix(token: string): string {
