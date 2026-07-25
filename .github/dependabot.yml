@@ -1,0 +1,23 @@
+version: 2
+# 更新の確認は月 1 回にし、minor と patch はエコシステムごとに 1 つの PR にまとめる（セキュリティの更新は、この間隔とは関係なく届く）。
+# actions はコミットの SHA で固定しているので、Dependabot が SHA とコメントのタグを一緒に書き換える
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ['*']
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      minor-and-patch:
+        patterns: ['*']
+        update-types: [minor, patch]
+    ignore:
+      # 型定義は CI の Node 24 にそろえる
+      - dependency-name: '@types/node'
+        update-types: ['version-update:semver-major']

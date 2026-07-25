@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { Logger, redact, toSlackLogger } from '../src/log.js';
+import { Logger, parseLogLevel, redact, toSlackLogger } from '../src/log.js';
 
 describe('redact', () => {
   it('xoxb トークンを伏せる', () => {
@@ -144,5 +144,21 @@ describe('toSlackLogger', () => {
     expect(lines[0]).toMatch(/INFO \[bridge\] \[named\] hi$/);
     expect(lines[1]).toMatch(/DEBUG \[bridge\] \[named\] dbg \{"a":1\}$/);
     fs.rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe('parseLogLevel', () => {
+  it.each([
+    ['debug', 'debug'],
+    ['WARN', 'warn'],
+    [' error ', 'error'],
+    ['info', 'info'],
+    ['verbose', undefined],
+    // Object のプロトタイプのキーはレベルにしない
+    ['constructor', undefined],
+    ['', undefined],
+    [undefined, undefined],
+  ] as const)('%j → %j', (value, expected) => {
+    expect(parseLogLevel(value)).toBe(expected);
   });
 });
