@@ -58,23 +58,8 @@ export class RuleRelay {
       this.proposals.prune();
       const id = this.newId();
       this.proposals.add(id, result.rule);
-      const text = `♾ 許可リストにこのルールを追加する？ ${result.rule}`;
-      await slack.postBlocks(
-        channel,
-        text,
-        [
-          section(`♾ 許可リストにこのルールを追加する？\n${result.rule}`),
-          plainContext('追加すると、次に起動し直したときから確認なしで実行される。今回の操作は許可済み。'),
-          {
-            type: 'actions',
-            elements: [
-              button('追加する', ACTION.RULE_ADD, id, 'primary'),
-              button('やめる', ACTION.RULE_CANCEL, id),
-            ],
-          },
-        ],
-        threadTs
-      );
+      const { text, blocks } = buildProposalBlocks(id, result.rule);
+      await slack.postBlocks(channel, text, blocks, threadTs);
     } catch (e) {
       logger.warn('許可リストの提案に失敗', e);
     }
@@ -116,21 +101,8 @@ export class RuleRelay {
         await slack.postText(channel, 'Slack から追加したルールは無い。', threadTs);
         return;
       }
-      const shown = rules.slice(0, LIST_MAX);
-      const more = rules.length > shown.length ? `\n（ほか ${rules.length - shown.length} 件）` : '';
-      await slack.postBlocks(
-        channel,
-        `Slack から追加したルール ${rules.length} 件`,
-        [
-          // 長いルールがたまっても Slack に拒否されないよう、plain_text の上限に収める（件数は先頭に出し、削除はボタンで全件できる）
-          section(clip(`Slack から追加したルール（次に起動し直したときに反映）${more}\n${shown.map((r) => `• ${r}`).join('\n')}`, PLAIN_TEXT_LIMIT)),
-          {
-            type: 'actions',
-            elements: shown.map((r, i) => button(clip(`🗑 ${r}`, BUTTON_LABEL_MAX), numberedAction(ACTION.RULE_REMOVE, i), r)),
-          },
-        ],
-        threadTs
-      );
+      const { text, blocks } = buildRuleListBlocks(rules);
+      await slack.postBlocks(channel, text, blocks, threadTs);
     } catch (e) {
       logger.warn('許可リストの一覧に失敗', e);
     }
@@ -159,4 +131,40 @@ export class RuleRelay {
       this.opts.logger.warn('許可リストの結果の表示に失敗', e);
     }
   }
+}
+
+/** 許可リストへの追加を確認するブロック。ルール・注意書き・追加／やめるのボタン */
+function buildProposalBlocks(id: string, rule: string): { text: string; blocks: unknown[] } {
+  const question = '♾ 許可リストにこのルールを追加する？';
+  return {
+    text: `${question} ${rule}`,
+    blocks: [
+      section(`${question}\n${rule}`),
+      plainContext('追加すると、次に起動し直したときから確認なしで実行される。今回の操作は許可済み。'),
+      {
+        type: 'actions',
+        elements: [
+          button('追加する', ACTION.RULE_ADD, id, 'primary'),
+          button('やめる', ACTION.RULE_CANCEL, id),
+        ],
+      },
+    ],
+  };
+}
+
+/** 追加分のルールの一覧と削除ボタン。ボタンは先頭の LIST_MAX 件だけ並べる */
+function buildRuleListBlocks(rules: string[]): { text: string; blocks: unknown[] } {
+  const shown = rules.slice(0, LIST_MAX);
+  const more = rules.length > shown.length ? `\n（ほか ${rules.length - shown.length} 件）` : '';
+  return {
+    text: `Slack から追加したルール ${rules.length} 件`,
+    blocks: [
+      // 長いルールがたまっても Slack に拒否されないよう、plain_text の上限に収める（件数は先頭に出し、削除はボタンで全件できる）
+      section(clip(`Slack から追加したルール（次に起動し直したときに反映）${more}\n${shown.map((r) => `• ${r}`).join('\n')}`, PLAIN_TEXT_LIMIT)),
+      {
+        type: 'actions',
+        elements: shown.map((r, i) => button(clip(`🗑 ${r}`, BUTTON_LABEL_MAX), numberedAction(ACTION.RULE_REMOVE, i), r)),
+      },
+    ],
+  };
 }
