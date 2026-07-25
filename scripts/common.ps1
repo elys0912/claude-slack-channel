@@ -118,3 +118,39 @@ function Test-SessionTranscript {
         Select-Object -First 1
     return [bool]$found
 }
+
+# Claude Code の利用者ごとの設定ファイル（local スコープの MCP サーバーもここに入る）
+function Get-ClaudeUserConfigPath {
+    if ($env:CLAUDE_CONFIG_DIR) { return Join-Path $env:CLAUDE_CONFIG_DIR '.claude.json' }
+    return Join-Path $env:USERPROFILE '.claude.json'
+}
+
+# 作業フォルダーの local スコープに、待つだけの slackbridge（環境変数 SLACK_CHANNEL_PLACEHOLDER=1 で
+# ScriptPath を起動するもの）が登録済みか。Claude Code 2.1.289 から、開発用チャンネルのサーバーは設定ファイルに
+# 登録されていないと受け付けられない（詳しくは src/placeholder.ts）。
+# 設定ファイルが無い・読めないときも $false を返し、呼び出し側は登録し直す
+function Test-PlaceholderServer {
+    param(
+        [Parameter(Mandatory)][string]$ConfigPath,
+        [Parameter(Mandatory)][string]$ProjectDir,
+        [Parameter(Mandatory)][string]$ServerName,
+        [Parameter(Mandatory)][string]$ScriptPath
+    )
+
+    try {
+        $config = [System.IO.File]::ReadAllText($ConfigPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+    } catch {
+        return $false
+    }
+    if ($null -eq $config.projects) { return $false }
+    # キーは作業フォルダーのパスを / 区切りにしたもの。ドライブ文字の大文字・小文字は揃っていない
+    $key = $ProjectDir.Replace('\', '/').TrimEnd('/')
+    $project = $config.projects.PSObject.Properties | Where-Object { $_.Name -ieq $key } | Select-Object -First 1
+    if ($null -eq $project -or $null -eq $project.Value.mcpServers) { return $false }
+    $server = $project.Value.mcpServers.PSObject.Properties | Where-Object { $_.Name -eq $ServerName } | Select-Object -First 1
+    if ($null -eq $server) { return $false }
+    $entry = $server.Value
+    $entryArgs = @($entry.args)
+    return ($entry.command -eq 'node' -and $entryArgs.Count -eq 1 -and $entryArgs[0] -ieq $ScriptPath -and
+        [string]$entry.env.SLACK_CHANNEL_PLACEHOLDER -eq '1')
+}

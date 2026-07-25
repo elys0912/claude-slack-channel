@@ -262,6 +262,34 @@ function Get-EffectiveSettings {
     }
 }
 
+# 作業フォルダーの local スコープに、待つだけの slackbridge を登録する（登録済みなら何もしない）。
+# Claude Code 2.1.289 から、--dangerously-load-development-channels の server:<名前> は設定ファイルに同じ名前の
+# サーバーが無いと受け付けられず、--mcp-config で渡したものは数に入らない。channel セッションは --strict-mcp-config
+# なので、実際に動くのは --mcp-config の本物のほう。普段のセッションでは、この登録は Slack にもロックにも触らない
+# （src/placeholder.ts）。登録に失敗しても起動は続ける（チャンネルが無効になるだけなので、警告で知らせる）
+function Register-PlaceholderServer {
+    param([string]$ProjectDir)
+
+    $configPath = Get-ClaudeUserConfigPath
+    if (Test-PlaceholderServer -ConfigPath $configPath -ProjectDir $ProjectDir -ServerName $ServerName -ScriptPath $mainJs) {
+        return
+    }
+    # claude.exe の stderr（未登録のときの remove のエラーなど）で止まらないようにする
+    $ErrorActionPreference = 'Continue'
+    Push-Location -LiteralPath $ProjectDir
+    try {
+        $null = & $claude mcp remove -s local $ServerName 2>$null
+        $null = & $claude mcp add -s local $ServerName -e 'SLACK_CHANNEL_PLACEHOLDER=1' -- node $mainJs 2>$null
+    } finally {
+        Pop-Location
+    }
+    if (Test-PlaceholderServer -ConfigPath $configPath -ProjectDir $ProjectDir -ServerName $ServerName -ScriptPath $mainJs) {
+        Write-Host "[start] $ProjectDir の local スコープに $ServerName を登録した（普段のセッションでは何もしない。docs/security.md の「権限の設計」）"
+    } else {
+        Write-Warning "$ProjectDir の local スコープに $ServerName を登録できなかった。Slack のメッセージがセッションに届かないかもしれない（claude mcp add -s local $ServerName -e SLACK_CHANNEL_PLACEHOLDER=1 -- node `"$mainJs`" を手で実行する）"
+    }
+}
+
 # --- 本体 ---------------------------------------------------------------------
 
 $claude = Get-ClaudeExeOrExit
@@ -321,8 +349,11 @@ if ($DryRun) {
     Write-Host "[DryRun] 実行されるコマンドライン:"
     Write-Host (Format-CommandLine -Exe $claude -Arguments $claudeArgs)
     Write-Host "[DryRun] 終了時に $restartFlag があれば、--resume <印の session_id>（会話の記録が無ければ新しい会話）で起動し直す（ダイアログは scripts\dialog-answer.ps1 が答える）"
+    Write-Host "[DryRun] 起動前に、$projectDir の local スコープに $ServerName が無ければ登録する（DryRun では登録しない）"
     exit 0
 }
+
+Register-PlaceholderServer -ProjectDir $projectDir
 
 # --- 起動（Slack の !restart で印が置かれていたら、同じ会話を開いて起動し直す） ------------------
 
