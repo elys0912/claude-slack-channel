@@ -101,7 +101,8 @@ function defaultContext(): DenyContext {
  * コマンドの 1 つの部分（小文字にしたもの）が、ask のルールの語の並び（先頭の語は正規化済み）に当たるか。
  * - 先頭が環境変数の代入・照合できない形の語・ラッパー（WRAPPER_COMMANDS）なら当たり
  * - 部分のどこかに、ルールの語の並びが続いていれば当たり（`echo git push` も当たる。確認が出るだけなので安全側）。
- *   語はバックスラッシュを取り除き、コマンド名の位置は normalizeCommandName で正規化して比べる（`git.exe push`・`git pus\h` も当たる）
+ *   語はバックスラッシュを取り除き、コマンド名の位置は normalizeCommandName で正規化して比べる（`git.exe push`・`git pus\h` も当たる。
+ *   PowerShell の別名も直すので、`del x` は `Remove-Item` のルールに当たる）
  * - ルールの先頭の語と同じ語の後ろが、オプション（`git -C x push`）か、展開で変わりうる語（`git $x`・`git pu*`）なら当たり
  */
 function shellPartMatches(part: string, ruleWords: readonly string[]): boolean {

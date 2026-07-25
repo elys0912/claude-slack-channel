@@ -45,6 +45,25 @@ describe('normalizeCommandName', () => {
     ['python3.12', 'python'],
     ['Python3.12.exe', 'python'],
     ['pip3', 'pip'],
+    ['rm', 'remove-item'],
+    ['DEL', 'remove-item'],
+    ['Erase', 'remove-item'],
+    ['rd', 'remove-item'],
+    ['rmdir', 'remove-item'],
+    ['ri', 'remove-item'],
+    ['mv', 'move-item'],
+    ['move', 'move-item'],
+    ['mi', 'move-item'],
+    ['cp', 'copy-item'],
+    ['copy', 'copy-item'],
+    ['cpi', 'copy-item'],
+    ['sc', 'set-content'],
+    ['ac', 'add-content'],
+    ['ni', 'new-item'],
+    ['ii', 'invoke-item'],
+    ['icm', 'invoke-command'],
+    ['rm.exe', 'remove-item'],
+    ['Remove-Item', 'remove-item'],
   ])('%s → %s', (word, name) => {
     expect(normalizeCommandName(word)).toBe(name);
   });
@@ -315,6 +334,18 @@ describe('denyOverlaps / proposeRule', () => {
 
   it('deny が候補と同じか広ければ重なる', () => {
     expect(denyOverlaps({ tool: 'Bash', prefix: 'ls' }, deny)).toEqual(['Bash(ls:*)']);
+  });
+
+  it('シェルの PowerShell の別名は、本来のコマンドレットと同じく deny と重なる', () => {
+    const psDeny = ['PowerShell(Get-ChildItem:*)', 'PowerShell(rm:*)'];
+    expect(denyOverlaps({ tool: 'PowerShell', prefix: 'ls' }, psDeny)).toEqual(['PowerShell(Get-ChildItem:*)']);
+    expect(denyOverlaps({ tool: 'PowerShell', prefix: 'dir' }, psDeny)).toEqual(['PowerShell(Get-ChildItem:*)']);
+    expect(denyOverlaps({ tool: 'PowerShell', prefix: 'Remove-Item' }, psDeny)).toEqual(['PowerShell(rm:*)']);
+    expect(denyOverlaps({ tool: 'PowerShell', prefix: 'del' }, psDeny)).toEqual(['PowerShell(rm:*)']);
+  });
+
+  it('正規化で綴りが変わっても、そのままの綴りで重なるものは重なる', () => {
+    expect(denyOverlaps({ tool: 'Bash', prefix: 'ls' }, ['Bash(l:*)'])).toEqual(['Bash(l:*)']);
   });
 
   it('シェル以外でツール全体を許すルールは、中身のある deny と重なる', () => {
