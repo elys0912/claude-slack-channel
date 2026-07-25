@@ -82,7 +82,7 @@ GitHub Actions（`.github/workflows/ci.yml`）は、main への push と pull re
 | `scripts/start.cmd` / `start.ps1` | 起動スクリプト |
 | `scripts/common.ps1` | 起動スクリプトの共通の関数（claude.exe の探索、mcp.json の生成、再起動フラグと会話の記録の確認） |
 | `scripts/console.ps1` | ターミナル画面の読み取り、キーの送信、決まったコマンド（/exit・/compact・/clear）の送信（ブリッジが子プロセスで実行する） |
-| `scripts/dialog-answer.ps1` | 再起動するときの警告ダイアログを画面で見張り、自動で答える（`start.ps1` が起動する） |
+| `scripts/dialog-answer.ps1` | 起動時の警告ダイアログを画面で見張り、自動で答える（初回の起動と再起動のたびに `start.ps1` が起動する） |
 | `config/channel-settings.json` | Slack のセッション専用の権限の設定 |
 | `config/*.example*` | `projects.json` / `access.json` / `.env` / `extra-mcp.json` のひな形 |
 | `slack-app-manifest.yaml` | Slack アプリの manifest |
