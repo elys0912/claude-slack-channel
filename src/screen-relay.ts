@@ -12,6 +12,7 @@ import type { PressedMessage } from './types.js';
 import { ACTION, PLAIN_TEXT_LIMIT, numberedAction } from './permission.js';
 import type { SlackBridge } from './slack.js';
 import { BUTTON_LABEL_MAX, plainSection } from './blocks.js';
+import { ExpiringMap } from './expiring-map.js';
 
 /** 選択肢のボタンの有効期限 */
 const SNAPSHOT_TTL_MS = 5 * 60 * 1000;
@@ -23,7 +24,6 @@ export type ScreenSlack = Pick<SlackBridge, 'postText' | 'postBlocks' | 'updateB
 interface Snapshot {
   fingerprint: string;
   choice: ChoiceScreen;
-  expiresAt: number;
 }
 
 export interface ScreenRelayOptions {
@@ -54,16 +54,15 @@ export class ScreenRelay {
   private readonly console: ConsoleAccess | undefined;
   private readonly slack: ScreenSlack;
   private readonly logger: Logger;
-  private readonly now: () => number;
   private readonly newId: () => string;
-  private readonly snapshots = new Map<string, Snapshot>();
+  private readonly snapshots: ExpiringMap<Snapshot>;
 
   constructor(opts: ScreenRelayOptions) {
     this.console = opts.console;
     this.slack = opts.slack;
     this.logger = opts.logger;
-    this.now = opts.now ?? Date.now;
     this.newId = opts.newId ?? newToken;
+    this.snapshots = new ExpiringMap(SNAPSHOT_TTL_MS, opts.now ?? Date.now);
   }
 
   /** 画面を読んでスレッドに出す。選択画面なら選択肢のボタン、そうでなければ画面の末尾。投げない */
@@ -84,9 +83,9 @@ export class ScreenRelay {
         );
         return;
       }
-      this.prune();
+      this.snapshots.prune();
       const id = this.newId();
-      this.snapshots.set(id, { fingerprint: choiceFingerprint(choice), choice, expiresAt: this.now() + SNAPSHOT_TTL_MS });
+      this.snapshots.add(id, { fingerprint: choiceFingerprint(choice), choice });
       const { text, blocks } = buildChoiceBlocks(id, choice);
       await this.slack.postBlocks(channel, text, blocks, threadTs);
       this.logger.info(`選択画面を Slack に表示 id=${id} 選択肢=${choice.options.length}`);
@@ -103,9 +102,8 @@ export class ScreenRelay {
   async pick(snapshotId: string, index: number, pressed: PressedMessage, byUserId: string): Promise<void> {
     const report = (message: string): Promise<void> => this.report(pressed, message);
 
-    const snapshot = this.snapshots.get(snapshotId);
-    this.snapshots.delete(snapshotId);
-    if (!snapshot || this.now() > snapshot.expiresAt) {
+    const snapshot = this.snapshots.take(snapshotId);
+    if (!snapshot) {
       await report('⌛ この選択肢は期限切れ。もう一度「画面を確認」から選び直すこと。');
       return;
     }
@@ -138,13 +136,6 @@ export class ScreenRelay {
         .catch((e: unknown) => this.logger.warn('選択画面の表示の書き換えに失敗', e));
     } else {
       await this.slack.postText(pressed.channel, message, pressed.threadTs).catch(() => undefined);
-    }
-  }
-
-  private prune(): void {
-    const t = this.now();
-    for (const [id, s] of this.snapshots) {
-      if (t > s.expiresAt) this.snapshots.delete(id);
     }
   }
 }

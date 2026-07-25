@@ -8,6 +8,7 @@ import { clip, newToken } from './text.js';
 import type { PressedMessage } from './types.js';
 import type { SlackBridge } from './slack.js';
 import { BUTTON_LABEL_MAX, plainSection as section } from './blocks.js';
+import { ExpiringMap } from './expiring-map.js';
 
 /** 追加の提案の有効期限 */
 const PROPOSAL_TTL_MS = 10 * 60 * 1000;
@@ -27,14 +28,14 @@ export interface RuleRelayOptions {
 
 export class RuleRelay {
   private readonly opts: RuleRelayOptions;
-  private readonly now: () => number;
   private readonly newId: () => string;
-  private readonly proposals = new Map<string, { rule: string; expiresAt: number }>();
+  /** 提案の ID → 追加するルール */
+  private readonly proposals: ExpiringMap<string>;
 
   constructor(opts: RuleRelayOptions) {
     this.opts = opts;
-    this.now = opts.now ?? Date.now;
     this.newId = opts.newId ?? newToken;
+    this.proposals = new ExpiringMap(PROPOSAL_TTL_MS, opts.now ?? Date.now);
   }
 
   /** 実行許可のリクエストから候補を作り、追加してよいかをスレッドで確認する。作れない・deny に当たるならその旨を知らせる。投げない */
@@ -54,9 +55,9 @@ export class RuleRelay {
         await slack.postText(channel, `ℹ️ ${result.rule} は既に許可リストにある（次に起動し直したときから有効）`, threadTs);
         return;
       }
-      this.prune();
+      this.proposals.prune();
       const id = this.newId();
-      this.proposals.set(id, { rule: result.rule, expiresAt: this.now() + PROPOSAL_TTL_MS });
+      this.proposals.add(id, result.rule);
       const text = `♾ 許可リストにこのルールを追加する？ ${result.rule}`;
       await slack.postBlocks(
         channel,
@@ -84,29 +85,28 @@ export class RuleRelay {
 
   /** 追加の提案に答えた。追加する前に deny を読み直して、もう一度照合する。投げない */
   async confirm(proposalId: string, accept: boolean, pressed: PressedMessage, byUserId: string): Promise<void> {
-    const proposal = this.proposals.get(proposalId);
-    this.proposals.delete(proposalId);
-    if (!proposal || this.now() > proposal.expiresAt) {
+    const rule = this.proposals.take(proposalId);
+    if (rule === undefined) {
       await this.report(pressed, '⌛ この提案は期限切れ。もう一度「今後も許可」から提案し直すこと。');
       return;
     }
     if (!accept) {
-      await this.report(pressed, `追加しなかった: ${proposal.rule}`);
+      await this.report(pressed, `追加しなかった: ${rule}`);
       return;
     }
     try {
-      const parsed = parseRuleForCheck(proposal.rule);
+      const parsed = parseRuleForCheck(rule);
       const hits = parsed ? denyOverlaps(parsed, this.opts.loadDeny()) : [];
       if (hits.length > 0) {
-        await this.report(pressed, `🚫 deny に当たるので追加しない: ${proposal.rule}\n当たった deny: ${hits.join(', ')}`);
+        await this.report(pressed, `🚫 deny に当たるので追加しない: ${rule}\n当たった deny: ${hits.join(', ')}`);
         return;
       }
-      this.opts.store.add(proposal.rule);
-      this.opts.logger.info(`許可リストに追加 rule=${proposal.rule} by=${byUserId}`);
-      await this.report(pressed, `✅ 許可リストに追加した: ${proposal.rule}（by ${byUserId}）\n次に起動し直したときから有効。取り消すときは !rules から消す。`);
+      this.opts.store.add(rule);
+      this.opts.logger.info(`許可リストに追加 rule=${rule} by=${byUserId}`);
+      await this.report(pressed, `✅ 許可リストに追加した: ${rule}（by ${byUserId}）\n次に起動し直したときから有効。取り消すときは !rules から消す。`);
     } catch (e) {
       this.opts.logger.warn('許可リストへの追加に失敗', e);
-      await this.report(pressed, `⚠️ 追加できなかった: ${proposal.rule}`);
+      await this.report(pressed, `⚠️ 追加できなかった: ${rule}`);
     }
   }
 
@@ -165,13 +165,6 @@ export class RuleRelay {
       else await this.opts.slack.postText(pressed.channel, text, pressed.threadTs);
     } catch (e) {
       this.opts.logger.warn('許可リストの結果の表示に失敗', e);
-    }
-  }
-
-  private prune(): void {
-    const t = this.now();
-    for (const [id, p] of this.proposals) {
-      if (t > p.expiresAt) this.proposals.delete(id);
     }
   }
 }
