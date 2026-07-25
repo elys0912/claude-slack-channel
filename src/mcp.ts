@@ -179,13 +179,11 @@ export interface McpDeps {
 }
 
 export class ChannelServer {
-  private logger: Logger;
   private deps: McpDeps;
   private readonly server: Server;
 
   constructor(deps: McpDeps) {
     this.deps = deps;
-    this.logger = deps.logger;
 
     this.server = new Server(
       { name: SERVER_NAME, version: SERVER_VERSION },
@@ -203,6 +201,11 @@ export class ChannelServer {
     );
 
     this.registerHandlers();
+  }
+
+  /** deps を差し替えたら logger も一緒に替わるよう、別に持たずに毎回 deps から引く */
+  private get logger(): Logger {
+    return this.deps.logger;
   }
 
   private registerHandlers(): void {
@@ -260,7 +263,6 @@ export class ChannelServer {
    */
   async replaceDeps(deps: McpDeps): Promise<void> {
     this.deps = deps;
-    this.logger = deps.logger;
     try {
       await this.server.sendToolListChanged();
     } catch (e) {
