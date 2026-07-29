@@ -26,11 +26,13 @@ describe('redact', () => {
     expect(redact('Authorization: Bearer abc.def.ghi')).toBe('Authorization: Bearer ***');
   });
 
-  it('GitHub のトークン・AWS のアクセスキー ID・sk- の API キーを伏せる', () => {
-    expect(redact('GH_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123456789')).toBe('GH_TOKEN=ghp_***');
-    expect(redact('github_pat_11ABCDEFG0123456789_abcdefghij')).toBe('github_pat_***');
-    expect(redact('key AKIAABCDEFGHIJKLMNOP end')).toBe('key AKIA*** end');
-    expect(redact('ANTHROPIC_API_KEY=sk-ant-api03-abcdefghijklmnop')).toBe('ANTHROPIC_API_KEY=sk-***');
+  it.each([
+    ['GitHub のトークン', 'GH_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123456789', 'GH_TOKEN=ghp_***'],
+    ['GitHub の fine-grained トークン', 'github_pat_11ABCDEFG0123456789_abcdefghij', 'github_pat_***'],
+    ['AWS のアクセスキー ID', 'key AKIAABCDEFGHIJKLMNOP end', 'key AKIA*** end'],
+    ['sk- の API キー', 'ANTHROPIC_API_KEY=sk-ant-api03-abcdefghijklmnop', 'ANTHROPIC_API_KEY=sk-***'],
+  ])('%s を伏せる', (_label, input, expected) => {
+    expect(redact(input)).toBe(expected);
   });
 
   it('鍵の形に足りない短い語は伏せない', () => {
@@ -110,6 +112,18 @@ describe('Logger', () => {
 });
 
 describe('toSlackLogger', () => {
+  let dir: string;
+  let file: string;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'log-test-'));
+    file = path.join(dir, 'app.log');
+  });
+
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
   it('getLevel は共有 Logger の level を返し、setLevel は共有側に透過させない', () => {
     const inner = new Logger({ stderr: false });
     const slackLogger = toSlackLogger(inner, 'test-logger');
@@ -121,21 +135,16 @@ describe('toSlackLogger', () => {
   });
 
   it('setName は共有 Logger の名前を書き換えない', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'log-test-'));
-    const file = path.join(dir, 'app.log');
     const inner = new Logger({ file, stderr: false });
     inner.setName('bridge');
     toSlackLogger(inner, 'slack-web').setName('web-api');
     inner.info('x');
     const line = fs.readFileSync(file, 'utf8').trim();
-    fs.rmSync(dir, { recursive: true, force: true });
     expect(line).toContain('[bridge]');
     expect(line).not.toContain('web-api');
   });
 
   it('debug/info/warn/error を範囲名付きで委譲する', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'log-test-'));
-    const file = path.join(dir, 'app.log');
     const inner = new Logger({ file, stderr: false, level: 'debug' });
     inner.setName('bridge');
     const slackLogger = toSlackLogger(inner, 'named');
@@ -144,7 +153,6 @@ describe('toSlackLogger', () => {
     const lines = fs.readFileSync(file, 'utf8').trim().split('\n');
     expect(lines[0]).toMatch(/INFO \[bridge\] \[named\] hi$/);
     expect(lines[1]).toMatch(/DEBUG \[bridge\] \[named\] dbg \{"a":1\}$/);
-    fs.rmSync(dir, { recursive: true, force: true });
   });
 });
 
