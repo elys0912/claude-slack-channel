@@ -224,11 +224,18 @@ function Get-AllowExtraRules {
     return $rules
 }
 
+# PATH で見つけた node の実行ファイルの絶対パス。見つからなければ $null
+function Find-NodeExe {
+    $node = Get-Command node -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($node) { return $node.Source }
+    return $null
+}
+
 # MCP サーバー（ブリッジ）を起動する node の絶対パス。claude.exe は作業フォルダーで MCP サーバーを起動するので、
 # 作業フォルダーにある node.exe を拾わないよう、PATH で見つけた場所を mcp.json に書く。見つからなければ node のまま
 function Get-NodePath {
-    $node = Get-Command node -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($node) { return $node.Source }
+    $nodeExe = Find-NodeExe
+    if ($nodeExe) { return $nodeExe }
     return 'node'
 }
 
@@ -237,17 +244,18 @@ function Get-NodePath {
 # refreshInterval は、待機中も枠のリセットを反映するため。node が見つからなければ $null（statusline を使わない）
 function Get-StatusLineSettings {
     $statusLineJs = Join-Path $repoRoot 'dist\src\statusline.js'
-    $node = Get-Command node -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
-    if (-not $node) {
+    $nodeExe = Find-NodeExe
+    if (-not $nodeExe) {
         Write-Warning "node が見つからないので使用量の見張りは使わない"
         return $null
     }
-    return @{ type = 'command'; command = ('"{0}" "{1}"' -f $node.Source, $statusLineJs); refreshInterval = 60 }
+    return @{ type = 'command'; command = ('"{0}" "{1}"' -f $nodeExe, $statusLineJs); refreshInterval = 60 }
 }
 
 # Claude Code の hook から呼ぶ記録コマンド（dist/src/hook.js）の設定。
 # セッションの開始・終了、応答の終了と失敗、通知（ターミナル側の入力待ち・使用量の上限）、圧縮を
 # 状態ディレクトリの hooks.jsonl に書き、ブリッジが Slack に知らせる。node が見つからなければ空
+# node の探し方が Find-NodeExe と違う（-CommandType Application が無い）。そろえると拾う node が変わりうるので、そのままにする
 function Get-HookSettings {
     $hookJs = Join-Path $repoRoot 'dist\src\hook.js'
     $node = Get-Command node -ErrorAction SilentlyContinue
