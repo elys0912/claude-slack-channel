@@ -328,6 +328,91 @@ function Quote-Arg {
     return '"' + $Value + '"'
 }
 
+# 警告ダイアログに自動で答える dialog-answer.ps1 を、同じコンソールで別プロセスとして起動する。
+# 初回も起動し直しも使う（PC の再起動後などに手で答えなくて済むように）。
+# Start-Process -ArgumentList は要素を空白でつなぐだけなので、空白を含みうる値は引用符で囲む
+# （囲まないと 'development channel' が 2 つの引数に割れて、dialog-answer.ps1 が起動時に失敗する）
+function Start-DialogAnswerer {
+    Start-Process -FilePath $powershellExe -NoNewWindow -ArgumentList @(
+        '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+        '-File', (Quote-Arg (Join-Path $PSScriptRoot 'dialog-answer.ps1')),
+        '-Pattern', (Quote-Arg $DevChannelDialogPattern), '-ChoicePattern', (Quote-Arg $DevChannelChoicePattern),
+        '-TimeoutSec', $DevChannelDialogTimeoutSec,
+        '-LogFile', (Quote-Arg (Join-Path $resolvedStateDir 'logs\dialog-answer.log'))
+    ) | Out-Null
+}
+
+# claude.exe の終了後に、もう一度起動するかと、次の起動の状態を決める。
+# 戻り値は @{ Again; ResumeArgs; Relaunch; RestartTimes }。どの分岐にも当たらなければ Again が $false で、ほかは受け取った値のまま。
+# 状態はループの変数に呼び出し側で戻す（関数の中の代入はループの変数に届かないため）
+function Resolve-NextLaunch {
+    param($ExitCode, $LaunchedAt, [object[]]$ResumeArgs = @(), [bool]$Relaunch, [object[]]$RestartTimes = @())
+
+    $next = @{ Again = $false; ResumeArgs = $ResumeArgs; Relaunch = $Relaunch; RestartTimes = $RestartTimes }
+    if (Test-Path -LiteralPath $restartFlag) {
+        # 印に session_id があり、その会話の記録があれば --resume でその会話を開く。
+        # 記録が無い（起動してから一度もやりとりしていない会話は保存されない）・id が分からないときは新しい会話で起動する。
+        # --continue は使わない（このフォルダーで最新の会話を開くので、同じフォルダーの VS Code などの会話を開いてしまう）
+        $sessionId = Read-RestartSessionId -Path $restartFlag
+        Remove-Item -LiteralPath $restartFlag -Force -ErrorAction SilentlyContinue
+        $next.Again = $true
+        $next.Relaunch = $true
+        # @() で包む（要素 1 つの配列を関数の結果で代入すると文字列になる）
+        $next.ResumeArgs = @(Get-ResumeArgs -SessionId $sessionId)
+        Write-Host ""
+        if ($next.ResumeArgs.Count -gt 0) {
+            Write-Host "[start] Slack からの指示で起動し直す（--resume $sessionId で会話を引き継ぐ）"
+        } else {
+            Write-Host "[start] Slack からの指示で起動し直す（引き継ぐ会話の記録が無いので、新しい会話で起動する）"
+        }
+        return $next
+    }
+
+    $isQuickResumeFailure = $ResumeArgs.Count -gt 0 -and $ExitCode -ne 0 -and ((Get-Date) - $LaunchedAt).TotalSeconds -lt $ResumeFailureSec
+    if ($isQuickResumeFailure) {
+        # --resume ですぐに失敗した（会話が見つからない等）。Slack から戻せなくならないよう、新しい会話で 1 回だけ起動し直す
+        $next.Again = $true
+        $next.ResumeArgs = @()
+        Write-Host ""
+        Write-Host "[start] --resume での起動に失敗した（exit=$ExitCode）。新しい会話で起動し直す"
+        return $next
+    }
+
+    if ($ExitCode -ne 0 -and (Test-AutoRestartEnabled -EnvFile (Join-Path $resolvedStateDir $EnvFileName))) {
+        return Resolve-CrashRestart -Next $next -ExitCode $ExitCode
+    }
+    return $next
+}
+
+# 想定外の終了（使用量の上限・クラッシュなど）のとき。ブリッジも一緒に止まっているので、同じ会話で起動し直して知らせる。
+# 直近 AutoRestartWindowMin 分で AutoRestartMax 回に達していたら起動し直しを諦め、単発のコマンドで知らせる。
+# Next（Resolve-NextLaunch の戻り値の形）を更新して返す
+function Resolve-CrashRestart {
+    param([hashtable]$Next, $ExitCode)
+
+    $Next.RestartTimes = @(Select-RecentRestarts -Times $Next.RestartTimes -Now (Get-Date) -WindowMin $AutoRestartWindowMin)
+    if ($Next.RestartTimes.Count -ge $AutoRestartMax) {
+        $text = "🛑 Claude Code が $AutoRestartWindowMin 分で $AutoRestartMax 回、想定外に終了した（最後の exit code $ExitCode）。起動し直しを止めた。手元で確かめる"
+        Write-Host ""
+        Write-Host "[start] $text"
+        # 関数の出力は戻り値に混ざるので、notify-cli の出力は画面に直接出す
+        & (Get-NodePath) (Join-Path $repoRoot 'dist\src\notify-cli.js') $text | Out-Host
+        if ($LASTEXITCODE -ne 0) { Write-Warning "Slack に知らせられなかった" }
+        return $Next
+    }
+
+    $Next.RestartTimes += (Get-Date)
+    $sessionId = Get-LastHookSessionId -HookLog (Join-Path $resolvedStateDir $HookLogFileName) -SessionTag $sessionTag
+    $Next.ResumeArgs = @(Get-ResumeArgs -SessionId $sessionId)
+    Write-CrashRecord -Path (Join-Path $resolvedStateDir $CrashFileName) -ExitCode $ExitCode -Count $Next.RestartTimes.Count `
+        -Max $AutoRestartMax -WindowMin $AutoRestartWindowMin -Resumed ($Next.ResumeArgs.Count -gt 0)
+    $Next.Again = $true
+    $Next.Relaunch = $true
+    Write-Host ""
+    Write-Host "[start] 想定外の終了（exit=$ExitCode）。起動し直す（$AutoRestartWindowMin 分で $($Next.RestartTimes.Count)/$AutoRestartMax 回目）"
+    return $Next
+}
+
 # --- 本体 ---------------------------------------------------------------------
 
 $claude = Get-ClaudeExeOrExit
@@ -430,63 +515,15 @@ try {
             $claudeArgs = New-ClaudeArgs
         }
         $launchArgs = Get-LaunchArgs -ResumeArgs $resumeArgs -ClaudeArgs $claudeArgs
-        # 初回も起動し直しも、警告ダイアログは画面を見張って自動で答える（PC の再起動後などに手で答えなくて済むように）。
-        # Start-Process -ArgumentList は要素を空白でつなぐだけなので、空白を含みうる値は引用符で囲む
-        # （囲まないと 'development channel' が 2 つの引数に割れて、dialog-answer.ps1 が起動時に失敗する）
-        Start-Process -FilePath $powershellExe -NoNewWindow -ArgumentList @(
-            '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
-            '-File', (Quote-Arg (Join-Path $PSScriptRoot 'dialog-answer.ps1')),
-            '-Pattern', (Quote-Arg $DevChannelDialogPattern), '-ChoicePattern', (Quote-Arg $DevChannelChoicePattern),
-            '-TimeoutSec', $DevChannelDialogTimeoutSec,
-            '-LogFile', (Quote-Arg (Join-Path $resolvedStateDir 'logs\dialog-answer.log'))
-        ) | Out-Null
+        Start-DialogAnswerer
         $launchedAt = Get-Date
         & $claude @launchArgs
         $code = $LASTEXITCODE
-        $again = Test-Path -LiteralPath $restartFlag
-        if ($again) {
-            # 印に session_id があり、その会話の記録があれば --resume でその会話を開く。
-            # 記録が無い（起動してから一度もやりとりしていない会話は保存されない）・id が分からないときは新しい会話で起動する。
-            # --continue は使わない（このフォルダーで最新の会話を開くので、同じフォルダーの VS Code などの会話を開いてしまう）
-            $sessionId = Read-RestartSessionId -Path $restartFlag
-            Remove-Item -LiteralPath $restartFlag -Force -ErrorAction SilentlyContinue
-            $relaunch = $true
-            # @() で包む（要素 1 つの配列を関数の結果で代入すると文字列になる）
-            $resumeArgs = @(Get-ResumeArgs -SessionId $sessionId)
-            Write-Host ""
-            if ($resumeArgs.Count -gt 0) {
-                Write-Host "[start] Slack からの指示で起動し直す（--resume $sessionId で会話を引き継ぐ）"
-            } else {
-                Write-Host "[start] Slack からの指示で起動し直す（引き継ぐ会話の記録が無いので、新しい会話で起動する）"
-            }
-        } elseif ($resumeArgs.Count -gt 0 -and $code -ne 0 -and ((Get-Date) - $launchedAt).TotalSeconds -lt $ResumeFailureSec) {
-            # --resume ですぐに失敗した（会話が見つからない等）。Slack から戻せなくならないよう、新しい会話で 1 回だけ起動し直す
-            $again = $true
-            $resumeArgs = @()
-            Write-Host ""
-            Write-Host "[start] --resume での起動に失敗した（exit=$code）。新しい会話で起動し直す"
-        } elseif ($code -ne 0 -and (Test-AutoRestartEnabled -EnvFile (Join-Path $resolvedStateDir $EnvFileName))) {
-            # 想定外の終了（使用量の上限・クラッシュなど）。ブリッジも一緒に止まっているので、同じ会話で起動し直して知らせる
-            $restartTimes = @(Select-RecentRestarts -Times $restartTimes -Now (Get-Date) -WindowMin $AutoRestartWindowMin)
-            if ($restartTimes.Count -lt $AutoRestartMax) {
-                $restartTimes += (Get-Date)
-                $sessionId = Get-LastHookSessionId -HookLog (Join-Path $resolvedStateDir $HookLogFileName) -SessionTag $sessionTag
-                $resumeArgs = @(Get-ResumeArgs -SessionId $sessionId)
-                Write-CrashRecord -Path (Join-Path $resolvedStateDir $CrashFileName) -ExitCode $code -Count $restartTimes.Count `
-                    -Max $AutoRestartMax -WindowMin $AutoRestartWindowMin -Resumed ($resumeArgs.Count -gt 0)
-                $again = $true
-                $relaunch = $true
-                Write-Host ""
-                Write-Host "[start] 想定外の終了（exit=$code）。起動し直す（$AutoRestartWindowMin 分で $($restartTimes.Count)/$AutoRestartMax 回目）"
-            } else {
-                # 起動し直しを諦める。ブリッジが動いていないので、単発のコマンドで知らせる
-                $text = "🛑 Claude Code が $AutoRestartWindowMin 分で $AutoRestartMax 回、想定外に終了した（最後の exit code $code）。起動し直しを止めた。手元で確かめる"
-                Write-Host ""
-                Write-Host "[start] $text"
-                & (Get-NodePath) (Join-Path $repoRoot 'dist\src\notify-cli.js') $text
-                if ($LASTEXITCODE -ne 0) { Write-Warning "Slack に知らせられなかった" }
-            }
-        }
+        $next = Resolve-NextLaunch -ExitCode $code -LaunchedAt $launchedAt -ResumeArgs $resumeArgs -Relaunch $relaunch -RestartTimes $restartTimes
+        $again = $next.Again
+        $resumeArgs = $next.ResumeArgs
+        $relaunch = $next.Relaunch
+        $restartTimes = $next.RestartTimes
     } while ($again)
     exit $code
 } finally {
