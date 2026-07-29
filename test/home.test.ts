@@ -39,18 +39,25 @@ describe('buildHomeView', () => {
     expect(t).not.toContain('稼働中');
   });
 
-  it('チャンネルが無ければ DM だけ、ルールが使えなければ行を出さない、警告が無効なら出さない', () => {
-    const t = text(buildHomeView({ ...base, channelCount: 0, ruleCount: undefined, replyTimeoutMin: 0 }));
-    expect(t).toContain('DM だけ');
-    expect(t).not.toContain('足したルール*');
-    expect(t).not.toContain('返事が無いとき');
+  it('チャンネルが無ければ DM だけと出す', () => {
+    expect(text(buildHomeView({ ...base, channelCount: 0 }))).toContain('DM だけ');
+  });
+
+  it('ルールが使えなければルールの行を出さない', () => {
+    expect(text(buildHomeView({ ...base, ruleCount: undefined }))).not.toContain('足したルール*');
+  });
+
+  it('返事待ちの警告が無効なら出さない', () => {
+    expect(text(buildHomeView({ ...base, replyTimeoutMin: 0 }))).not.toContain('返事が無いとき');
   });
 
   it('使い方のメンションはボット自身の ID で出し、アプリ名は埋め込まない', () => {
-    const t = text(buildHomeView({ ...base, botUserId: 'U0C3MSN3MND' }));
-    expect(t).toContain('<@U0C3MSN3MND> にメンションする');
-    expect(t).not.toContain('fox3-local');
-    expect(t).not.toContain('FOX3 Local Bridge');
+    const botUserId = 'UBOT1';
+    // 利用者ごとに付ける Slack アプリの名前・ボットの表示名の例
+    const appNames = ['fox3-local', 'FOX3 Local Bridge'];
+    const t = text(buildHomeView({ ...base, botUserId }));
+    expect(t).toContain(`<@${botUserId}> にメンションする`);
+    for (const name of appNames) expect(t).not.toContain(name);
   });
 
   it('ボットの ID が分からない・形が違うときは「ボット」と書く', () => {
