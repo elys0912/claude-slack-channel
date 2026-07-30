@@ -54,39 +54,56 @@ afterEach(() => {
 });
 
 describe('splitName / archiveKind', () => {
-  it('二重拡張子をまとめて拡張子として扱う', () => {
-    expect(splitName('a.tar.gz')).toEqual({ stem: 'a', ext: '.tar.gz' });
-    expect(splitName('a.b.zip')).toEqual({ stem: 'a.b', ext: '.zip' });
-    expect(splitName('README')).toEqual({ stem: 'README', ext: '' });
-    expect(splitName('.zip')).toEqual({ stem: '.zip', ext: '' });
+  it.each([
+    ['a.tar.gz', { stem: 'a', ext: '.tar.gz' }],
+    ['a.b.zip', { stem: 'a.b', ext: '.zip' }],
+    ['README', { stem: 'README', ext: '' }],
+    ['.zip', { stem: '.zip', ext: '' }],
+  ])('二重拡張子をまとめて拡張子として扱う: %s', (name, expected) => {
+    expect(splitName(name)).toEqual(expected);
   });
 
-  it('形式ごとに展開方式を決める', () => {
-    for (const name of ['a.zip', 'a.7z', 'a.RAR', 'a.tar', 'a.tar.gz', 'a.tgz', 'a.tar.bz2', 'a.tar.xz', 'a.lzh']) {
+  it.each(['a.zip', 'a.7z', 'a.RAR', 'a.tar', 'a.tar.gz', 'a.tgz', 'a.tar.bz2', 'a.tar.xz', 'a.lzh'])(
+    '%s は tar で展開する',
+    (name) => {
       expect(archiveKind(name)).toBe('tar');
     }
+  );
+
+  it('単体の .gz は gzip で展開する', () => {
     expect(archiveKind('a.log.gz')).toBe('gzip');
+  });
+
+  it('圧縮ファイルでなければ展開方式は無い', () => {
     expect(archiveKind('a.txt')).toBeUndefined();
   });
 });
 
 describe('sanitizeFileName', () => {
-  it('パス区切りより前を捨てる', () => {
-    expect(sanitizeFileName('../../evil.txt', 'F1')).toBe('evil.txt');
-    expect(sanitizeFileName('C:\\Windows\\evil.dll', 'F1')).toBe('evil.dll');
+  it.each([
+    ['../../evil.txt', 'evil.txt'],
+    ['C:\\Windows\\evil.dll', 'evil.dll'],
+  ])('パス区切りより前を捨てる: %s', (name, expected) => {
+    expect(sanitizeFileName(name, 'F1')).toBe(expected);
   });
 
-  it('Windows で使えない文字と末尾の . / 空白を処理する', () => {
-    expect(sanitizeFileName('a<b>:c"|?*.txt', 'F1')).toBe('a_b__c____.txt');
-    expect(sanitizeFileName('name. . ', 'F1')).toBe('name');
-    expect(sanitizeFileName('a\u0001b', 'F1')).toBe('a_b');
+  it.each([
+    ['a<b>:c"|?*.txt', 'a_b__c____.txt'],
+    ['name. . ', 'name'],
+    ['a\u0001b', 'a_b'],
+  ])('Windows で使えない文字と末尾の . / 空白を処理する: %j', (name, expected) => {
+    expect(sanitizeFileName(name, 'F1')).toBe(expected);
   });
 
-  it('空・.. なら fallback、予約名には _ を付ける', () => {
-    expect(sanitizeFileName('', 'F1')).toBe('F1');
-    expect(sanitizeFileName('..', 'F1')).toBe('F1');
-    expect(sanitizeFileName('CON', 'F1')).toBe('_CON');
-    expect(sanitizeFileName('nul.txt', 'F1')).toBe('_nul.txt');
+  it.each(['', '..'])('%j なら fallback にする', (name) => {
+    expect(sanitizeFileName(name, 'F1')).toBe('F1');
+  });
+
+  it.each([
+    ['CON', '_CON'],
+    ['nul.txt', '_nul.txt'],
+  ])('予約名 %s には _ を付ける', (name, expected) => {
+    expect(sanitizeFileName(name, 'F1')).toBe(expected);
   });
 
   it('長すぎる名前は拡張子を残して切る', () => {
@@ -223,46 +240,60 @@ describe('downloadAttachment', () => {
     return bridge;
   }
 
+  type FakeBridge = ReturnType<typeof fakeBridge>;
+
+  interface DownloadOptions {
+    /** 圧縮ファイルなら保存の後に展開する */
+    extract?: boolean;
+    dir?: string;
+    limits?: typeof LIMITS;
+  }
+
+  /** 保存先は一時フォルダー、上限は LIMITS を既定にし、テストごとに変える項目だけを渡す */
+  function download(bridge: FakeBridge, options: DownloadOptions = {}): Promise<string> {
+    return downloadAttachment({ ...bridge, dir: options.dir ?? dir, limits: options.limits ?? LIMITS }, 'F123', options.extract ?? false);
+  }
+
   it('送信者のファイル名を無害化して保存先に保存する', async () => {
-    const result = await downloadAttachment({ ...fakeBridge({ name: '../../evil.txt' }, 'hello'), dir, limits: LIMITS }, 'F123', false);
+    const result = await download(fakeBridge({ name: '../../evil.txt' }, 'hello'));
     expect(result).toBe(`saved: ${path.join(dir, 'evil.txt')} (5 bytes)`);
     expect(fs.readFileSync(path.join(dir, 'evil.txt'), 'utf8')).toBe('hello');
   });
 
   it('同じ名前があれば番号を付けて保存する', async () => {
     fs.writeFileSync(path.join(dir, 'a.txt'), 'old');
-    await downloadAttachment({ ...fakeBridge({}, 'new'), dir, limits: LIMITS }, 'F123', false);
+    await download(fakeBridge({}, 'new'));
     expect(fs.readFileSync(path.join(dir, 'a.txt'), 'utf8')).toBe('old');
     expect(fs.readFileSync(path.join(dir, 'a (1).txt'), 'utf8')).toBe('new');
   });
 
   it('files.info のサイズが上限を超えていれば取りに行かない', async () => {
     const bridge = fakeBridge({ size: LIMITS.maxDownloadBytes + 1 }, 'x');
-    await expect(downloadAttachment({ ...bridge, dir, limits: LIMITS }, 'F123', false)).rejects.toThrow(/大きすぎる/);
+    await expect(download(bridge)).rejects.toThrow(/大きすぎる/);
     expect(bridge.fetched).toBe(0);
     expect(fs.readdirSync(dir)).toEqual([]);
   });
 
   it('受信中に上限を超えたら止めて、書きかけを消す', async () => {
     const bridge = fakeBridge({}, Buffer.alloc(2000));
-    await expect(downloadAttachment({ ...bridge, dir, limits: { ...LIMITS, maxDownloadBytes: 1000 } }, 'F123', false)).rejects.toThrow(/上限/);
+    await expect(download(bridge, { limits: { ...LIMITS, maxDownloadBytes: 1000 } })).rejects.toThrow(/上限/);
     expect(fs.readdirSync(dir)).toEqual([]);
   });
 
   it('保存先が無ければ投げる', async () => {
     const missing = path.join(dir, 'missing');
-    await expect(downloadAttachment({ ...fakeBridge({}, 'x'), dir: missing, limits: LIMITS }, 'F123', false)).rejects.toThrow(/保存先/);
+    await expect(download(fakeBridge({}, 'x'), { dir: missing })).rejects.toThrow(/保存先/);
   });
 
   it('extract で gzip を展開する', async () => {
     const bridge = fakeBridge({ name: 'log.txt.gz' }, zlib.gzipSync('hello'));
-    const result = await downloadAttachment({ ...bridge, dir, limits: LIMITS }, 'F123', true);
+    const result = await download(bridge, { extract: true });
     expect(result).toContain(`extracted: ${path.join(dir, 'log.txt')} (1 files, 5 bytes)`);
     expect(fs.existsSync(path.join(dir, 'log.txt.gz'))).toBe(true);
   });
 
   it('extract でも圧縮ファイルでなければ保存だけする', async () => {
-    const result = await downloadAttachment({ ...fakeBridge({}, 'x'), dir, limits: LIMITS }, 'F123', true);
+    const result = await download(fakeBridge({}, 'x'), { extract: true });
     expect(result).toContain('展開していない');
   });
 });
