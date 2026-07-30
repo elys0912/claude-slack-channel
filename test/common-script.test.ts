@@ -5,6 +5,9 @@ import { spawnSync } from 'node:child_process';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 const common = path.join(import.meta.dirname, '..', 'scripts', 'common.ps1');
+// 会話の記録を置く ID と、記録の無い ID（どちらも UUID の形）
+const SESSION_ID = 'c2097ecd-29b0-4cee-9f3e-a9aeace64bc3';
+const SESSION_ID_WITHOUT_TRANSCRIPT = '794af7ae-57b1-4a74-9ef5-89328e03a33d';
 
 /** common.ps1 を読み込んでから command を実行し、stdout を返す */
 function ps(command: string): string {
@@ -33,26 +36,31 @@ describe.runIf(process.platform === 'win32')('scripts/common.ps1 の Read-Restar
 
   const read = (): string => ps(`$id = Read-RestartSessionId -Path '${flag}'; if ($null -eq $id) { '<null>' } else { $id }`);
 
+  /** Claude Code の設定フォルダーの projects 配下に、id の会話の記録を置く。設定フォルダーを返す */
+  function writeTranscript(id: string): string {
+    const config = path.join(dir, 'config');
+    fs.mkdirSync(path.join(config, 'projects', 'C--dev'), { recursive: true });
+    fs.writeFileSync(path.join(config, 'projects', 'C--dev', `${id}.jsonl`), '{}\n');
+    return config;
+  }
+
   it('ブリッジが書いた印から session_id を読む', () => {
-    fs.writeFileSync(flag, JSON.stringify({ at: '2026-10-03T00:00:00.000Z', sessionId: 'c2097ecd-29b0-4cee-9f3e-a9aeace64bc3' }) + '\n');
-    expect(read()).toBe('c2097ecd-29b0-4cee-9f3e-a9aeace64bc3');
+    fs.writeFileSync(flag, JSON.stringify({ at: '2026-10-03T00:00:00.000Z', sessionId: SESSION_ID }) + '\n');
+    expect(read()).toBe(SESSION_ID);
   });
 
-  it('id が無い（古い印）・UUID の形でない・JSON でない・ファイルが無いなら null（新しい会話で起動する）', () => {
-    fs.writeFileSync(flag, JSON.stringify({ at: '2026-10-03T00:00:00.000Z' }));
-    expect(read()).toBe('<null>');
-    fs.writeFileSync(flag, JSON.stringify({ sessionId: 'x --dangerously-skip-permissions' }));
-    expect(read()).toBe('<null>');
-    fs.writeFileSync(flag, 'not json');
-    expect(read()).toBe('<null>');
-    fs.rmSync(flag);
+  it.each([
+    ['id が無い（古い印）', JSON.stringify({ at: '2026-10-03T00:00:00.000Z' })],
+    ['UUID の形でない', JSON.stringify({ sessionId: 'x --dangerously-skip-permissions' })],
+    ['JSON でない', 'not json'],
+    ['ファイルが無い', undefined],
+  ])('%s なら null（新しい会話で起動する）', (_label, content) => {
+    if (content !== undefined) fs.writeFileSync(flag, content);
     expect(read()).toBe('<null>');
   });
 
   it('Get-ResumeArgs と Get-LaunchArgs（start.ps1 の起動の引数）: 会話の記録があるときだけ --resume <id> を先頭に付ける', () => {
-    const config = path.join(dir, 'config');
-    fs.mkdirSync(path.join(config, 'projects', 'C--dev'), { recursive: true });
-    fs.writeFileSync(path.join(config, 'projects', 'C--dev', 'c2097ecd-29b0-4cee-9f3e-a9aeace64bc3.jsonl'), '{}\n');
+    const config = writeTranscript(SESSION_ID);
     const build = (id: string) =>
       ps(
         `$resumeArgs = @(Get-ResumeArgs -SessionId '${id}' -ConfigDir '${config}'); ` +
@@ -60,8 +68,8 @@ describe.runIf(process.platform === 'win32')('scripts/common.ps1 の Read-Restar
       );
 
     expect(build('')).toBe('2|--mcp-config|a b.json');
-    expect(build('c2097ecd-29b0-4cee-9f3e-a9aeace64bc3')).toBe('4|--resume|c2097ecd-29b0-4cee-9f3e-a9aeace64bc3|--mcp-config|a b.json');
-    expect(build('794af7ae-57b1-4a74-9ef5-89328e03a33d')).toBe('2|--mcp-config|a b.json');
+    expect(build(SESSION_ID)).toBe(`4|--resume|${SESSION_ID}|--mcp-config|a b.json`);
+    expect(build(SESSION_ID_WITHOUT_TRANSCRIPT)).toBe('2|--mcp-config|a b.json');
   });
 
   it('Get-LaunchArgs: 要素が 1 つでも配列のまま返す（+ が文字列の連結にならない）', () => {
@@ -80,12 +88,10 @@ describe.runIf(process.platform === 'win32')('scripts/common.ps1 の Read-Restar
   });
 
   it('Test-SessionTranscript: projects 配下のどこかに <id>.jsonl があるときだけ true', () => {
-    const config = path.join(dir, 'config');
-    fs.mkdirSync(path.join(config, 'projects', 'C--dev'), { recursive: true });
-    fs.writeFileSync(path.join(config, 'projects', 'C--dev', 'c2097ecd-29b0-4cee-9f3e-a9aeace64bc3.jsonl'), '{}\n');
+    const config = writeTranscript(SESSION_ID);
     const test = (id: string) => ps(`Test-SessionTranscript -SessionId '${id}' -ConfigDir '${config}'`);
-    expect(test('c2097ecd-29b0-4cee-9f3e-a9aeace64bc3')).toBe('True');
-    expect(test('794af7ae-57b1-4a74-9ef5-89328e03a33d')).toBe('False');
+    expect(test(SESSION_ID)).toBe('True');
+    expect(test(SESSION_ID_WITHOUT_TRANSCRIPT)).toBe('False');
     expect(ps(`Test-SessionTranscript -SessionId 'x' -ConfigDir '${path.join(dir, 'missing')}'`)).toBe('False');
   });
 });
@@ -116,21 +122,18 @@ describe.runIf(process.platform === 'win32')('scripts/common.ps1 の Test-Placeh
     expect(test('c:\\dev\\')).toBe('True');
   });
 
-  it('別のフォルダー・別の名前・中身が違う登録・ファイルが無い・読めないなら false（登録し直す）', () => {
-    write({ 'C:/dev': { mcpServers: { slackbridge: entry } } });
-    expect(test('C:\\dev\\portfolio')).toBe('False');
-    write({ 'C:/dev': { mcpServers: { other: entry } } });
-    expect(test('C:\\dev')).toBe('False');
-    write({ 'C:/dev': { mcpServers: { slackbridge: { ...entry, args: ['-e', 'process.exit(0)'] } } } });
-    expect(test('C:\\dev')).toBe('False');
-    write({ 'C:/dev': { mcpServers: { slackbridge: { ...entry, env: {} } } } });
-    expect(test('C:\\dev')).toBe('False');
-    write({ 'C:/dev': {} });
-    expect(test('C:\\dev')).toBe('False');
-    fs.writeFileSync(config, 'not json');
-    expect(test('C:\\dev')).toBe('False');
-    fs.rmSync(config);
-    expect(test('C:\\dev')).toBe('False');
+  // false なら登録し直す
+  it.each([
+    ['別のフォルダー', () => write({ 'C:/dev': { mcpServers: { slackbridge: entry } } }), 'C:\\dev\\portfolio'],
+    ['別の名前', () => write({ 'C:/dev': { mcpServers: { other: entry } } }), 'C:\\dev'],
+    ['起動の引数が違う', () => write({ 'C:/dev': { mcpServers: { slackbridge: { ...entry, args: ['-e', 'process.exit(0)'] } } } }), 'C:\\dev'],
+    ['env が違う', () => write({ 'C:/dev': { mcpServers: { slackbridge: { ...entry, env: {} } } } }), 'C:\\dev'],
+    ['登録が無い', () => write({ 'C:/dev': {} }), 'C:\\dev'],
+    ['読めない', () => fs.writeFileSync(config, 'not json'), 'C:\\dev'],
+    ['ファイルが無い', () => undefined, 'C:\\dev'],
+  ])('%s なら false', (_label, arrange, projectDir) => {
+    arrange();
+    expect(test(projectDir)).toBe('False');
   });
 });
 
@@ -164,8 +167,11 @@ describe.runIf(process.platform === 'win32')('scripts/common.ps1 の Read-AllowE
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  const read = (): string =>
-    ps(`$r = @(Read-AllowExtra -Path '${allowExtra}' -CheckerScript '${checker}' 3>$null); "$($r.Count)|$($r -join '|')"`);
+  /** 警告（3 番のストリーム）を捨てて Read-AllowExtra を呼ぶ PowerShell の式 */
+  const readAllowExtraCommand = (checkerScript: string): string =>
+    `Read-AllowExtra -Path '${allowExtra}' -CheckerScript '${checkerScript}' 3>$null`;
+
+  const read = (): string => ps(`$r = @(${readAllowExtraCommand(checker)}); "$($r.Count)|$($r -join '|')"`);
 
   it('Read-AllowExtra: ファイルが無ければ空。作れるものだけを返し、作れないものは警告に一覧を出す', () => {
     expect(read()).toBe('0|');
@@ -183,14 +189,14 @@ describe.runIf(process.platform === 'win32')('scripts/common.ps1 の Read-AllowE
     fs.writeFileSync(allowExtra, JSON.stringify({ allow: ['Bash(git status)'] }));
     const broken = path.join(dir, 'broken.cjs');
     fs.writeFileSync(broken, "process.stdout.write(JSON.stringify({ error: 'JSON 構文が不正' })); process.exit(1);");
-    expect(ps(`$r = @(Read-AllowExtra -Path '${allowExtra}' -CheckerScript '${broken}' 3>$null); "$($r.Count)"`)).toBe('0');
-    expect(ps(`$r = @(Read-AllowExtra -Path '${allowExtra}' -CheckerScript '${path.join(dir, 'missing.cjs')}' 3>$null); "$($r.Count)"`)).toBe('0');
+    expect(ps(`$r = @(${readAllowExtraCommand(broken)}); "$($r.Count)"`)).toBe('0');
+    expect(ps(`$r = @(${readAllowExtraCommand(path.join(dir, 'missing.cjs'))}); "$($r.Count)"`)).toBe('0');
   });
 
   it('Write-EffectiveSettings: allow に足し、hook を入れ、deny と ask はそのまま。呼び直すとその時点の allow-extra.json を反映する', () => {
     const build = (): { permissions: { allow: string[]; deny: string[]; ask: string[] }; hooks?: unknown } => {
       ps(
-        `$extra = @(@('mcp__extra') + @(Read-AllowExtra -Path '${allowExtra}' -CheckerScript '${checker}' 3>$null)); ` +
+        `$extra = @(@('mcp__extra') + @(${readAllowExtraCommand(checker)})); ` +
           `Write-EffectiveSettings -SettingsFile '${settings}' -OutFile '${merged}' -ExtraAllow $extra -Hooks @{ Stop = @(@{ hooks = @() }) }`
       );
       const text = fs.readFileSync(merged, 'utf8');
@@ -220,16 +226,16 @@ describe.runIf(process.platform === 'win32')('scripts/common.ps1 の想定外の
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  it('Test-AutoRestartEnabled: .env の AUTO_RESTART が off / false / 0 のときだけ起動し直さない（無い・コメント付きも読む）', () => {
+  // .env の AUTO_RESTART が off / false / 0 のときだけ起動し直さない（無い・コメント付きも読む）
+  it.each([
+    ['.env が無い', undefined, 'True'],
+    ['コメント付きの off', 'BOT_TOKEN=x\nAUTO_RESTART=off # 止める\n', 'False'],
+    ['引用符付きの 0', 'AUTO_RESTART="0"\n', 'False'],
+    ['on', 'AUTO_RESTART=on\n', 'True'],
+  ])('Test-AutoRestartEnabled: %s → %s', (_label, content, expected) => {
     const env = path.join(dir, '.env');
-    const enabled = (): string => ps(`Test-AutoRestartEnabled -EnvFile '${env}'`);
-    expect(enabled()).toBe('True');
-    fs.writeFileSync(env, 'BOT_TOKEN=x\nAUTO_RESTART=off # 止める\n');
-    expect(enabled()).toBe('False');
-    fs.writeFileSync(env, 'AUTO_RESTART="0"\n');
-    expect(enabled()).toBe('False');
-    fs.writeFileSync(env, 'AUTO_RESTART=on\n');
-    expect(enabled()).toBe('True');
+    if (content !== undefined) fs.writeFileSync(env, content);
+    expect(ps(`Test-AutoRestartEnabled -EnvFile '${env}'`)).toBe(expected);
   });
 
   it('Select-RecentRestarts: 窓の中の時刻だけを配列のまま返す', () => {
