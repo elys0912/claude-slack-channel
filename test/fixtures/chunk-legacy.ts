@@ -1,4 +1,4 @@
-// 長文を Slack のメッセージ文字数制限に合わせて分割する純関数（I/O なし）
+// 分割前の chunkText の写し。chunk-legacy.test.ts で今の実装と比べる基準になる。直さない
 
 const CLOSE_FENCE = '\n```';
 
