@@ -6,7 +6,6 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import { SlackBridge } from '../src/slack.js';
 import { Logger } from '../src/log.js';
 import {
   KEEPALIVE_TEXT,
@@ -20,7 +19,20 @@ import {
 } from '../src/app.js';
 import { ChannelServer } from '../src/mcp.js';
 import { PermissionRelay } from '../src/permission-relay.js';
-import { ACCESS, BOT, DM1, DM2, flush, makeSocket, makeWeb, platformError } from './helpers/fake-slack.js';
+import {
+  ACCESS,
+  BOT,
+  DM1,
+  DM2,
+  blockActionEnvelope,
+  eventEnvelope,
+  flush,
+  makeBridge,
+  makeSocket,
+  makeWeb,
+  messageEnvelope,
+  platformError,
+} from './helpers/fake-slack.js';
 import type { ApiCall, FakeSocket, FakeWeb } from './helpers/fake-slack.js';
 import type { ParsedAccess } from '../src/config.js';
 import type { BridgeAppOptions } from '../src/app.js';
@@ -64,17 +76,7 @@ async function startHarness(
     | 'crashFile'
   > = {}
 ): Promise<Harness> {
-  const web = makeWeb();
-  const socket = makeSocket();
-  const logger = new Logger({ stderr: false });
-  const bridge = new SlackBridge({
-    botToken: 'xoxb-TEST-DUMMY',
-    appToken: 'xapp-TEST-DUMMY',
-    access,
-    logger,
-    web,
-    socket,
-  });
+  const { bridge, web, socket, logger } = makeBridge({ access });
   await bridge.init();
   web.calls.length = 0;
 
@@ -120,41 +122,14 @@ function toolText(res: Awaited<ReturnType<Client['callTool']>>): string {
   return first?.text ?? '';
 }
 
+/** 許可ユーザーの DM の受信。同じ ts でも続けて届くよう、event_id は毎回変える */
 function dmEnvelope(text: string, overrides: Record<string, unknown> = {}): Record<string, unknown> {
-  return {
-    type: 'events_api',
-    envelope_id: 'env-1',
-    body: {
-      team_id: 'T123ABC',
-      event_id: `Ev-${Math.random()}`,
-      event: {
-        type: 'message',
-        channel_type: 'im',
-        channel: DM1,
-        user: 'U111AAA',
-        text,
-        ts: '10.1',
-        ...overrides,
-      },
-    },
-    ack: async () => undefined,
-  };
+  return messageEnvelope({ text, ts: '10.1', ...overrides }, { eventId: `Ev-${Math.random()}` });
 }
 
+/** 許可ユーザーが DM1 のメッセージ（ts=55.5）のボタンを押した受信 */
 function blockAction(actionId: string, value: string, overrides: Record<string, unknown> = {}): Record<string, unknown> {
-  return {
-    type: 'interactive',
-    body: {
-      type: 'block_actions',
-      team: { id: 'T123ABC' },
-      user: { id: 'U111AAA' },
-      channel: { id: DM1 },
-      container: { message_ts: '55.5' },
-      actions: [{ action_id: actionId, value }],
-      ...overrides,
-    },
-    ack: async () => undefined,
-  };
+  return blockActionEnvelope({ container: { message_ts: '55.5' }, actions: [{ action_id: actionId, value }], ...overrides });
 }
 
 async function sendPermissionRequest(client: Client, requestId = 'abcde', inputPreview = '{"command":"ls"}'): Promise<void> {
@@ -576,10 +551,7 @@ describe('停止', () => {
   it('Socket Mode の開始に失敗したら、後片付けしてから投げる。後片付けの関数は start より前に渡される', async () => {
     const order: string[] = [];
     recordServerClose(order);
-    const web = makeWeb();
-    const socket = makeSocket();
-    const logger = new Logger({ stderr: false });
-    const bridge = new SlackBridge({ botToken: 'xoxb-TEST-DUMMY', appToken: 'xapp-TEST-DUMMY', access: ACCESS, logger, web, socket });
+    const { bridge, socket, logger } = makeBridge();
     await bridge.init();
     socket.failStart = ['auth'];
     const [, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -606,10 +578,7 @@ describe('停止', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'app-stop-early-'));
     const hooks = path.join(dir, 'hooks.jsonl');
     try {
-      const web = makeWeb();
-      const socket = makeSocket();
-      const logger = new Logger({ stderr: false });
-      const bridge = new SlackBridge({ botToken: 'xoxb-TEST-DUMMY', appToken: 'xapp-TEST-DUMMY', access: ACCESS, logger, web, socket });
+      const { bridge, web, logger } = makeBridge();
       await bridge.init();
       let stop: (() => Promise<void>) | undefined;
       let stopping: Promise<void> | undefined;
@@ -709,7 +678,7 @@ describe('縮退モード', () => {
           lock,
           intervalMs: 10,
           promote: async (server) => {
-            const bridge = new SlackBridge({ botToken: 'xoxb-TEST-DUMMY', appToken: 'xapp-TEST-DUMMY', access: ACCESS, logger, web, socket });
+            const { bridge } = makeBridge({ logger, web, socket });
             await bridge.init();
             const running = await startBridgeApp({ bridge, logger, server, lock });
             promoted += 1;
@@ -1210,13 +1179,8 @@ describe('ホームタブ', () => {
   const home = { users: ACCESS.allowFrom, channelCount: 0 };
   const publishes = () => h.web.calls.filter((c) => c.method === 'views.publish');
 
-  function homeOpened(user: string, tab = 'home', team = 'T123ABC'): Record<string, unknown> {
-    return {
-      type: 'events_api',
-      envelope_id: 'env-home',
-      body: { team_id: team, event_id: `Ev-${Math.random()}`, event: { type: 'app_home_opened', user, tab } },
-      ack: async () => undefined,
-    };
+  function homeOpened(user: string, tab = 'home', teamId = 'T123ABC'): Record<string, unknown> {
+    return eventEnvelope({ type: 'app_home_opened', user, tab }, { eventId: `Ev-${Math.random()}`, teamId });
   }
 
   beforeEach(async () => {

@@ -1,26 +1,19 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { SlackBridge, isMarkdownRejection, toBlockActionInput, toInboundMessage } from '../src/slack.js';
 import type { ActionContext } from '../src/slack.js';
-import { Logger } from '../src/log.js';
 import type { GateResult } from '../src/gate.js';
 import type { ActionParse } from '../src/permission.js';
-import { ACCESS, BOT, DM1, DM2, flush, makeSocket, makeWeb, platformError } from './helpers/fake-slack.js';
-import type { FakeSocket, FakeWeb } from './helpers/fake-slack.js';
-
-function makeBridge(): { bridge: SlackBridge; web: FakeWeb; socket: FakeSocket; logger: Logger } {
-  const web = makeWeb();
-  const socket = makeSocket();
-  const logger = new Logger({ stderr: false });
-  const bridge = new SlackBridge({
-    botToken: 'xoxb-TEST-DUMMY',
-    appToken: 'xapp-TEST-DUMMY',
-    access: ACCESS,
-    logger,
-    web,
-    socket,
-  });
-  return { bridge, web, socket, logger };
-}
+import {
+  BOT,
+  DM1,
+  DM2,
+  blockActionEnvelope,
+  flush,
+  makeBridge,
+  messageEnvelope,
+  platformError,
+} from './helpers/fake-slack.js';
+import type { FakeWeb } from './helpers/fake-slack.js';
 
 describe('isMarkdownRejection', () => {
   it('invalid_arguments を拒否とみなす', () => {
@@ -215,26 +208,6 @@ describe('SlackBridge の送信系', () => {
 });
 
 describe('SlackBridge の受信', () => {
-  function messageEnvelope(overrides: Record<string, unknown> = {}): Record<string, unknown> {
-    return {
-      type: 'events_api',
-      envelope_id: 'env-1',
-      body: {
-        team_id: 'T123ABC',
-        event_id: 'Ev1',
-        event: {
-          type: 'message',
-          channel_type: 'im',
-          channel: DM1,
-          user: 'U111AAA',
-          text: 'hello',
-          ts: '1.1',
-          ...overrides,
-        },
-      },
-    };
-  }
-
   it('events_api の message を gate に通して onMessage を呼ぶ。ack が先', async () => {
     const { bridge, socket } = makeBridge();
     await bridge.init();
@@ -249,12 +222,14 @@ describe('SlackBridge の受信', () => {
     });
     expect(socket.started).toBe(1);
 
-    socket.emit('slack_event', {
-      ...messageEnvelope(),
-      ack: async () => {
-        order.push('ack');
-      },
-    });
+    socket.emit(
+      'slack_event',
+      messageEnvelope({}, {
+        ack: async () => {
+          order.push('ack');
+        },
+      })
+    );
     await flush();
 
     expect(order).toEqual(['ack', 'handler']);
@@ -273,7 +248,7 @@ describe('SlackBridge の受信', () => {
     const seen: GateResult[] = [];
     await bridge.start({ onMessage: (r) => void seen.push(r), onAction: () => undefined });
 
-    socket.emit('slack_event', { ...messageEnvelope({ user: 'U999ZZZ' }), ack: async () => undefined });
+    socket.emit('slack_event', messageEnvelope({ user: 'U999ZZZ' }));
     await flush();
     expect(seen[0]?.kind).toBe('drop');
   });
@@ -284,7 +259,7 @@ describe('SlackBridge の受信', () => {
     const seen: GateResult[] = [];
     await bridge.start({ onMessage: (r) => void seen.push(r), onAction: () => undefined });
 
-    socket.emit('slack_event', { ...messageEnvelope({ user: BOT }), ack: async () => undefined });
+    socket.emit('slack_event', messageEnvelope({ user: BOT }));
     await flush();
     expect(seen[0]?.kind).toBe('drop');
   });
@@ -324,18 +299,11 @@ describe('SlackBridge の受信', () => {
       onAction: () => undefined,
     });
     // gate で落ちる受信（許可外ユーザー）では加えない
-    socket.emit('slack_event', {
-      ...messageEnvelope({ user: 'U999ZZZ', channel: 'D999ZZZ' }),
-      ack: async () => undefined,
-    });
+    socket.emit('slack_event', messageEnvelope({ user: 'U999ZZZ', channel: 'D999ZZZ' }));
     await flush();
     expect(bridge.allowedDmChannels.has('D999ZZZ')).toBe(false);
 
-    socket.emit('slack_event', {
-      ...messageEnvelope({ user: 'U222BBB', channel: DM2 }),
-      body: { ...(messageEnvelope({ user: 'U222BBB', channel: DM2 }).body as object), event_id: 'Ev2' },
-      ack: async () => undefined,
-    });
+    socket.emit('slack_event', messageEnvelope({ user: 'U222BBB', channel: DM2 }, { eventId: 'Ev2' }));
     await flush();
     expect(allowedAtHandler).toEqual([false, true]); // onMessage より前に加わっている
     expect(bridge.allowedDmChannels.has(DM2)).toBe(true);
@@ -363,12 +331,8 @@ describe('SlackBridge の受信', () => {
       onAction: () => void order.push('action'),
     });
 
-    const env = (text: string, eventId: string): Record<string, unknown> => {
-      const e = messageEnvelope({ text });
-      return { ...e, body: { ...(e.body as object), event_id: eventId } };
-    };
-    socket.emit('slack_event', { ...env('first', 'Ev1'), ack: async () => void order.push('ack:first') });
-    socket.emit('slack_event', { ...env('second', 'Ev2'), ack: async () => void order.push('ack:second') });
+    socket.emit('slack_event', messageEnvelope({ text: 'first' }, { eventId: 'Ev1', ack: async () => void order.push('ack:first') }));
+    socket.emit('slack_event', messageEnvelope({ text: 'second' }, { eventId: 'Ev2', ack: async () => void order.push('ack:second') }));
     socket.emit('interactive', { type: 'interactive', body: {}, ack: async () => void order.push('ack:action') });
     await flush();
     expect(order).toEqual(['ack:first', 'ack:second', 'ack:action', 'start:first']);
@@ -397,7 +361,7 @@ describe('SlackBridge の受信', () => {
       },
       onAction: () => undefined,
     });
-    socket.emit('slack_event', { ...messageEnvelope(), ack: async () => undefined });
+    socket.emit('slack_event', messageEnvelope());
     await flush();
     expect(errorSpy).toHaveBeenCalledTimes(1);
     expect(errorSpy.mock.calls[0]?.[0]).toContain('slack_event');
@@ -419,20 +383,12 @@ describe('SlackBridge の受信', () => {
       },
     });
 
-    socket.emit('interactive', {
-      type: 'interactive',
-      body: {
-        type: 'block_actions',
-        team: { id: 'T123ABC' },
-        user: { id: 'U111AAA' },
-        channel: { id: DM1 },
-        container: { message_ts: '55.5' },
-        actions: [{ action_id: 'perm_allow', value: 'abcde' }],
-      },
-      ack: async () => {
+    socket.emit(
+      'interactive',
+      blockActionEnvelope({ container: { message_ts: '55.5' } }, async () => {
         order.push('ack');
-      },
-    });
+      })
+    );
     await flush();
 
     expect(order).toEqual(['ack', 'handler']);
@@ -446,17 +402,7 @@ describe('SlackBridge の受信', () => {
     const seen: ActionParse[] = [];
     await bridge.start({ onMessage: () => undefined, onAction: (p) => void seen.push(p) });
 
-    socket.emit('interactive', {
-      type: 'interactive',
-      body: {
-        type: 'block_actions',
-        team: { id: 'T123ABC' },
-        user: { id: 'U111AAA' },
-        channel: { id: 'D999ZZZ' },
-        actions: [{ action_id: 'perm_allow', value: 'abcde' }],
-      },
-      ack: async () => undefined,
-    });
+    socket.emit('interactive', blockActionEnvelope({ channel: { id: 'D999ZZZ' } }));
     await flush();
     expect(seen[0]).toEqual({ ok: false, reason: 'channel_not_allowed' });
   });
@@ -737,54 +683,28 @@ describe('SlackBridge の受信（現状固定）', () => {
 
   it('container.message_ts が無ければ message.ts を messageTs に使う', async () => {
     const { socket, ctxs } = await startWithActionCapture();
-    socket.emit('interactive', {
-      type: 'interactive',
-      body: {
-        type: 'block_actions',
-        team: { id: 'T123ABC' },
-        user: { id: 'U111AAA' },
-        channel: { id: DM1 },
-        message: { ts: '77.7' },
-        actions: [{ action_id: 'perm_deny', value: 'abcde' }],
-      },
-      ack: async () => undefined,
-    });
+    socket.emit('interactive', blockActionEnvelope({ message: { ts: '77.7' }, actions: [{ action_id: 'perm_deny', value: 'abcde' }] }));
     await flush();
     expect(ctxs[0]?.messageTs).toBe('77.7');
   });
 
   it('container.message_ts があれば message.ts より優先する', async () => {
     const { socket, ctxs } = await startWithActionCapture();
-    socket.emit('interactive', {
-      type: 'interactive',
-      body: {
-        type: 'block_actions',
-        team: { id: 'T123ABC' },
-        user: { id: 'U111AAA' },
-        channel: { id: DM1 },
+    socket.emit(
+      'interactive',
+      blockActionEnvelope({
         container: { message_ts: '55.5' },
         message: { ts: '77.7' },
         actions: [{ action_id: 'perm_deny', value: 'abcde' }],
-      },
-      ack: async () => undefined,
-    });
+      })
+    );
     await flush();
     expect(ctxs[0]?.messageTs).toBe('55.5');
   });
 
   it('actions が配列でなければ action 無しとして invalid_request_id になる', async () => {
     const { socket, seen, ctxs } = await startWithActionCapture();
-    socket.emit('interactive', {
-      type: 'interactive',
-      body: {
-        type: 'block_actions',
-        team: { id: 'T123ABC' },
-        user: { id: 'U111AAA' },
-        channel: { id: DM1 },
-        actions: { action_id: 'perm_allow', value: 'abcde' },
-      },
-      ack: async () => undefined,
-    });
+    socket.emit('interactive', blockActionEnvelope({ actions: { action_id: 'perm_allow', value: 'abcde' } }));
     await flush();
     expect(seen[0]).toEqual({ ok: false, reason: 'invalid_request_id' });
     expect(ctxs[0]).toEqual({ userId: 'U111AAA', channelId: DM1, messageTs: undefined });
@@ -804,17 +724,18 @@ describe('SlackBridge の受信（現状固定）', () => {
     await made.bridge.init();
     const seen: GateResult[] = [];
     await made.bridge.start({ onMessage: (r) => void seen.push(r), onAction: () => undefined });
-    made.socket.emit('slack_event', {
-      type: 'events_api',
-      body: {
-        team_id: 'T123ABC',
-        event_id: 'Ev9',
-        event: { type: 'message', channel_type: 'im', channel: DM1, user: 'U111AAA', text: 'hi', ts: '9.9' },
-      },
-      ack: async () => {
-        throw new Error('ack failed');
-      },
-    });
+    made.socket.emit(
+      'slack_event',
+      messageEnvelope(
+        { text: 'hi', ts: '9.9' },
+        {
+          eventId: 'Ev9',
+          ack: async () => {
+            throw new Error('ack failed');
+          },
+        }
+      )
+    );
     await flush();
     expect(seen[0]?.kind).toBe('deliver');
     expect(warnSpy.mock.calls[0]?.[0]).toContain('ack');
@@ -843,15 +764,7 @@ describe('SlackBridge の受信（現状固定）', () => {
     await made.bridge.init();
     const raws: unknown[] = [];
     await made.bridge.start({ onMessage: (_r, raw) => void raws.push(raw), onAction: () => undefined });
-    made.socket.emit('slack_event', {
-      type: 'events_api',
-      body: {
-        team_id: 'T123ABC',
-        event_id: 'Ev1',
-        event: { type: 'message', channel_type: 'im', channel: DM1, user: 'U111AAA', text: 'hi', ts: '1.1' },
-      },
-      ack: async () => undefined,
-    });
+    made.socket.emit('slack_event', messageEnvelope({ text: 'hi' }));
     await flush();
     expect(raws[0]).toEqual({ channel: DM1, ts: '1.1', threadTs: '1.1', user: 'U111AAA' });
   });
@@ -960,15 +873,8 @@ describe('SlackBridge の送信（現状固定）', () => {
 
 describe('SlackBridge のファイル取得', () => {
   function bridgeWithFetch(response: Response): { bridge: SlackBridge; web: FakeWeb; requests: { url: string; auth: string | null }[] } {
-    const web = makeWeb();
     const requests: { url: string; auth: string | null }[] = [];
-    const bridge = new SlackBridge({
-      botToken: 'xoxb-TEST-DUMMY',
-      appToken: 'xapp-TEST-DUMMY',
-      access: ACCESS,
-      logger: new Logger({ stderr: false }),
-      web,
-      socket: makeSocket(),
+    const { bridge, web } = makeBridge({
       fetch: async (input, init) => {
         requests.push({ url: input instanceof Request ? input.url : input.toString(), auth: new Headers(init?.headers).get('authorization') });
         return response;
