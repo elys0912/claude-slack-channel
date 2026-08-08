@@ -46,6 +46,14 @@ interface Harness {
   logger: Logger;
   client: Client;
   notifications: Notification[];
+  /** Claude に届いたメッセージ（notifications/claude/channel） */
+  delivered: () => Notification[];
+  /** Claude に返した許可の回答（notifications/claude/channel/permission の params） */
+  verdicts: () => Notification['params'][];
+  /** chat.postMessage の呼び出し */
+  posts: () => ApiCall[];
+  /** 投稿の本文（markdown_text、無ければ text） */
+  postTexts: () => string[];
   stop: () => Promise<void>;
   lockReleased: number;
   order: string[];
@@ -84,6 +92,11 @@ async function startHarness({ access = ACCESS, replyTimeoutMs, ...extra }: Harne
     logger,
     client,
     notifications,
+    delivered: () => notifications.filter((x) => x.method === 'notifications/claude/channel'),
+    verdicts: () =>
+      notifications.filter((x) => x.method === 'notifications/claude/channel/permission').map((x) => x.params),
+    posts: () => web.calls.filter((c) => c.method === 'chat.postMessage'),
+    postTexts: () => harness.posts().map((c) => String(c.args.markdown_text ?? c.args.text)),
     stop: async () => undefined,
     lockReleased: 0,
     order: [],
@@ -177,7 +190,7 @@ describe('Slack → MCP', () => {
     h.socket.emit('slack_event', dmEnvelope('hello'));
     await flush();
 
-    const n = h.notifications.find((x) => x.method === 'notifications/claude/channel');
+    const n = h.delivered()[0];
     expect(n?.params?.content).toBe('hello');
     expect(n?.params?.meta).toEqual({
       chat_id: DM1,
@@ -200,7 +213,7 @@ describe('Slack → MCP', () => {
   it('permission_request が全 DM に配信され、"yes ID" で verdict が返り、リアクションと書き換えが行われる', async () => {
     await requestPermission(h.client);
 
-    const posts = h.web.calls.filter((c) => c.method === 'chat.postMessage');
+    const posts = h.posts();
     expect(posts.map((p) => p.args.channel)).toEqual([DM1, DM2]);
     expect(posts[0]?.args.blocks).toBeDefined();
     expect(String(posts[0]?.args.text)).toContain('Bash');
@@ -209,10 +222,9 @@ describe('Slack → MCP', () => {
     h.socket.emit('slack_event', dmEnvelope('yes ABCDE'));
     await flush();
 
-    const verdict = h.notifications.find((x) => x.method === 'notifications/claude/channel/permission');
-    expect(verdict?.params).toEqual({ request_id: 'abcde', behavior: 'allow' });
+    expect(h.verdicts()[0]).toEqual({ request_id: 'abcde', behavior: 'allow' });
     // 通常のメッセージとしては届かない
-    expect(h.notifications.some((x) => x.method === 'notifications/claude/channel')).toBe(false);
+    expect(h.delivered()).toEqual([]);
 
     const updates = h.web.calls.filter((c) => c.method === 'chat.update');
     expect(updates.map((u) => [u.args.channel, u.args.ts])).toEqual([
@@ -235,8 +247,7 @@ describe('Slack → MCP', () => {
     h.socket.emit('slack_event', dmEnvelope('no abcde'));
     await flush();
 
-    const verdict = h.notifications.find((x) => x.method === 'notifications/claude/channel/permission');
-    expect(verdict?.params).toEqual({ request_id: 'abcde', behavior: 'deny' });
+    expect(h.verdicts()[0]).toEqual({ request_id: 'abcde', behavior: 'deny' });
     const reactions = h.web.calls.filter((c) => c.method === 'reactions.add');
     expect(reactions[0]?.args.name).toBe(REACTION.DENY);
     expect(String(h.web.calls.find((c) => c.method === 'chat.update')?.args.text)).toContain('Denied');
@@ -249,8 +260,8 @@ describe('Slack → MCP', () => {
     h.socket.emit('slack_event', dmEnvelope('yes maybe'));
     await flush();
 
-    expect(h.notifications.some((x) => x.method === 'notifications/claude/channel/permission')).toBe(false);
-    const n = h.notifications.find((x) => x.method === 'notifications/claude/channel');
+    expect(h.verdicts()).toEqual([]);
+    const n = h.delivered()[0];
     expect(n?.params?.content).toBe('yes maybe');
     expect(h.web.calls).toEqual([{ method: 'reactions.add', args: { channel: DM1, timestamp: '10.1', name: REACTION.SEEN } }]);
   });
@@ -261,7 +272,7 @@ describe('Slack → MCP', () => {
     h.web.calls.length = 0;
 
     await requestPermission(h.client);
-    const posts = h.web.calls.filter((c) => c.method === 'chat.postMessage');
+    const posts = h.posts();
     expect(posts).toHaveLength(1);
     expect(posts[0]?.args.channel).toBe(DM1);
     expect(posts[0]?.args.thread_ts).toBe('20.0');
@@ -274,8 +285,7 @@ describe('Slack → MCP', () => {
     h.socket.emit('interactive', blockAction('perm_allow', 'abcde', { container: { message_ts: '100.1' } }));
     await flush();
 
-    const verdict = h.notifications.find((x) => x.method === 'notifications/claude/channel/permission');
-    expect(verdict?.params).toEqual({ request_id: 'abcde', behavior: 'allow' });
+    expect(h.verdicts()[0]).toEqual({ request_id: 'abcde', behavior: 'allow' });
     const updates = h.web.calls.filter((c) => c.method === 'chat.update');
     expect(updates).toHaveLength(2);
     expect(String(updates[0]?.args.text)).toContain('Allowed');
@@ -287,7 +297,7 @@ describe('Slack → MCP', () => {
     h.socket.emit('interactive', blockAction('perm_deny', 'abcde'));
     await flush();
 
-    expect(h.notifications.some((x) => x.method === 'notifications/claude/channel/permission')).toBe(false);
+    expect(h.verdicts()).toEqual([]);
     const updates = h.web.calls.filter((c) => c.method === 'chat.update');
     expect(updates).toHaveLength(1);
     expect(updates[0]?.args).toMatchObject({ channel: DM1, ts: '55.5' });
@@ -302,14 +312,14 @@ describe('Slack → MCP', () => {
     h.socket.emit('interactive', blockAction('perm_more', 'abcde', { container: { message_ts: '100.1' } }));
     await flush();
 
-    const posts = h.web.calls.filter((c) => c.method === 'chat.postMessage');
+    const posts = h.posts();
     expect(posts).toHaveLength(1);
     expect(posts[0]?.args.channel).toBe(DM1);
     expect(posts[0]?.args.thread_ts).toBe('100.1');
     expect(posts[0]?.args.markdown_text).toBe('```\n' + preview + '\n```');
     expect(posts[0]?.args.blocks).toBeUndefined();
     // permission 自体は保留のまま
-    expect(h.notifications.some((x) => x.method === 'notifications/claude/channel/permission')).toBe(false);
+    expect(h.verdicts()).toEqual([]);
   });
 
   it('See more はスレッド内のボタンならスレッドの親に送り、長い全文はコードブロックを保って分割する', async () => {
@@ -323,7 +333,7 @@ describe('Slack → MCP', () => {
     );
     await flush();
 
-    const posts = h.web.calls.filter((c) => c.method === 'chat.postMessage');
+    const posts = h.posts();
     expect(posts.length).toBeGreaterThan(1);
     for (const p of posts) {
       expect(p.args.thread_ts).toBe('20.0');
@@ -340,7 +350,7 @@ describe('Slack → MCP', () => {
     h.socket.emit('interactive', blockAction('perm_more', 'abcde', { container: { message_ts: '100.1' } }));
     await flush();
 
-    const posts = h.web.calls.filter((c) => c.method === 'chat.postMessage');
+    const posts = h.posts();
     expect(posts[0]?.args.markdown_text).toBe('```\nrm -rf \\u{202E}/ \\u{200B}ok\n```');
   });
 
@@ -352,7 +362,7 @@ describe('Slack → MCP', () => {
     h.socket.emit('interactive', blockAction('perm_more', 'abcde'));
     await flush();
 
-    const posts = h.web.calls.filter((c) => c.method === 'chat.postMessage');
+    const posts = h.posts();
     expect(posts).toHaveLength(1);
     expect(posts[0]?.args.thread_ts).toBe('55.5');
     expect(posts[0]?.args.markdown_text).toBe('⌛ permission request abcde は既に期限切れ');
@@ -362,7 +372,7 @@ describe('Slack → MCP', () => {
     h.socket.emit('interactive', blockAction('perm_more', 'abcde', { container: { message_ts: '55.5', thread_ts: '20.0' } }));
     await flush();
 
-    const posts = h.web.calls.filter((c) => c.method === 'chat.postMessage');
+    const posts = h.posts();
     expect(posts[0]?.args.thread_ts).toBe('20.0');
   });
 
@@ -401,7 +411,7 @@ describe('MCP → Slack', () => {
     const res = await h.client.callTool({ name: 'reply', arguments: { chat_id: DM1, text: 'hi', thread_ts: '10.1' } });
     expect(toolText(res)).toMatch(/^sent \(1 message\(s\)\) ts=100\.\d+$/);
     expect(res.isError).toBeFalsy();
-    const posts = h.web.calls.filter((c) => c.method === 'chat.postMessage');
+    const posts = h.posts();
     expect(posts).toEqual([
       {
         method: 'chat.postMessage',
@@ -412,14 +422,14 @@ describe('MCP → Slack', () => {
 
   it('reply の生の URL は markdown_text で [URL](URL) の形にして送る（そのままだとリンクにならない）', async () => {
     await h.client.callTool({ name: 'reply', arguments: { chat_id: DM1, text: '報告：https://claude.ai/artifact/AbC123' } });
-    const posts = h.web.calls.filter((c) => c.method === 'chat.postMessage');
+    const posts = h.posts();
     expect(posts[0]?.args.markdown_text).toBe('報告：[https://claude.ai/artifact/AbC123](https://claude.ai/artifact/AbC123)');
   });
 
   it('長い reply は分割され、件数が返る', async () => {
     const text = ('あ'.repeat(99) + '\n').repeat(300);
     const res = await h.client.callTool({ name: 'reply', arguments: { chat_id: DM1, text } });
-    const posts = h.web.calls.filter((c) => c.method === 'chat.postMessage');
+    const posts = h.posts();
     expect(posts.length).toBeGreaterThan(1);
     expect(toolText(res)).toMatch(new RegExp(`^sent \\(${posts.length} message\\(s\\)\\) ts=(100\\.\\d+,){${posts.length - 1}}100\\.\\d+$`));
   });
@@ -526,8 +536,7 @@ describe('停止', () => {
     await h.stop();
     await flush();
 
-    const verdicts = h.notifications.filter((x) => x.method === 'notifications/claude/channel/permission');
-    expect(verdicts.map((v) => v.params)).toEqual([{ request_id: 'abcde', behavior: 'deny' }]);
+    expect(h.verdicts()).toEqual([{ request_id: 'abcde', behavior: 'deny' }]);
     const updates = h.web.calls.filter((c) => c.method === 'chat.update');
     expect(updates.map((u) => [u.args.channel, u.args.ts])).toEqual([
       [DM1, '100.1'],
@@ -850,13 +859,12 @@ describe('チャンネル（access.channels）', () => {
     return dmEnvelope(mention ? `<@${BOT}> ${text}` : text, { channel_type: 'channel', channel: CH, ...overrides });
   }
 
-  const delivered = () =>
-    h.notifications.filter((x) => x.method === 'notifications/claude/channel').map((x) => x.params?.content);
+  const deliveredContents = () => h.delivered().map((x) => x.params?.content);
 
   it('メンションの無い投稿には反応しない（リアクションも付けない）', async () => {
     h.socket.emit('slack_event', channelEnvelope('just chatting', { ts: '31.1' }, false));
     await flush();
-    expect(delivered()).toEqual([]);
+    expect(deliveredContents()).toEqual([]);
     expect(h.web.calls).toEqual([]);
   });
 
@@ -865,25 +873,25 @@ describe('チャンネル（access.channels）', () => {
     h.socket.emit('slack_event', channelEnvelope('follow up', { ts: '32.1', thread_ts: '32.0' }, false));
     h.socket.emit('slack_event', channelEnvelope('other thread', { ts: '33.1', thread_ts: '33.0' }, false));
     await flush();
-    expect(delivered()).toEqual(['start', 'follow up']);
+    expect(deliveredContents()).toEqual(['start', 'follow up']);
   });
 
   it('ボットが投稿したスレッドへの返信は、メンション無しでも届く', async () => {
     const res = await h.client.callTool({ name: 'reply', arguments: { chat_id: CH, text: 'お知らせ' } });
     expect(res.isError).toBeFalsy();
     // 偽の Slack は投稿ごとに 100.1, 100.2, ... と ts を振る。この describe では最初の投稿
-    expect(h.web.calls.filter((c) => c.method === 'chat.postMessage')).toHaveLength(1);
+    expect(h.posts()).toHaveLength(1);
 
     h.socket.emit('slack_event', channelEnvelope('返信', { ts: '34.1', thread_ts: '100.1' }, false));
     await flush();
-    expect(delivered()).toEqual(['返信']);
+    expect(deliveredContents()).toEqual(['返信']);
   });
 
   it('許可チャンネルの投稿が Claude に届き、同じチャンネルに返信・リアクションできる', async () => {
     h.socket.emit('slack_event', channelEnvelope('hello', { ts: '30.1' }));
     await flush();
 
-    const n = h.notifications.find((x) => x.method === 'notifications/claude/channel');
+    const n = h.delivered()[0];
     expect(n?.params?.meta).toMatchObject({ chat_id: CH, thread_ts: '30.1' });
     expect(h.web.calls).toEqual([{ method: 'reactions.add', args: { channel: CH, timestamp: '30.1', name: REACTION.SEEN } }]);
 
@@ -897,8 +905,7 @@ describe('チャンネル（access.channels）', () => {
     h.socket.emit('slack_event', channelEnvelope('stranger', { user: 'U999ZZZ' }));
     await flush();
 
-    const delivered = h.notifications.filter((x) => x.method === 'notifications/claude/channel');
-    expect(delivered.map((x) => x.params?.content)).toEqual(['private']);
+    expect(deliveredContents()).toEqual(['private']);
   });
 
   it('permission_request はチャンネルのスレッドに返信され、そのボタンで回答できる', async () => {
@@ -907,7 +914,7 @@ describe('チャンネル（access.channels）', () => {
     h.web.calls.length = 0;
 
     await requestPermission(h.client);
-    const posts = h.web.calls.filter((c) => c.method === 'chat.postMessage');
+    const posts = h.posts();
     expect(posts).toHaveLength(1);
     expect(posts[0]?.args).toMatchObject({ channel: CH, thread_ts: '30.0' });
     h.web.calls.length = 0;
@@ -918,8 +925,7 @@ describe('チャンネル（access.channels）', () => {
     );
     await flush();
 
-    const verdict = h.notifications.find((x) => x.method === 'notifications/claude/channel/permission');
-    expect(verdict?.params).toEqual({ request_id: 'abcde', behavior: 'allow' });
+    expect(h.verdicts()[0]).toEqual({ request_id: 'abcde', behavior: 'allow' });
     const updates = h.web.calls.filter((c) => c.method === 'chat.update');
     expect(updates).toHaveLength(1);
     expect(updates[0]?.args.channel).toBe(CH);
@@ -937,7 +943,7 @@ describe('チャンネル（access.channels）', () => {
       return { ok: true, ts: '200.1' };
     };
     await requestPermission(h.client);
-    const posts = h.web.calls.filter((c) => c.method === 'chat.postMessage');
+    const posts = h.posts();
     expect(posts.map((p) => p.args.channel)).toEqual([CH, DM1, DM2]);
   });
 });
@@ -945,8 +951,7 @@ describe('チャンネル（access.channels）', () => {
 describe('無応答の見張り（replyTimeoutMs）', () => {
   let h: Harness;
   const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
-  const warnings = () =>
-    h.web.calls.filter((c) => c.method === 'chat.postMessage' && String(c.args.text).includes('応答が無い'));
+  const warnings = () => h.posts().filter((c) => String(c.args.text).includes('応答が無い'));
 
   beforeEach(async () => {
     h = await startHarness({ replyTimeoutMs: 60 });
@@ -1011,8 +1016,7 @@ describe('起動時の、今の方式では作れない保存済みのルール�
   let h: Harness | undefined;
   let dir: string;
   let file: string;
-  const texts = (): string[] =>
-    (h?.web.calls ?? []).filter((c) => c.method === 'chat.postMessage').map((c) => String(c.args.text));
+  const texts = (): string[] => h?.postTexts() ?? [];
 
   beforeEach(() => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'app-rejected-'));
@@ -1077,14 +1081,12 @@ describe('ターミナル画面と許可リスト（!screen / 今後も許可 / 
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  const posts = () => h.web.calls.filter((c) => c.method === 'chat.postMessage');
-
   it('!screen は Claude に渡さず、選択肢のボタンを出し、押すと選択キーを送る', async () => {
     h.socket.emit('slack_event', dmEnvelope('!screen', { ts: '50.1' }));
     await flush();
 
-    expect(h.notifications.filter((x) => x.method === 'notifications/claude/channel')).toEqual([]);
-    const blocks = posts()[0]?.args.blocks as { type: string; elements?: { action_id: string; value: string }[] }[];
+    expect(h.delivered()).toEqual([]);
+    const blocks = h.posts()[0]?.args.blocks as { type: string; elements?: { action_id: string; value: string }[] }[];
     const pick = blocks.find((b) => b.type === 'actions')?.elements?.[2];
     expect(pick?.action_id).toBe('screen_pick_2');
 
@@ -1105,9 +1107,8 @@ describe('ターミナル画面と許可リスト（!screen / 今後も許可 / 
     await flush();
     await flush();
 
-    const verdict = h.notifications.find((x) => x.method === 'notifications/claude/channel/permission');
-    expect(verdict?.params).toEqual({ request_id: 'abcde', behavior: 'allow' });
-    const proposal = posts().find((p) => String(p.args.text).includes('Bash(git status)'));
+    expect(h.verdicts()[0]).toEqual({ request_id: 'abcde', behavior: 'allow' });
+    const proposal = h.posts().find((p) => String(p.args.text).includes('Bash(git status)'));
     const add = (proposal?.args.blocks as { type: string; elements?: { action_id: string; value: string }[] }[])
       .find((b) => b.type === 'actions')
       ?.elements?.find((e) => e.action_id === 'rule_add');
@@ -1127,9 +1128,8 @@ describe('ターミナル画面と許可リスト（!screen / 今後も許可 / 
     await flush();
     await flush();
 
-    const verdict = h.notifications.find((x) => x.method === 'notifications/claude/channel/permission');
-    expect(verdict?.params).toEqual({ request_id: 'abcde', behavior: 'allow' });
-    const notice = posts().find((p) => String(p.args.markdown_text).includes('deny に当たる'));
+    expect(h.verdicts()[0]).toEqual({ request_id: 'abcde', behavior: 'allow' });
+    const notice = h.posts().find((p) => String(p.args.markdown_text).includes('deny に当たる'));
     expect(String(notice?.args.markdown_text)).toContain('Bash(pwd -P:*)');
     expect(fs.existsSync(path.join(dir, 'allow-extra.json'))).toBe(false);
   });
@@ -1138,7 +1138,7 @@ describe('ターミナル画面と許可リスト（!screen / 今後も許可 / 
     fs.writeFileSync(path.join(dir, 'allow-extra.json'), JSON.stringify({ allow: ['WebFetch'] }));
     h.socket.emit('slack_event', dmEnvelope('!rules', { ts: '60.1' }));
     await flush();
-    expect(String(posts()[0]?.args.text)).toContain('1 件');
+    expect(String(h.posts()[0]?.args.text)).toContain('1 件');
   });
 });
 
@@ -1201,8 +1201,6 @@ describe('!status / !restart / !compact / !clear / !help', () => {
   let screen: string;
   let commands: string[];
   let killed: number;
-  const posts = () => h.web.calls.filter((c) => c.method === 'chat.postMessage');
-  const texts = () => posts().map((p) => String(p.args.markdown_text ?? p.args.text));
 
   beforeEach(async () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'app-session-'));
@@ -1230,9 +1228,9 @@ describe('!status / !restart / !compact / !clear / !help', () => {
     h.socket.emit('slack_event', dmEnvelope('!status', { ts: '80.1' }));
     await flush();
 
-    expect(h.notifications.filter((x) => x.method === 'notifications/claude/channel')).toEqual([]);
-    expect(posts()[0]?.args).toMatchObject({ channel: DM1, thread_ts: '80.1' });
-    const text = texts()[0] ?? '';
+    expect(h.delivered()).toEqual([]);
+    expect(h.posts()[0]?.args).toMatchObject({ channel: DM1, thread_ts: '80.1' });
+    const text = h.postTexts()[0] ?? '';
     expect(text).toContain('ブリッジの状態');
     expect(text).toContain('C:\\dev\\app');
     expect(text).toContain('返事待ち: 無し');
@@ -1243,8 +1241,8 @@ describe('!status / !restart / !compact / !clear / !help', () => {
     h.socket.emit('slack_event', dmEnvelope('!status *使用して送信されました* <@U0BF61P77U1>', { ts: '80.2' }));
     await flush();
 
-    expect(h.notifications.filter((x) => x.method === 'notifications/claude/channel')).toEqual([]);
-    expect(texts()[0] ?? '').toContain('ブリッジの状態');
+    expect(h.delivered()).toEqual([]);
+    expect(h.postTexts()[0] ?? '').toContain('ブリッジの状態');
   });
 
   it('!restart は restart.flag を置いて /exit を送る', async () => {
@@ -1255,7 +1253,7 @@ describe('!status / !restart / !compact / !clear / !help', () => {
     expect(fs.existsSync(flag)).toBe(true);
     expect(commands).toEqual(['exit']);
     expect(killed).toBe(0);
-    expect(texts().join('\n')).toContain('/exit を送った');
+    expect(h.postTexts().join('\n')).toContain('/exit を送った');
   });
 
   it('入力待ちでなければ /exit を送らず、置いた印を消す（残すと、後で手元で終了したときに起動し直す）', async () => {
@@ -1265,7 +1263,7 @@ describe('!status / !restart / !compact / !clear / !help', () => {
     await flush();
 
     expect(commands).toEqual([]);
-    expect(texts().join('\n')).toContain('入力待ちでない');
+    expect(h.postTexts().join('\n')).toContain('入力待ちでない');
     expect(fs.existsSync(flag)).toBe(false);
   });
 
@@ -1293,10 +1291,10 @@ describe('!status / !restart / !compact / !clear / !help', () => {
     await flush();
     await flush();
 
-    expect(h.notifications.filter((x) => x.method === 'notifications/claude/channel')).toEqual([]);
+    expect(h.delivered()).toEqual([]);
     expect(commands).toEqual(['clear']);
     expect(fs.existsSync(flag)).toBe(false);
-    expect(texts().join('\n')).toContain('/clear を送った');
+    expect(h.postTexts().join('\n')).toContain('/clear を送った');
   });
 
   it('入力待ちでなければ /clear を送らない', async () => {
@@ -1306,16 +1304,16 @@ describe('!status / !restart / !compact / !clear / !help', () => {
     await flush();
 
     expect(commands).toEqual([]);
-    expect(texts().join('\n')).toContain('入力待ちでない');
+    expect(h.postTexts().join('\n')).toContain('入力待ちでない');
   });
 
   it('!help は Claude に渡さず、コマンドの一覧をスレッドに返す', async () => {
     h.socket.emit('slack_event', dmEnvelope('!help', { ts: '86.1' }));
     await flush();
 
-    expect(h.notifications.filter((x) => x.method === 'notifications/claude/channel')).toEqual([]);
-    expect(posts()[0]?.args).toMatchObject({ channel: DM1, thread_ts: '86.1' });
-    const text = texts()[0] ?? '';
+    expect(h.delivered()).toEqual([]);
+    expect(h.posts()[0]?.args).toMatchObject({ channel: DM1, thread_ts: '86.1' });
+    const text = h.postTexts()[0] ?? '';
     for (const c of ['!help', '!status', '!screen', '!rules', '!compact', '!clear', '!restart', '!restart force']) {
       expect(text).toContain(`\`${c}\``);
     }
@@ -1342,7 +1340,6 @@ describe('hook の記録（hooks.jsonl）からの知らせ', () => {
   let h: Harness;
   let dir: string;
   let file: string;
-  const posts = () => h.web.calls.filter((c) => c.method === 'chat.postMessage');
   const hookLine = (fields: Record<string, unknown>) => JSON.stringify({ at: Date.now(), session_id: 's1', ...fields }) + '\n';
 
   beforeEach(async () => {
@@ -1363,9 +1360,9 @@ describe('hook の記録（hooks.jsonl）からの知らせ', () => {
 
   it('ターミナル側の許可待ちは、画面を確認するボタン付きで許可ユーザー全員の DM に出す', async () => {
     fs.appendFileSync(file, hookLine({ hook_event_name: 'Notification', notification_type: 'permission_prompt', message: 'needs permission' }));
-    await vi.waitFor(() => expect(posts().map((p) => p.args.channel)).toEqual([DM1, DM2]));
-    expect(String(posts()[0]?.args.text)).toContain('ターミナル側で入力待ち');
-    const blocks = posts()[0]?.args.blocks as { type: string; elements?: { action_id: string }[] }[];
+    await vi.waitFor(() => expect(h.posts().map((p) => p.args.channel)).toEqual([DM1, DM2]));
+    expect(String(h.posts()[0]?.args.text)).toContain('ターミナル側で入力待ち');
+    const blocks = h.posts()[0]?.args.blocks as { type: string; elements?: { action_id: string }[] }[];
     expect(blocks.at(-1)?.elements?.[0]?.action_id).toBe('screen_show');
   });
 
@@ -1374,9 +1371,9 @@ describe('hook の記録（hooks.jsonl）からの知らせ', () => {
     await flush();
     h.web.calls.length = 0;
     fs.appendFileSync(file, hookLine({ hook_event_name: 'StopFailure', error: 'rate_limit' }));
-    await vi.waitFor(() => expect(posts()).toHaveLength(1));
-    expect(posts()[0]?.args).toMatchObject({ channel: DM1, thread_ts: '70.1' });
-    expect(String(posts()[0]?.args.text)).toContain('使用量の上限');
+    await vi.waitFor(() => expect(h.posts()).toHaveLength(1));
+    expect(h.posts()[0]?.args).toMatchObject({ channel: DM1, thread_ts: '70.1' });
+    expect(String(h.posts()[0]?.args.text)).toContain('使用量の上限');
   });
 
   it('Slack に中継中の許可があるときは、ターミナル側の許可待ちを重ねて知らせない', async () => {
@@ -1384,20 +1381,20 @@ describe('hook の記録（hooks.jsonl）からの知らせ', () => {
     h.web.calls.length = 0;
     fs.appendFileSync(file, hookLine({ hook_event_name: 'Notification', notification_type: 'permission_prompt' }));
     await drainHooks(h, file);
-    expect(posts()).toEqual([]);
+    expect(h.posts()).toEqual([]);
   });
 
   it('Stop は Slack への返事が無いときだけ知らせる', async () => {
     fs.appendFileSync(file, hookLine({ hook_event_name: 'Stop' }));
     await drainHooks(h, file);
-    expect(posts()).toEqual([]);
+    expect(h.posts()).toEqual([]);
 
     h.socket.emit('slack_event', dmEnvelope('hello', { ts: '71.1' }));
     await flush();
     h.web.calls.length = 0;
     fs.appendFileSync(file, hookLine({ hook_event_name: 'Stop' }));
-    await vi.waitFor(() => expect(posts()).toHaveLength(1));
-    expect(String(posts()[0]?.args.text)).toContain('返事をしないまま');
+    await vi.waitFor(() => expect(h.posts()).toHaveLength(1));
+    expect(String(h.posts()[0]?.args.text)).toContain('返事をしないまま');
   });
 });
 
@@ -1406,7 +1403,6 @@ describe('自分のセッションの hook だけ扱う（session_tag）と、!r
   let dir: string;
   let file: string;
   let flag: string;
-  const posts = () => h.web.calls.filter((c) => c.method === 'chat.postMessage');
   const hookLine = (fields: Record<string, unknown>) => JSON.stringify({ at: Date.now(), ...fields }) + '\n';
   const MINE = 'c2097ecd-29b0-4cee-9f3e-a9aeace64bc3';
   const OTHER = '0d1e2f3a-4b5c-4d6e-8f90-a1b2c3d4e5f6';
@@ -1439,10 +1435,10 @@ describe('自分のセッションの hook だけ扱う（session_tag）と、!r
     );
     // 目印も自分のタグで書く（タグが違えば目印も届かない）
     await drainHooks(h, file, { session_tag: 'tag-mine' });
-    expect(posts()).toEqual([]);
+    expect(h.posts()).toEqual([]);
 
     fs.appendFileSync(file, hookLine({ hook_event_name: 'SessionEnd', reason: 'prompt_input_exit', session_id: MINE, session_tag: 'tag-mine' }));
-    await vi.waitFor(() => expect(posts().length).toBeGreaterThan(0));
+    await vi.waitFor(() => expect(h.posts().length).toBeGreaterThan(0));
   });
 
   it('!restart の印に、自分のタグの行で最後に見た session_id を書く（別のタグの id は使わない）', async () => {
@@ -1474,9 +1470,6 @@ describe('このセッション中は全部許可', () => {
   let h: Harness;
   let dir: string;
   let hooks: string;
-  const posts = () => h.web.calls.filter((c) => c.method === 'chat.postMessage');
-  const verdicts = () =>
-    h.notifications.filter((x) => x.method === 'notifications/claude/channel/permission').map((x) => x.params);
   const actionIds = (call: ApiCall | undefined) =>
     ((call?.args.blocks ?? []) as { type: string; elements?: { action_id: string }[] }[])
       .find((b) => b.type === 'actions')
@@ -1511,7 +1504,7 @@ describe('このセッション中は全部許可', () => {
 
   async function enableByButton(): Promise<void> {
     await requestBash(h.client, 'git status');
-    expect(actionIds(posts()[0])).toContain('perm_session');
+    expect(actionIds(h.posts()[0])).toContain('perm_session');
     h.socket.emit('interactive', blockAction('perm_session', 'abcde', { container: { message_ts: '100.1', thread_ts: '20.0' } }));
     await flush();
     await flush();
@@ -1521,20 +1514,20 @@ describe('このセッション中は全部許可', () => {
   it('無効なボットにはボタンを出さない', async () => {
     await start(false);
     await requestBash(h.client, 'git status');
-    expect(actionIds(posts()[0])).not.toContain('perm_session');
+    expect(actionIds(h.posts()[0])).not.toContain('perm_session');
   });
 
   it('ボタンで有効にすると、今回を許可し、以後は ask / deny 以外をボタン無しで許可してスレッドに記録する', async () => {
     await start(true);
     await enableByButton();
-    expect(verdicts()).toEqual([{ request_id: 'abcde', behavior: 'allow' }]);
+    expect(h.verdicts()).toEqual([{ request_id: 'abcde', behavior: 'allow' }]);
 
     await requestBash(h.client, 'npm test', 'fghij');
-    expect(verdicts().at(-1)).toEqual({ request_id: 'fghij', behavior: 'allow' });
-    expect(posts()).toHaveLength(1);
-    expect(String(posts()[0]?.args.text)).toContain('自動許可: Bash');
-    expect(posts()[0]?.args.thread_ts).toBe('20.0');
-    expect(actionIds(posts()[0])).toEqual([]);
+    expect(h.verdicts().at(-1)).toEqual({ request_id: 'fghij', behavior: 'allow' });
+    expect(h.posts()).toHaveLength(1);
+    expect(String(h.posts()[0]?.args.text)).toContain('自動許可: Bash');
+    expect(h.posts()[0]?.args.thread_ts).toBe('20.0');
+    expect(actionIds(h.posts()[0])).toEqual([]);
   });
 
   it('自動許可の記録は、実行許可のメッセージと同じく不可視文字を \\u{XXXX} で見せ、サロゲートペアの途中で切らない', async () => {
@@ -1542,7 +1535,7 @@ describe('このセッション中は全部許可', () => {
     await enableByButton();
 
     await requestBash(h.client, `echo a\u202Eb${'😀'.repeat(400)}`, 'fghij');
-    const record = JSON.stringify(posts()[0]?.args.blocks);
+    const record = JSON.stringify(h.posts()[0]?.args.blocks);
     expect(record).toContain('a\\\\u{202E}b');
     expect(record).not.toContain('\u202E');
     // JSON.stringify は対になっていないサロゲートだけを \ud83d の形で書く
@@ -1559,8 +1552,8 @@ describe('このセッション中は全部許可', () => {
       description: 'read',
       input_preview: JSON.stringify({ file_path: 'C:\\dev\\other\\a.ts' }),
     });
-    expect(verdicts().at(-1)).toEqual({ request_id: 'fghij', behavior: 'allow' });
-    expect(String(posts()[0]?.args.text)).toContain('自動許可: Read');
+    expect(h.verdicts().at(-1)).toEqual({ request_id: 'fghij', behavior: 'allow' });
+    expect(String(h.posts()[0]?.args.text)).toContain('自動許可: Read');
   });
 
   it('有効でも、settings の ask に当たるものはボタンで聞く（全部許可のボタンはもう出さない）', async () => {
@@ -1568,9 +1561,9 @@ describe('このセッション中は全部許可', () => {
     await enableByButton();
 
     await requestBash(h.client, 'git push origin main', 'fghij');
-    expect(verdicts()).toHaveLength(1);
+    expect(h.verdicts()).toHaveLength(1);
     // git push は許可リストに足せないので、♾ も出さない
-    expect(actionIds(posts()[0])).toEqual(['perm_allow', 'perm_deny']);
+    expect(actionIds(h.posts()[0])).toEqual(['perm_allow', 'perm_deny']);
   });
 
   it('managed settings の ask に当たるものも、ボタンで聞く', async () => {
@@ -1578,14 +1571,14 @@ describe('このセッション中は全部許可', () => {
     await enableByButton();
 
     await requestBash(h.client, 'cd pkg && npm publish', 'fghij');
-    expect(verdicts()).toHaveLength(1);
-    expect(actionIds(posts()[0])).toContain('perm_allow');
+    expect(h.verdicts()).toHaveLength(1);
+    expect(actionIds(h.posts()[0])).toContain('perm_allow');
   });
 
   it('managed settings が読めない（JSON でない）ときは、全部許可のボタンを出さない', async () => {
     await start(true, '{ broken');
     await requestBash(h.client, 'git status');
-    expect(actionIds(posts()[0])).not.toContain('perm_session');
+    expect(actionIds(h.posts()[0])).not.toContain('perm_session');
   });
 
   it('!lock で解除すると、またボタンで聞く', async () => {
@@ -1594,12 +1587,12 @@ describe('このセッション中は全部許可', () => {
 
     h.socket.emit('slack_event', dmEnvelope('!lock', { ts: '30.0' }));
     await flush();
-    expect(String(posts().at(-1)?.args.markdown_text ?? posts().at(-1)?.args.text)).toContain('解除した');
+    expect(h.postTexts().at(-1)).toContain('解除した');
 
     h.web.calls.length = 0;
     await requestBash(h.client, 'npm test', 'fghij');
-    expect(verdicts()).toHaveLength(1);
-    expect(actionIds(posts()[0])).toContain('perm_session');
+    expect(h.verdicts()).toHaveLength(1);
+    expect(actionIds(h.posts()[0])).toContain('perm_session');
   });
 
   it('!clear などで新しい会話になったら（SessionStart source=clear）解除する', async () => {
@@ -1607,22 +1600,19 @@ describe('このセッション中は全部許可', () => {
     await enableByButton();
 
     fs.appendFileSync(hooks, JSON.stringify({ at: Date.now(), session_id: 's2', hook_event_name: 'SessionStart', source: 'clear' }) + '\n');
-    await vi.waitFor(() => expect(posts().some((p) => String(p.args.text).includes('全部許可」を解除した'))).toBe(true));
+    await vi.waitFor(() => expect(h.posts().some((p) => String(p.args.text).includes('全部許可」を解除した'))).toBe(true));
 
     h.web.calls.length = 0;
     await requestBash(h.client, 'npm test', 'fghij');
-    expect(verdicts()).toHaveLength(1);
-    expect(actionIds(posts()[0])).toContain('perm_session');
+    expect(h.verdicts()).toHaveLength(1);
+    expect(actionIds(h.posts()[0])).toContain('perm_session');
   });
 });
 
 describe('キャッシュのつなぎ止め', () => {
   let h: Harness | undefined;
   let dir: string;
-  const texts = (): string[] =>
-    (h?.web.calls ?? [])
-      .filter((c) => c.method === 'chat.postMessage')
-      .map((c) => String(c.args.markdown_text ?? c.args.text));
+  const texts = (): string[] => h?.postTexts() ?? [];
 
   beforeEach(() => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'app-keepalive-'));
@@ -1667,10 +1657,7 @@ describe('キャッシュのつなぎ止め', () => {
 describe('使用量の見張りと、想定外の終了からの起動し直しの知らせ', () => {
   let h: Harness | undefined;
   let dir: string;
-  const texts = (): string[] =>
-    (h?.web.calls ?? [])
-      .filter((c) => c.method === 'chat.postMessage')
-      .map((c) => String(c.args.markdown_text ?? c.args.text));
+  const texts = (): string[] => h?.postTexts() ?? [];
 
   beforeEach(() => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'app-usage-'));
