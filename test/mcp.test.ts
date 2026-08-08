@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect } from 'vitest';
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { ChannelServer, INSTRUCTIONS, SERVER_NAME } from '../src/mcp.js';
 import { Logger } from '../src/log.js';
@@ -12,6 +12,21 @@ interface Captured {
   replies: unknown[];
   reacts: unknown[];
   edits: unknown[];
+}
+
+/** connect で開いた組。テストごとに afterEach で閉じる */
+const opened: { client: Client; server: ChannelServer }[] = [];
+
+afterEach(async () => {
+  for (const { client, server } of opened.splice(0)) {
+    await client.close();
+    await server.close();
+  }
+});
+
+/** 通知が届くのを待つ。届いたかどうかは確かめず、固定の 20ms だけ待つ */
+async function waitForNotifications(): Promise<void> {
+  await new Promise((r) => setTimeout(r, 20));
 }
 
 async function connect(
@@ -53,13 +68,14 @@ async function connect(
 
   await server.connect(serverTransport);
   await connectClient();
+  opened.push({ client, server });
 
   return { client, server, captured };
 }
 
 describe('ChannelServer の initialize', () => {
   it('channel / permission / tools の capabilities を出す', async () => {
-    const { client, server } = await connect();
+    const { client } = await connect();
     const caps = client.getServerCapabilities();
     expect(caps?.experimental).toBeDefined();
     expect(caps?.experimental?.['claude/channel']).toEqual({});
@@ -67,8 +83,6 @@ describe('ChannelServer の initialize', () => {
     expect(caps?.tools).toEqual({ listChanged: true });
     expect(client.getServerVersion()?.name).toBe(SERVER_NAME);
     expect(client.getInstructions()).toBe(INSTRUCTIONS);
-    await client.close();
-    await server.close();
   });
 
   it('instructions に安全上の規則が含まれる', () => {
@@ -105,7 +119,7 @@ describe('ChannelServer の tools', () => {
   });
 
   it('reply / react / edit_message を出す', async () => {
-    const { client, server } = await connect();
+    const { client } = await connect();
     const res = await client.listTools();
     const names = res.tools.map((t) => t.name).sort();
     expect(names).toEqual(['edit_message', 'react', 'reply']);
@@ -125,24 +139,20 @@ describe('ChannelServer の tools', () => {
       'emoji',
       'message_id',
     ]);
-    await client.close();
-    await server.close();
   });
 
   it('reply を呼ぶとハンドラに渡り、結果が返る', async () => {
-    const { client, server, captured } = await connect();
+    const { client, captured } = await connect();
     const res = await client.callTool({
       name: 'reply',
       arguments: { chat_id: 'D1', text: 'hi', thread_ts: '1.0' },
     });
     expect(captured.replies[0]).toEqual({ chat_id: 'D1', text: 'hi', thread_ts: '1.0' });
     expect(res.content).toEqual([{ type: 'text', text: 'sent (1 message(s))' }]);
-    await client.close();
-    await server.close();
   });
 
   it('react / edit_message も渡る', async () => {
-    const { client, server, captured } = await connect();
+    const { client, captured } = await connect();
     await client.callTool({ name: 'react', arguments: { chat_id: 'D1', message_id: '1.1', emoji: 'eyes' } });
     await client.callTool({
       name: 'edit_message',
@@ -150,20 +160,16 @@ describe('ChannelServer の tools', () => {
     });
     expect(captured.reacts[0]).toEqual({ chat_id: 'D1', message_id: '1.1', emoji: 'eyes' });
     expect(captured.edits[0]).toEqual({ chat_id: 'D1', message_id: '1.1', text: 'new' });
-    await client.close();
-    await server.close();
   });
 
   it('引数が足りなければ isError を返して例外は投げない', async () => {
-    const { client, server } = await connect();
+    const { client } = await connect();
     const res = await client.callTool({ name: 'reply', arguments: { chat_id: 'D1' } });
     expect(res.isError).toBe(true);
-    await client.close();
-    await server.close();
   });
 
   it('ハンドラが投げても isError になる', async () => {
-    const { client, server } = await connect({
+    const { client } = await connect({
       onReply: async () => {
         throw new Error('slack down');
       },
@@ -171,42 +177,36 @@ describe('ChannelServer の tools', () => {
     const res = await client.callTool({ name: 'reply', arguments: { chat_id: 'D1', text: 'hi' } });
     expect(res.isError).toBe(true);
     expect(JSON.stringify(res.content)).toContain('slack down');
-    await client.close();
-    await server.close();
   });
 });
 
 describe('ChannelServer の通知', () => {
   it('pushMessage が notifications/claude/channel を送る', async () => {
-    const { client, server, captured } = await connect();
+    const { server, captured } = await connect();
     await server.pushMessage('hello', { chat_id: 'D1', 'bad-key': 'x', ok_key: 'y' });
-    await new Promise((r) => setTimeout(r, 20));
+    await waitForNotifications();
 
     const n = captured.notifications.find((x) => x.method === 'notifications/claude/channel');
     expect(n).toBeDefined();
     expect(n?.params?.content).toBe('hello');
     expect(n?.params?.meta).toEqual({ chat_id: 'D1', ok_key: 'y' });
-    await client.close();
-    await server.close();
   });
 
   it('sendVerdict が notifications/claude/channel/permission を送る', async () => {
-    const { client, server, captured } = await connect();
+    const { server, captured } = await connect();
     await server.sendVerdict({ requestId: 'abcde', behavior: 'deny' });
-    await new Promise((r) => setTimeout(r, 20));
+    await waitForNotifications();
 
     const n = captured.notifications.find(
       (x) => x.method === 'notifications/claude/channel/permission'
     );
     expect(n?.params).toEqual({ request_id: 'abcde', behavior: 'deny' });
-    await client.close();
-    await server.close();
   });
 
   it('permission_request の通知でハンドラが呼ばれる', async () => {
-    const { client, server, captured } = await connect();
+    const { client, captured } = await connect();
     await notifyPermissionRequest(client);
-    await new Promise((r) => setTimeout(r, 20));
+    await waitForNotifications();
 
     expect(captured.permissionRequests[0]).toEqual({
       request_id: 'abcde',
@@ -214,24 +214,20 @@ describe('ChannelServer の通知', () => {
       description: 'Run shell command',
       input_preview: '{"command":"ls"}',
     });
-    await client.close();
-    await server.close();
   });
 
   it.each(['ABCDE', 'abcdl', 'abcd', 'abcdef', '<!here>'])(
     'request_id が不正（%s）なら Slack 側に渡さず、warn して deny を返す',
     async (requestId) => {
-      const { client, server, captured } = await connect();
+      const { client, captured } = await connect();
       await notifyPermissionRequest(client, { request_id: requestId, description: 'd', input_preview: 'p' });
-      await new Promise((r) => setTimeout(r, 20));
+      await waitForNotifications();
 
       expect(captured.permissionRequests).toHaveLength(0);
       const verdicts = captured.notifications.filter(
         (x) => x.method === 'notifications/claude/channel/permission'
       );
       expect(verdicts.map((v) => v.params)).toEqual([{ request_id: requestId, behavior: 'deny' }]);
-      await client.close();
-      await server.close();
     }
   );
 });
