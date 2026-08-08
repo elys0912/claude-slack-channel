@@ -120,6 +120,59 @@ async function startHarness({ access = ACCESS, replyTimeoutMs, ...extra }: Harne
   return harness;
 }
 
+interface HarnessSlot {
+  /** 一時フォルダー（tempPrefix を渡したときだけ。テストごとに作り直す） */
+  readonly dir: string;
+  /** ハーネスを起動する。起動したものはテストの後に閉じる */
+  start: (options?: HarnessOptions) => Promise<Harness>;
+}
+
+/**
+ * describe の中で呼ぶ。テストの中で start したハーネスを、各テストの後に閉じる。
+ * tempPrefix を渡すと、各テストの前に一時フォルダーを作り、ハーネスを閉じた後で消す
+ */
+function useHarnessSlot(tempPrefix?: string): HarnessSlot {
+  let dir = '';
+  let started: Harness | undefined;
+
+  if (tempPrefix !== undefined) {
+    beforeEach(() => {
+      dir = fs.mkdtempSync(path.join(os.tmpdir(), tempPrefix));
+    });
+  }
+  afterEach(async () => {
+    await started?.client.close();
+    await started?.stop();
+    started = undefined;
+    if (tempPrefix !== undefined) fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  return {
+    get dir() {
+      return dir;
+    },
+    start: async (options) => {
+      started = await startHarness(options);
+      return started;
+    },
+  };
+}
+
+/**
+ * describe の中で呼ぶ。各テストの前にハーネスを起動して onStarted に渡し、後で閉じる。
+ * options は一時フォルダー（tempPrefix を渡したとき）のパスを受け取って、起動の設定を返す
+ */
+function useHarness(
+  onStarted: (h: Harness) => void,
+  setup: { tempPrefix?: string; options?: (dir: string) => HarnessOptions } = {}
+): HarnessSlot {
+  const slot = useHarnessSlot(setup.tempPrefix);
+  beforeEach(async () => {
+    onStarted(await slot.start(setup.options?.(slot.dir)));
+  });
+  return slot;
+}
+
 /** ツールの結果の 1 つ目の文 */
 function toolText(res: Awaited<ReturnType<Client['callTool']>>): string {
   const first = (res.content as { type: string; text?: string }[])[0];
@@ -176,15 +229,7 @@ describe('app.ts は import 時に副作用を持たない', () => {
 
 describe('Slack → MCP', () => {
   let h: Harness;
-
-  beforeEach(async () => {
-    h = await startHarness();
-  });
-
-  afterEach(async () => {
-    await h.client.close();
-    await h.stop();
-  });
+  useHarness((started) => (h = started));
 
   it('DM が notifications/claude/channel として届き、その後 eyes リアクションが付く', async () => {
     h.socket.emit('slack_event', dmEnvelope('hello'));
@@ -397,15 +442,7 @@ describe('Slack → MCP', () => {
 
 describe('MCP → Slack', () => {
   let h: Harness;
-
-  beforeEach(async () => {
-    h = await startHarness();
-  });
-
-  afterEach(async () => {
-    await h.client.close();
-    await h.stop();
-  });
+  useHarness((started) => (h = started));
 
   it('reply は DM に投稿し "sent (N message(s)) ts=<送ったメッセージの ts>" を返す（edit_message で自分の返信を直せるように）', async () => {
     const res = await h.client.callTool({ name: 'reply', arguments: { chat_id: DM1, text: 'hi', thread_ts: '10.1' } });
@@ -840,15 +877,7 @@ describe('createToolHandlers 単体', () => {
 describe('チャンネル（access.channels）', () => {
   const CH = 'C333CCC';
   let h: Harness;
-
-  beforeEach(async () => {
-    h = await startHarness({ access: { ...ACCESS, channels: [CH] } });
-  });
-
-  afterEach(async () => {
-    await h.client.close();
-    await h.stop();
-  });
+  useHarness((started) => (h = started), { options: () => ({ access: { ...ACCESS, channels: [CH] } }) });
 
   /** チャンネルの投稿。既定ではボットへのメンションを付ける（mention: false で付けない） */
   function channelEnvelope(
@@ -952,15 +981,7 @@ describe('無応答の見張り（replyTimeoutMs）', () => {
   let h: Harness;
   const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
   const warnings = () => h.posts().filter((c) => String(c.args.text).includes('応答が無い'));
-
-  beforeEach(async () => {
-    h = await startHarness({ replyTimeoutMs: 60 });
-  });
-
-  afterEach(async () => {
-    await h.client.close();
-    await h.stop();
-  });
+  useHarness((started) => (h = started), { options: () => ({ replyTimeoutMs: 60 }) });
 
   it('Claude が何も返さないまま待ち時間を過ぎたら、そのスレッドに警告を投稿する', async () => {
     h.socket.emit('slack_event', dmEnvelope('hello', { ts: '40.1', thread_ts: '40.0' }));
@@ -1013,30 +1034,20 @@ describe('parseCommand', () => {
 });
 
 describe('起動時の、今の方式では作れない保存済みのルールの知らせ（D-SD-03）', () => {
-  let h: Harness | undefined;
-  let dir: string;
+  const harness = useHarnessSlot('app-rejected-');
   let file: string;
-  const texts = (): string[] => h?.postTexts() ?? [];
 
   beforeEach(() => {
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'app-rejected-'));
-    file = path.join(dir, 'allow-extra.json');
-  });
-
-  afterEach(async () => {
-    await h?.client.close();
-    await h?.stop();
-    h = undefined;
-    fs.rmSync(dir, { recursive: true, force: true });
+    file = path.join(harness.dir, 'allow-extra.json');
   });
 
   it('前の方式で足したルールがあれば、件数と一覧を知らせる。allow-extra.json は書き換えない', async () => {
     const saved = JSON.stringify({ allow: ['Bash(git status)', 'Bash(git log:*)', 'WebFetch'] });
     fs.writeFileSync(file, saved);
-    h = await startHarness({ allowExtraFile: file });
+    const h = await harness.start({ allowExtraFile: file });
     await flush();
 
-    const notice = texts().find((t) => t.includes('作れないルール'));
+    const notice = h.postTexts().find((t) => t.includes('作れないルール'));
     expect(notice).toContain('2 件');
     expect(notice).toContain('• Bash(git log:*)');
     expect(notice).toContain('• WebFetch');
@@ -1046,9 +1057,9 @@ describe('起動時の、今の方式では作れない保存済みのルール�
 
   it('作れないルールが無ければ知らせない', async () => {
     fs.writeFileSync(file, JSON.stringify({ allow: ['Bash(git status)'] }));
-    h = await startHarness({ allowExtraFile: file });
+    const h = await harness.start({ allowExtraFile: file });
     await flush();
-    expect(texts().some((t) => t.includes('作れないルール'))).toBe(false);
+    expect(h.postTexts().some((t) => t.includes('作れないルール'))).toBe(false);
   });
 });
 
@@ -1060,25 +1071,19 @@ describe('ターミナル画面と許可リスト（!screen / 今後も許可 / 
     "    Don't ask again    Revisit anytime with /chrome",
   ].join('\n');
   let h: Harness;
-  let dir: string;
   let sent: ConsoleKey[][];
-
-  beforeEach(async () => {
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'app-rules-'));
-    const denyFile = path.join(dir, 'settings.json');
-    fs.writeFileSync(denyFile, JSON.stringify({ permissions: { deny: ['Bash(pwd -P:*)'] } }));
-    sent = [];
-    h = await startHarness({
-      console: { read: async () => CHROME, sendKeys: async (keys) => void sent.push(keys), sendCommand: async () => undefined },
-      allowExtraFile: path.join(dir, 'allow-extra.json'),
-      denyFiles: [denyFile],
-    });
-  });
-
-  afterEach(async () => {
-    await h.client.close();
-    await h.stop();
-    fs.rmSync(dir, { recursive: true, force: true });
+  const harness = useHarness((started) => (h = started), {
+    tempPrefix: 'app-rules-',
+    options: (dir) => {
+      const denyFile = path.join(dir, 'settings.json');
+      fs.writeFileSync(denyFile, JSON.stringify({ permissions: { deny: ['Bash(pwd -P:*)'] } }));
+      sent = [];
+      return {
+        console: { read: async () => CHROME, sendKeys: async (keys) => void sent.push(keys), sendCommand: async () => undefined },
+        allowExtraFile: path.join(dir, 'allow-extra.json'),
+        denyFiles: [denyFile],
+      };
+    },
   });
 
   it('!screen は Claude に渡さず、選択肢のボタンを出し、押すと選択キーを送る', async () => {
@@ -1116,7 +1121,7 @@ describe('ターミナル画面と許可リスト（!screen / 今後も許可 / 
     h.socket.emit('interactive', blockAction('rule_add', add?.value ?? '', { container: { message_ts: '100.2' } }));
     await flush();
     await flush();
-    expect(JSON.parse(fs.readFileSync(path.join(dir, 'allow-extra.json'), 'utf8'))).toEqual({ allow: ['Bash(git status)'] });
+    expect(JSON.parse(fs.readFileSync(path.join(harness.dir, 'allow-extra.json'), 'utf8'))).toEqual({ allow: ['Bash(git status)'] });
   });
 
   it('今後も許可: deny に当たるなら、今回は許可したうえで追加しない旨と当たった deny を知らせる', async () => {
@@ -1131,11 +1136,11 @@ describe('ターミナル画面と許可リスト（!screen / 今後も許可 / 
     expect(h.verdicts()[0]).toEqual({ request_id: 'abcde', behavior: 'allow' });
     const notice = h.posts().find((p) => String(p.args.markdown_text).includes('deny に当たる'));
     expect(String(notice?.args.markdown_text)).toContain('Bash(pwd -P:*)');
-    expect(fs.existsSync(path.join(dir, 'allow-extra.json'))).toBe(false);
+    expect(fs.existsSync(path.join(harness.dir, 'allow-extra.json'))).toBe(false);
   });
 
   it('!rules で追加分を一覧できる', async () => {
-    fs.writeFileSync(path.join(dir, 'allow-extra.json'), JSON.stringify({ allow: ['WebFetch'] }));
+    fs.writeFileSync(path.join(harness.dir, 'allow-extra.json'), JSON.stringify({ allow: ['WebFetch'] }));
     h.socket.emit('slack_event', dmEnvelope('!rules', { ts: '60.1' }));
     await flush();
     expect(String(h.posts()[0]?.args.text)).toContain('1 件');
@@ -1151,15 +1156,8 @@ describe('ホームタブ', () => {
     return eventEnvelope({ type: 'app_home_opened', user, tab }, { eventId: `Ev-${Math.random()}`, teamId });
   }
 
-  beforeEach(async () => {
-    // startHarness は起動前に web.calls を空にするので、起動時の publish は残る
-    h = await startHarness({ home, workDir: 'C:\\dev' });
-  });
-
-  afterEach(async () => {
-    await h.client.close();
-    await h.stop();
-  });
+  // startHarness は起動前に web.calls を空にするので、起動時の publish は残る
+  useHarness((started) => (h = started), { options: () => ({ home, workDir: 'C:\\dev' }) });
 
   it('起動したら許可ユーザー全員のホームを稼働中にする', () => {
     expect(publishes().map((p) => p.args.user_id)).toEqual(ACCESS.allowFrom);
@@ -1196,33 +1194,32 @@ describe('ホームタブ', () => {
 describe('!status / !restart / !compact / !clear / !help', () => {
   const PROMPT = ['Claude: done.', '', '❯ ', '  ? for shortcuts'].join('\n');
   let h: Harness;
-  let dir: string;
   let flag: string;
   let screen: string;
   let commands: string[];
   let killed: number;
-
-  beforeEach(async () => {
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'app-session-'));
-    flag = path.join(dir, 'restart.flag');
-    screen = PROMPT;
-    commands = [];
-    killed = 0;
-    h = await startHarness({
-      console: { read: async () => screen, sendKeys: async () => undefined, sendCommand: async (c) => void commands.push(c) },
-      restartFlagFile: flag,
-      killParent: () => void killed++,
-      // home は渡さない（ホームタブ無しでも !status に作業フォルダーが出る）
-      workDir: 'C:\\dev\\app',
-    });
-    h.web.calls.length = 0;
-  });
-
-  afterEach(async () => {
-    await h.client.close();
-    await h.stop();
-    fs.rmSync(dir, { recursive: true, force: true });
-  });
+  useHarness(
+    (started) => {
+      h = started;
+      h.web.calls.length = 0;
+    },
+    {
+      tempPrefix: 'app-session-',
+      options: (dir) => {
+        flag = path.join(dir, 'restart.flag');
+        screen = PROMPT;
+        commands = [];
+        killed = 0;
+        return {
+          console: { read: async () => screen, sendKeys: async () => undefined, sendCommand: async (c) => void commands.push(c) },
+          restartFlagFile: flag,
+          killParent: () => void killed++,
+          // home は渡さない（ホームタブ無しでも !status に作業フォルダーが出る）
+          workDir: 'C:\\dev\\app',
+        };
+      },
+    }
+  );
 
   it('!status は Claude に渡さず、稼働状態をスレッドに返す', async () => {
     h.socket.emit('slack_event', dmEnvelope('!status', { ts: '80.1' }));
@@ -1338,24 +1335,18 @@ async function drainHooks(h: Harness, file: string, fields: Record<string, unkno
 
 describe('hook の記録（hooks.jsonl）からの知らせ', () => {
   let h: Harness;
-  let dir: string;
   let file: string;
   const hookLine = (fields: Record<string, unknown>) => JSON.stringify({ at: Date.now(), session_id: 's1', ...fields }) + '\n';
-
-  beforeEach(async () => {
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'app-hooks-'));
-    file = path.join(dir, 'hooks.jsonl');
-    h = await startHarness({
-      hookInboxFile: file,
-      hookPollMs: 20,
-      console: { read: async () => '', sendKeys: async () => undefined, sendCommand: async () => undefined },
-    });
-  });
-
-  afterEach(async () => {
-    await h.client.close();
-    await h.stop();
-    fs.rmSync(dir, { recursive: true, force: true });
+  useHarness((started) => (h = started), {
+    tempPrefix: 'app-hooks-',
+    options: (dir) => {
+      file = path.join(dir, 'hooks.jsonl');
+      return {
+        hookInboxFile: file,
+        hookPollMs: 20,
+        console: { read: async () => '', sendKeys: async () => undefined, sendCommand: async () => undefined },
+      };
+    },
   });
 
   it('ターミナル側の許可待ちは、画面を確認するボタン付きで許可ユーザー全員の DM に出す', async () => {
@@ -1400,32 +1391,31 @@ describe('hook の記録（hooks.jsonl）からの知らせ', () => {
 
 describe('自分のセッションの hook だけ扱う（session_tag）と、!restart で同じ会話を開き直す（session_id）', () => {
   let h: Harness;
-  let dir: string;
   let file: string;
   let flag: string;
   const hookLine = (fields: Record<string, unknown>) => JSON.stringify({ at: Date.now(), ...fields }) + '\n';
   const MINE = 'c2097ecd-29b0-4cee-9f3e-a9aeace64bc3';
   const OTHER = '0d1e2f3a-4b5c-4d6e-8f90-a1b2c3d4e5f6';
-
-  beforeEach(async () => {
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'app-tag-'));
-    file = path.join(dir, 'hooks.jsonl');
-    flag = path.join(dir, 'restart.flag');
-    h = await startHarness({
-      hookInboxFile: file,
-      hookPollMs: 20,
-      sessionTag: 'tag-mine',
-      restartFlagFile: flag,
-      console: { read: async () => '❯ ', sendKeys: async () => undefined, sendCommand: async () => undefined },
-    });
-    h.web.calls.length = 0;
-  });
-
-  afterEach(async () => {
-    await h.client.close();
-    await h.stop();
-    fs.rmSync(dir, { recursive: true, force: true });
-  });
+  useHarness(
+    (started) => {
+      h = started;
+      h.web.calls.length = 0;
+    },
+    {
+      tempPrefix: 'app-tag-',
+      options: (dir) => {
+        file = path.join(dir, 'hooks.jsonl');
+        flag = path.join(dir, 'restart.flag');
+        return {
+          hookInboxFile: file,
+          hookPollMs: 20,
+          sessionTag: 'tag-mine',
+          restartFlagFile: flag,
+          console: { read: async () => '❯ ', sendKeys: async () => undefined, sendCommand: async () => undefined },
+        };
+      },
+    }
+  );
 
   it('タグが違う・無い行は知らせない。同じタグの行だけ知らせる', async () => {
     fs.appendFileSync(
@@ -1467,8 +1457,8 @@ describe('自分のセッションの hook だけ扱う（session_tag）と、!r
 });
 
 describe('このセッション中は全部許可', () => {
+  const harness = useHarnessSlot('app-allowall-');
   let h: Harness;
-  let dir: string;
   let hooks: string;
   const actionIds = (call: ApiCall | undefined) =>
     ((call?.args.blocks ?? []) as { type: string; elements?: { action_id: string }[] }[])
@@ -1477,13 +1467,13 @@ describe('このセッション中は全部許可', () => {
 
   /** managed: managed settings のファイルの中身（省略時はファイルを置かない） */
   async function start(sessionAllowAll: boolean, managed?: string): Promise<void> {
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'app-allowall-'));
+    const dir = harness.dir;
     const settings = path.join(dir, 'settings.json');
     fs.writeFileSync(settings, JSON.stringify({ permissions: { ask: ['Bash(git push:*)'], deny: ['Bash(rm:*)', 'Read(.env)', 'Read(~/.ssh/**)'] } }));
     const managedFile = path.join(dir, 'managed-settings.json');
     if (managed !== undefined) fs.writeFileSync(managedFile, managed);
     hooks = path.join(dir, 'hooks.jsonl');
-    h = await startHarness({
+    h = await harness.start({
       denyFiles: [settings],
       managedSettingsFiles: () => [managedFile],
       sessionAllowAll,
@@ -1495,12 +1485,6 @@ describe('このセッション中は全部許可', () => {
     await flush();
     h.web.calls.length = 0;
   }
-
-  afterEach(async () => {
-    await h.client.close();
-    await h.stop();
-    fs.rmSync(dir, { recursive: true, force: true });
-  });
 
   async function enableByButton(): Promise<void> {
     await requestBash(h.client, 'git status');
@@ -1610,24 +1594,11 @@ describe('このセッション中は全部許可', () => {
 });
 
 describe('キャッシュのつなぎ止め', () => {
-  let h: Harness | undefined;
-  let dir: string;
-  const texts = (): string[] => h?.postTexts() ?? [];
-
-  beforeEach(() => {
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'app-keepalive-'));
-  });
-
-  afterEach(async () => {
-    await h?.client.close();
-    await h?.stop();
-    h = undefined;
-    fs.rmSync(dir, { recursive: true, force: true });
-  });
+  const harness = useHarnessSlot('app-keepalive-');
 
   it('!keepalive で状態を見て、off / on で切り替える。Claude には渡さない', async () => {
-    h = await startHarness({
-      hookInboxFile: path.join(dir, 'hooks.jsonl'),
+    const h = await harness.start({
+      hookInboxFile: path.join(harness.dir, 'hooks.jsonl'),
       keepalive: { enabled: true, afterMs: 55 * 60_000, max: 6, quiet: undefined },
     });
     h.socket.emit('slack_event', dmEnvelope('!keepalive', { ts: '40.0' }));
@@ -1637,7 +1608,7 @@ describe('キャッシュのつなぎ止め', () => {
     h.socket.emit('slack_event', dmEnvelope('!keepalive on', { ts: '42.0' }));
     await flush();
 
-    const posted = texts();
+    const posted = h.postTexts();
     expect(posted[0]).toContain('有効');
     expect(posted[1]).toContain('無効');
     expect(posted[2]).toContain('有効');
@@ -1646,48 +1617,35 @@ describe('キャッシュのつなぎ止め', () => {
   });
 
   it('つなぎ止めが無いブリッジでは、!keepalive は使えない旨を返す', async () => {
-    h = await startHarness();
+    const h = await harness.start();
     h.socket.emit('slack_event', dmEnvelope('!keepalive', { ts: '43.0' }));
     await flush();
 
-    expect(texts()).toEqual(['⚠️ このブリッジでは !keepalive を使えない']);
+    expect(h.postTexts()).toEqual(['⚠️ このブリッジでは !keepalive を使えない']);
   });
 });
 
 describe('使用量の見張りと、想定外の終了からの起動し直しの知らせ', () => {
-  let h: Harness | undefined;
-  let dir: string;
-  const texts = (): string[] => h?.postTexts() ?? [];
-
-  beforeEach(() => {
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'app-usage-'));
-  });
-
-  afterEach(async () => {
-    await h?.client.close();
-    await h?.stop();
-    h = undefined;
-    fs.rmSync(dir, { recursive: true, force: true });
-  });
+  const harness = useHarnessSlot('app-usage-');
 
   it('起動時に crash.json があれば知らせて消す', async () => {
-    const crashFile = path.join(dir, 'crash.json');
+    const crashFile = path.join(harness.dir, 'crash.json');
     fs.writeFileSync(crashFile, JSON.stringify({ at: Date.now(), exit_code: 1, count: 1, max: 3, window_min: 10, resumed: true }));
-    h = await startHarness({ crashFile });
+    const h = await harness.start({ crashFile });
 
-    expect(texts().some((t) => t.includes('想定外に終了した（exit code 1）'))).toBe(true);
+    expect(h.postTexts().some((t) => t.includes('想定外に終了した（exit code 1）'))).toBe(true);
     expect(fs.existsSync(crashFile)).toBe(false);
   });
 
   it('usage.json の使用量がしきい値を越えたら知らせ、!status に使用量の行を出す', async () => {
-    const file = path.join(dir, 'usage.json');
+    const file = path.join(harness.dir, 'usage.json');
     const resetsAt = Math.floor(Date.now() / 1000) + 3600;
     fs.writeFileSync(file, JSON.stringify({ at: Date.now(), five_hour: { used: 85, resets_at: resetsAt } }));
-    h = await startHarness({ usageWatch: { file, usageWarnPct: [80, 95], contextWarnPct: [70, 90], pollMs: 10 } });
+    const h = await harness.start({ usageWatch: { file, usageWarnPct: [80, 95], contextWarnPct: [70, 90], pollMs: 10 } });
 
-    await vi.waitFor(() => expect(texts().some((t) => t.startsWith('⚠️ 使用量（5 時間枠）が 85%'))).toBe(true));
+    await vi.waitFor(() => expect(h.postTexts().some((t) => t.startsWith('⚠️ 使用量（5 時間枠）が 85%'))).toBe(true));
     h.socket.emit('slack_event', dmEnvelope('!status', { ts: '50.0' }));
     await flush();
-    expect(texts().at(-1)).toContain('使用量: 5 時間枠 85%');
+    expect(h.postTexts().at(-1)).toContain('使用量: 5 時間枠 85%');
   });
 });
