@@ -1,12 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { ChannelServer, INSTRUCTIONS, SERVER_NAME } from '../src/mcp.js';
 import { Logger } from '../src/log.js';
 import type { PermissionRequest } from '../src/permission.js';
+import { linkClient, notifyPermissionRequest } from './helpers/mcp-client.js';
+import type { Notification } from './helpers/mcp-client.js';
 
 interface Captured {
-  notifications: { method: string; params?: Record<string, unknown> }[];
+  notifications: Notification[];
   permissionRequests: PermissionRequest[];
   replies: unknown[];
   reacts: unknown[];
@@ -19,8 +20,9 @@ async function connect(
     onDownload: (a: { file_id: string; extract?: boolean | undefined }) => Promise<string>;
   }> = {}
 ): Promise<{ client: Client; server: ChannelServer; captured: Captured }> {
+  const { client, notifications, serverTransport, connect: connectClient } = linkClient();
   const captured: Captured = {
-    notifications: [],
+    notifications,
     permissionRequests: [],
     replies: [],
     reacts: [],
@@ -49,14 +51,8 @@ async function connect(
     onDownload: overrides.onDownload,
   });
 
-  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-  const client = new Client({ name: 'test-client', version: '0.0.1' }, { capabilities: {} });
-  client.fallbackNotificationHandler = async (n) => {
-    captured.notifications.push(n as { method: string; params?: Record<string, unknown> });
-  };
-
   await server.connect(serverTransport);
-  await client.connect(clientTransport);
+  await connectClient();
 
   return { client, server, captured };
 }
@@ -209,15 +205,7 @@ describe('ChannelServer の通知', () => {
 
   it('permission_request の通知でハンドラが呼ばれる', async () => {
     const { client, server, captured } = await connect();
-    await client.notification({
-      method: 'notifications/claude/channel/permission_request',
-      params: {
-        request_id: 'abcde',
-        tool_name: 'Bash',
-        description: 'Run shell command',
-        input_preview: '{"command":"ls"}',
-      },
-    });
+    await notifyPermissionRequest(client);
     await new Promise((r) => setTimeout(r, 20));
 
     expect(captured.permissionRequests[0]).toEqual({
@@ -234,10 +222,7 @@ describe('ChannelServer の通知', () => {
     'request_id が不正（%s）なら Slack 側に渡さず、warn して deny を返す',
     async (requestId) => {
       const { client, server, captured } = await connect();
-      await client.notification({
-        method: 'notifications/claude/channel/permission_request',
-        params: { request_id: requestId, tool_name: 'Bash', description: 'd', input_preview: 'p' },
-      });
+      await notifyPermissionRequest(client, { request_id: requestId, description: 'd', input_preview: 'p' });
       await new Promise((r) => setTimeout(r, 20));
 
       expect(captured.permissionRequests).toHaveLength(0);

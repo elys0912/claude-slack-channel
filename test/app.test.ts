@@ -4,8 +4,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { Logger } from '../src/log.js';
 import {
   KEEPALIVE_TEXT,
@@ -33,15 +33,12 @@ import {
   messageEnvelope,
   platformError,
 } from './helpers/fake-slack.js';
+import { linkClient, notifyPermissionRequest } from './helpers/mcp-client.js';
 import type { ApiCall, FakeSocket, FakeWeb } from './helpers/fake-slack.js';
+import type { Notification, PermissionRequestParams } from './helpers/mcp-client.js';
 import type { ParsedAccess } from '../src/config.js';
 import type { BridgeAppOptions } from '../src/app.js';
 import type { ConsoleKey } from '../src/console.js';
-
-interface Notification {
-  method: string;
-  params?: Record<string, unknown>;
-}
 
 interface Harness {
   web: FakeWeb;
@@ -80,12 +77,7 @@ async function startHarness(
   await bridge.init();
   web.calls.length = 0;
 
-  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-  const client = new Client({ name: 'test-client', version: '0.0.1' }, { capabilities: {} });
-  const notifications: Notification[] = [];
-  client.fallbackNotificationHandler = async (n) => {
-    notifications.push(n as Notification);
-  };
+  const { client, notifications, serverTransport, connect } = linkClient();
 
   const harness: Harness = {
     web,
@@ -111,7 +103,7 @@ async function startHarness(
   };
 
   const app = await startBridgeApp({ bridge, logger, transport: serverTransport, lock, replyTimeoutMs, ...extra });
-  await client.connect(clientTransport);
+  await connect();
   harness.stop = app.stop;
   return harness;
 }
@@ -132,17 +124,15 @@ function blockAction(actionId: string, value: string, overrides: Record<string, 
   return blockActionEnvelope({ container: { message_ts: '55.5' }, actions: [{ action_id: actionId, value }], ...overrides });
 }
 
-async function sendPermissionRequest(client: Client, requestId = 'abcde', inputPreview = '{"command":"ls"}'): Promise<void> {
-  await client.notification({
-    method: 'notifications/claude/channel/permission_request',
-    params: {
-      request_id: requestId,
-      tool_name: 'Bash',
-      description: 'Run shell command',
-      input_preview: inputPreview,
-    },
-  });
+/** Claude 側から permission_request を送り、ブリッジが処理し終えるのを待つ。省略した項目は Bash の ls */
+async function requestPermission(client: Client, params: Partial<PermissionRequestParams> = {}): Promise<void> {
+  await notifyPermissionRequest(client, params);
   await flush();
+}
+
+/** command を実行する Bash の permission_request を送る */
+async function requestBash(client: Client, command: string, requestId = 'abcde'): Promise<void> {
+  await requestPermission(client, { request_id: requestId, description: 'run', input_preview: JSON.stringify({ command }) });
 }
 
 describe('app.ts は import 時に副作用を持たない', () => {
@@ -209,7 +199,7 @@ describe('Slack → MCP', () => {
   });
 
   it('permission_request が全 DM に配信され、"yes ID" で verdict が返り、リアクションと書き換えが行われる', async () => {
-    await sendPermissionRequest(h.client);
+    await requestPermission(h.client);
 
     const posts = h.web.calls.filter((c) => c.method === 'chat.postMessage');
     expect(posts.map((p) => p.args.channel)).toEqual([DM1, DM2]);
@@ -240,7 +230,7 @@ describe('Slack → MCP', () => {
   });
 
   it('"no ID" は deny の verdict と x リアクションになる', async () => {
-    await sendPermissionRequest(h.client);
+    await requestPermission(h.client);
     h.web.calls.length = 0;
 
     h.socket.emit('slack_event', dmEnvelope('no abcde'));
@@ -254,7 +244,7 @@ describe('Slack → MCP', () => {
   });
 
   it('記録のない ID への "yes" は verdict にせず、通常のメッセージとして届ける', async () => {
-    await sendPermissionRequest(h.client);
+    await requestPermission(h.client);
     h.web.calls.length = 0;
 
     h.socket.emit('slack_event', dmEnvelope('yes maybe'));
@@ -271,7 +261,7 @@ describe('Slack → MCP', () => {
     await flush();
     h.web.calls.length = 0;
 
-    await sendPermissionRequest(h.client);
+    await requestPermission(h.client);
     const posts = h.web.calls.filter((c) => c.method === 'chat.postMessage');
     expect(posts).toHaveLength(1);
     expect(posts[0]?.args.channel).toBe(DM1);
@@ -279,7 +269,7 @@ describe('Slack → MCP', () => {
   });
 
   it('Allow ボタンで verdict が返り、押されたメッセージが書き換わる', async () => {
-    await sendPermissionRequest(h.client);
+    await requestPermission(h.client);
     h.web.calls.length = 0;
 
     h.socket.emit('interactive', blockAction('perm_allow', 'abcde', { container: { message_ts: '100.1' } }));
@@ -307,7 +297,7 @@ describe('Slack → MCP', () => {
 
   it('See more はスレッド外のボタンなら container.message_ts を起点に、input_preview 全文をコードブロックで送る', async () => {
     const preview = 'x'.repeat(5000);
-    await sendPermissionRequest(h.client, 'abcde', preview);
+    await requestPermission(h.client, { input_preview: preview });
     h.web.calls.length = 0;
 
     h.socket.emit('interactive', blockAction('perm_more', 'abcde', { container: { message_ts: '100.1' } }));
@@ -325,7 +315,7 @@ describe('Slack → MCP', () => {
 
   it('See more はスレッド内のボタンならスレッドの親に送り、長い全文はコードブロックを保って分割する', async () => {
     const preview = ('y'.repeat(99) + '\n').repeat(300);
-    await sendPermissionRequest(h.client, 'abcde', preview);
+    await requestPermission(h.client, { input_preview: preview });
     h.web.calls.length = 0;
 
     h.socket.emit(
@@ -345,7 +335,7 @@ describe('Slack → MCP', () => {
   });
 
   it('See more の全文でも双方向制御文字・ゼロ幅文字を \\u{XXXX} の形で見せる', async () => {
-    await sendPermissionRequest(h.client, 'abcde', 'rm -rf \u202e/ \u200bok');
+    await requestPermission(h.client, { input_preview: 'rm -rf \u202e/ \u200bok' });
     h.web.calls.length = 0;
 
     h.socket.emit('interactive', blockAction('perm_more', 'abcde', { container: { message_ts: '100.1' } }));
@@ -531,7 +521,7 @@ describe('停止', () => {
 
   it('stop は保留中の permission request に deny を返し、Slack のメッセージを書き換えてから切断する', async () => {
     const h = await startHarness();
-    await sendPermissionRequest(h.client);
+    await requestPermission(h.client);
     h.web.calls.length = 0;
 
     await h.stop();
@@ -621,10 +611,9 @@ describe('縮退モード', () => {
   it('ツールはすべて error 文を返し、permission_request は warn で無視する', async () => {
     const logger = new Logger({ stderr: false });
     const warnSpy = vi.spyOn(logger, 'warn');
-    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-    const client = new Client({ name: 'test-client', version: '0.0.1' }, { capabilities: {} });
+    const { client, serverTransport, connect } = linkClient();
     const app = await startDegradedApp({ logger, transport: serverTransport });
-    await client.connect(clientTransport);
+    await connect();
 
     const busy = 'error: 別のインスタンスが動いているため、この Slack ブリッジは送信できない';
     const reply = await client.callTool({ name: 'reply', arguments: { chat_id: DM1, text: 'hi' } });
@@ -634,7 +623,7 @@ describe('縮退モード', () => {
     const edit = await client.callTool({ name: 'edit_message', arguments: { chat_id: DM1, message_id: '1', text: 'x' } });
     expect(edit.content).toEqual([{ type: 'text', text: busy }]);
 
-    await sendPermissionRequest(client);
+    await requestPermission(client);
     expect(warnSpy.mock.calls[0]?.[0]).toContain('縮退モード');
 
     await client.close();
@@ -664,12 +653,7 @@ describe('縮退モード', () => {
       const socket = makeSocket();
       socket.failStart = failStarts;
       const { lock, calls } = fakeLock(results);
-      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-      const client = new Client({ name: 'test-client', version: '0.0.1' }, { capabilities: {} });
-      const notifications: Notification[] = [];
-      client.fallbackNotificationHandler = async (n) => {
-        notifications.push(n as Notification);
-      };
+      const { client, notifications, serverTransport, connect } = linkClient();
       let promoted = 0;
       const app = await startDegradedApp({
         logger,
@@ -686,7 +670,7 @@ describe('縮退モード', () => {
           },
         },
       });
-      await client.connect(clientTransport);
+      await connect();
       return { app, client, web, socket, calls, notifications, promoted: () => promoted };
     }
 
@@ -743,8 +727,7 @@ describe('縮退モード', () => {
     it('戻る途中に stop したら、戻り終わるのを待ってから通常のブリッジを止める', async () => {
       const logger = new Logger({ stderr: false });
       const { lock } = fakeLock([true]);
-      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-      const client = new Client({ name: 'test-client', version: '0.0.1' }, { capabilities: {} });
+      const { client, serverTransport, connect } = linkClient();
       let entered = false;
       let finish: () => void = () => undefined;
       const promotedStop = vi.fn(async () => undefined);
@@ -761,7 +744,7 @@ describe('縮退モード', () => {
           },
         },
       });
-      await client.connect(clientTransport);
+      await connect();
       await waitFor(() => entered);
 
       let stopped = false;
@@ -924,7 +907,7 @@ describe('チャンネル（access.channels）', () => {
     await flush();
     h.web.calls.length = 0;
 
-    await sendPermissionRequest(h.client);
+    await requestPermission(h.client);
     const posts = h.web.calls.filter((c) => c.method === 'chat.postMessage');
     expect(posts).toHaveLength(1);
     expect(posts[0]?.args).toMatchObject({ channel: CH, thread_ts: '30.0' });
@@ -954,7 +937,7 @@ describe('チャンネル（access.channels）', () => {
       if (args.channel === CH) throw platformError('not_in_channel');
       return { ok: true, ts: '200.1' };
     };
-    await sendPermissionRequest(h.client);
+    await requestPermission(h.client);
     const posts = h.web.calls.filter((c) => c.method === 'chat.postMessage');
     expect(posts.map((p) => p.args.channel)).toEqual([CH, DM1, DM2]);
   });
@@ -994,7 +977,7 @@ describe('無応答の見張り（replyTimeoutMs）', () => {
   it('待ち時間内に permission_request が来れば警告しない', async () => {
     h.socket.emit('slack_event', dmEnvelope('hello', { ts: '40.1' }));
     await flush();
-    await sendPermissionRequest(h.client);
+    await requestPermission(h.client);
     await wait(120);
 
     expect(warnings()).toHaveLength(0);
@@ -1116,7 +1099,7 @@ describe('ターミナル画面と許可リスト（!screen / 今後も許可 / 
   });
 
   it('今後も許可: 今回は許可し、確認のうえ allow-extra.json に書き込む', async () => {
-    await client_sendBash(h, 'git status');
+    await requestBash(h.client, 'git status');
     h.web.calls.length = 0;
 
     h.socket.emit('interactive', blockAction('perm_always', 'abcde', { container: { message_ts: '100.1' } }));
@@ -1138,7 +1121,7 @@ describe('ターミナル画面と許可リスト（!screen / 今後も許可 / 
 
   it('今後も許可: deny に当たるなら、今回は許可したうえで追加しない旨と当たった deny を知らせる', async () => {
     // 候補は Bash(pwd)。deny の Bash(pwd -P:*) と範囲が重なる
-    await client_sendBash(h, 'pwd');
+    await requestBash(h.client, 'pwd');
     h.web.calls.length = 0;
 
     h.socket.emit('interactive', blockAction('perm_always', 'abcde', { container: { message_ts: '100.1' } }));
@@ -1159,20 +1142,6 @@ describe('ターミナル画面と許可リスト（!screen / 今後も許可 / 
     expect(String(posts()[0]?.args.text)).toContain('1 件');
   });
 });
-
-/** Bash の permission_request を Claude 側から送る */
-async function client_sendBash(h: Harness, command: string, requestId = 'abcde'): Promise<void> {
-  await h.client.notification({
-    method: 'notifications/claude/channel/permission_request',
-    params: {
-      request_id: requestId,
-      tool_name: 'Bash',
-      description: 'run',
-      input_preview: JSON.stringify({ command }),
-    },
-  });
-  await flush();
-}
 
 describe('ホームタブ', () => {
   let h: Harness;
@@ -1412,7 +1381,7 @@ describe('hook の記録（hooks.jsonl）からの知らせ', () => {
   });
 
   it('Slack に中継中の許可があるときは、ターミナル側の許可待ちを重ねて知らせない', async () => {
-    await sendPermissionRequest(h.client);
+    await requestPermission(h.client);
     h.web.calls.length = 0;
     fs.appendFileSync(file, hookLine({ hook_event_name: 'Notification', notification_type: 'permission_prompt' }));
     await drainHooks(h, file);
@@ -1542,7 +1511,7 @@ describe('このセッション中は全部許可', () => {
   });
 
   async function enableByButton(): Promise<void> {
-    await client_sendBash(h, 'git status');
+    await requestBash(h.client, 'git status');
     expect(actionIds(posts()[0])).toContain('perm_session');
     h.socket.emit('interactive', blockAction('perm_session', 'abcde', { container: { message_ts: '100.1', thread_ts: '20.0' } }));
     await flush();
@@ -1552,7 +1521,7 @@ describe('このセッション中は全部許可', () => {
 
   it('無効なボットにはボタンを出さない', async () => {
     await start(false);
-    await client_sendBash(h, 'git status');
+    await requestBash(h.client, 'git status');
     expect(actionIds(posts()[0])).not.toContain('perm_session');
   });
 
@@ -1561,7 +1530,7 @@ describe('このセッション中は全部許可', () => {
     await enableByButton();
     expect(verdicts()).toEqual([{ request_id: 'abcde', behavior: 'allow' }]);
 
-    await client_sendBash(h, 'npm test', 'fghij');
+    await requestBash(h.client, 'npm test', 'fghij');
     expect(verdicts().at(-1)).toEqual({ request_id: 'fghij', behavior: 'allow' });
     expect(posts()).toHaveLength(1);
     expect(String(posts()[0]?.args.text)).toContain('自動許可: Bash');
@@ -1573,7 +1542,7 @@ describe('このセッション中は全部許可', () => {
     await start(true);
     await enableByButton();
 
-    await client_sendBash(h, `echo a\u202Eb${'😀'.repeat(400)}`, 'fghij');
+    await requestBash(h.client, `echo a\u202Eb${'😀'.repeat(400)}`, 'fghij');
     const record = JSON.stringify(posts()[0]?.args.blocks);
     expect(record).toContain('a\\\\u{202E}b');
     expect(record).not.toContain('\u202E');
@@ -1585,11 +1554,12 @@ describe('このセッション中は全部許可', () => {
     await start(true);
     await enableByButton();
 
-    await h.client.notification({
-      method: 'notifications/claude/channel/permission_request',
-      params: { request_id: 'fghij', tool_name: 'Read', description: 'read', input_preview: JSON.stringify({ file_path: 'C:\\dev\\other\\a.ts' }) },
+    await requestPermission(h.client, {
+      request_id: 'fghij',
+      tool_name: 'Read',
+      description: 'read',
+      input_preview: JSON.stringify({ file_path: 'C:\\dev\\other\\a.ts' }),
     });
-    await flush();
     expect(verdicts().at(-1)).toEqual({ request_id: 'fghij', behavior: 'allow' });
     expect(String(posts()[0]?.args.text)).toContain('自動許可: Read');
   });
@@ -1598,7 +1568,7 @@ describe('このセッション中は全部許可', () => {
     await start(true);
     await enableByButton();
 
-    await client_sendBash(h, 'git push origin main', 'fghij');
+    await requestBash(h.client, 'git push origin main', 'fghij');
     expect(verdicts()).toHaveLength(1);
     // git push は許可リストに足せないので、♾ も出さない
     expect(actionIds(posts()[0])).toEqual(['perm_allow', 'perm_deny']);
@@ -1608,14 +1578,14 @@ describe('このセッション中は全部許可', () => {
     await start(true, JSON.stringify({ permissions: { ask: ['Bash(npm publish:*)'] } }));
     await enableByButton();
 
-    await client_sendBash(h, 'cd pkg && npm publish', 'fghij');
+    await requestBash(h.client, 'cd pkg && npm publish', 'fghij');
     expect(verdicts()).toHaveLength(1);
     expect(actionIds(posts()[0])).toContain('perm_allow');
   });
 
   it('managed settings が読めない（JSON でない）ときは、全部許可のボタンを出さない', async () => {
     await start(true, '{ broken');
-    await client_sendBash(h, 'git status');
+    await requestBash(h.client, 'git status');
     expect(actionIds(posts()[0])).not.toContain('perm_session');
   });
 
@@ -1628,7 +1598,7 @@ describe('このセッション中は全部許可', () => {
     expect(String(posts().at(-1)?.args.markdown_text ?? posts().at(-1)?.args.text)).toContain('解除した');
 
     h.web.calls.length = 0;
-    await client_sendBash(h, 'npm test', 'fghij');
+    await requestBash(h.client, 'npm test', 'fghij');
     expect(verdicts()).toHaveLength(1);
     expect(actionIds(posts()[0])).toContain('perm_session');
   });
@@ -1641,7 +1611,7 @@ describe('このセッション中は全部許可', () => {
     await vi.waitFor(() => expect(posts().some((p) => String(p.args.text).includes('全部許可」を解除した'))).toBe(true));
 
     h.web.calls.length = 0;
-    await client_sendBash(h, 'npm test', 'fghij');
+    await requestBash(h.client, 'npm test', 'fghij');
     expect(verdicts()).toHaveLength(1);
     expect(actionIds(posts()[0])).toContain('perm_session');
   });
