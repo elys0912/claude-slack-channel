@@ -51,28 +51,27 @@ interface Harness {
   order: string[];
 }
 
-async function startHarness(
-  access: ParsedAccess = ACCESS,
-  replyTimeoutMs?: number,
-  extra: Pick<
-    BridgeAppOptions,
-    | 'console'
-    | 'allowExtraFile'
-    | 'denyFiles'
-    | 'home'
-    | 'hookInboxFile'
-    | 'hookPollMs'
-    | 'restartFlagFile'
-    | 'killParent'
-    | 'sessionAllowAll'
-    | 'managedSettingsFiles'
-    | 'sessionTag'
-    | 'workDir'
-    | 'keepalive'
-    | 'usageWatch'
-    | 'crashFile'
-  > = {}
-): Promise<Harness> {
+/** startHarness の設定。access の既定は ACCESS。ほかは startBridgeApp にそのまま渡す */
+type HarnessOptions = { access?: ParsedAccess; replyTimeoutMs?: number } & Pick<
+  BridgeAppOptions,
+  | 'console'
+  | 'allowExtraFile'
+  | 'denyFiles'
+  | 'home'
+  | 'hookInboxFile'
+  | 'hookPollMs'
+  | 'restartFlagFile'
+  | 'killParent'
+  | 'sessionAllowAll'
+  | 'managedSettingsFiles'
+  | 'sessionTag'
+  | 'workDir'
+  | 'keepalive'
+  | 'usageWatch'
+  | 'crashFile'
+>;
+
+async function startHarness({ access = ACCESS, replyTimeoutMs, ...extra }: HarnessOptions = {}): Promise<Harness> {
   const { bridge, web, socket, logger } = makeBridge({ access });
   await bridge.init();
   web.calls.length = 0;
@@ -834,7 +833,7 @@ describe('チャンネル（access.channels）', () => {
   let h: Harness;
 
   beforeEach(async () => {
-    h = await startHarness({ ...ACCESS, channels: [CH] });
+    h = await startHarness({ access: { ...ACCESS, channels: [CH] } });
   });
 
   afterEach(async () => {
@@ -950,7 +949,7 @@ describe('無応答の見張り（replyTimeoutMs）', () => {
     h.web.calls.filter((c) => c.method === 'chat.postMessage' && String(c.args.text).includes('応答が無い'));
 
   beforeEach(async () => {
-    h = await startHarness(ACCESS, 60);
+    h = await startHarness({ replyTimeoutMs: 60 });
   });
 
   afterEach(async () => {
@@ -1030,7 +1029,7 @@ describe('起動時の、今の方式では作れない保存済みのルール�
   it('前の方式で足したルールがあれば、件数と一覧を知らせる。allow-extra.json は書き換えない', async () => {
     const saved = JSON.stringify({ allow: ['Bash(git status)', 'Bash(git log:*)', 'WebFetch'] });
     fs.writeFileSync(file, saved);
-    h = await startHarness(ACCESS, undefined, { allowExtraFile: file });
+    h = await startHarness({ allowExtraFile: file });
     await flush();
 
     const notice = texts().find((t) => t.includes('作れないルール'));
@@ -1043,7 +1042,7 @@ describe('起動時の、今の方式では作れない保存済みのルール�
 
   it('作れないルールが無ければ知らせない', async () => {
     fs.writeFileSync(file, JSON.stringify({ allow: ['Bash(git status)'] }));
-    h = await startHarness(ACCESS, undefined, { allowExtraFile: file });
+    h = await startHarness({ allowExtraFile: file });
     await flush();
     expect(texts().some((t) => t.includes('作れないルール'))).toBe(false);
   });
@@ -1065,7 +1064,7 @@ describe('ターミナル画面と許可リスト（!screen / 今後も許可 / 
     const denyFile = path.join(dir, 'settings.json');
     fs.writeFileSync(denyFile, JSON.stringify({ permissions: { deny: ['Bash(pwd -P:*)'] } }));
     sent = [];
-    h = await startHarness(ACCESS, undefined, {
+    h = await startHarness({
       console: { read: async () => CHROME, sendKeys: async (keys) => void sent.push(keys), sendCommand: async () => undefined },
       allowExtraFile: path.join(dir, 'allow-extra.json'),
       denyFiles: [denyFile],
@@ -1154,7 +1153,7 @@ describe('ホームタブ', () => {
 
   beforeEach(async () => {
     // startHarness は起動前に web.calls を空にするので、起動時の publish は残る
-    h = await startHarness(ACCESS, undefined, { home, workDir: 'C:\\dev' });
+    h = await startHarness({ home, workDir: 'C:\\dev' });
   });
 
   afterEach(async () => {
@@ -1211,7 +1210,7 @@ describe('!status / !restart / !compact / !clear / !help', () => {
     screen = PROMPT;
     commands = [];
     killed = 0;
-    h = await startHarness(ACCESS, undefined, {
+    h = await startHarness({
       console: { read: async () => screen, sendKeys: async () => undefined, sendCommand: async (c) => void commands.push(c) },
       restartFlagFile: flag,
       killParent: () => void killed++,
@@ -1349,7 +1348,7 @@ describe('hook の記録（hooks.jsonl）からの知らせ', () => {
   beforeEach(async () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'app-hooks-'));
     file = path.join(dir, 'hooks.jsonl');
-    h = await startHarness(ACCESS, undefined, {
+    h = await startHarness({
       hookInboxFile: file,
       hookPollMs: 20,
       console: { read: async () => '', sendKeys: async () => undefined, sendCommand: async () => undefined },
@@ -1416,7 +1415,7 @@ describe('自分のセッションの hook だけ扱う（session_tag）と、!r
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'app-tag-'));
     file = path.join(dir, 'hooks.jsonl');
     flag = path.join(dir, 'restart.flag');
-    h = await startHarness(ACCESS, undefined, {
+    h = await startHarness({
       hookInboxFile: file,
       hookPollMs: 20,
       sessionTag: 'tag-mine',
@@ -1491,7 +1490,7 @@ describe('このセッション中は全部許可', () => {
     const managedFile = path.join(dir, 'managed-settings.json');
     if (managed !== undefined) fs.writeFileSync(managedFile, managed);
     hooks = path.join(dir, 'hooks.jsonl');
-    h = await startHarness(ACCESS, undefined, {
+    h = await startHarness({
       denyFiles: [settings],
       managedSettingsFiles: () => [managedFile],
       sessionAllowAll,
@@ -1637,7 +1636,7 @@ describe('キャッシュのつなぎ止め', () => {
   });
 
   it('!keepalive で状態を見て、off / on で切り替える。Claude には渡さない', async () => {
-    h = await startHarness(ACCESS, undefined, {
+    h = await startHarness({
       hookInboxFile: path.join(dir, 'hooks.jsonl'),
       keepalive: { enabled: true, afterMs: 55 * 60_000, max: 6, quiet: undefined },
     });
@@ -1687,7 +1686,7 @@ describe('使用量の見張りと、想定外の終了からの起動し直し�
   it('起動時に crash.json があれば知らせて消す', async () => {
     const crashFile = path.join(dir, 'crash.json');
     fs.writeFileSync(crashFile, JSON.stringify({ at: Date.now(), exit_code: 1, count: 1, max: 3, window_min: 10, resumed: true }));
-    h = await startHarness(ACCESS, undefined, { crashFile });
+    h = await startHarness({ crashFile });
 
     expect(texts().some((t) => t.includes('想定外に終了した（exit code 1）'))).toBe(true);
     expect(fs.existsSync(crashFile)).toBe(false);
@@ -1697,7 +1696,7 @@ describe('使用量の見張りと、想定外の終了からの起動し直し�
     const file = path.join(dir, 'usage.json');
     const resetsAt = Math.floor(Date.now() / 1000) + 3600;
     fs.writeFileSync(file, JSON.stringify({ at: Date.now(), five_hour: { used: 85, resets_at: resetsAt } }));
-    h = await startHarness(ACCESS, undefined, { usageWatch: { file, usageWarnPct: [80, 95], contextWarnPct: [70, 90], pollMs: 10 } });
+    h = await startHarness({ usageWatch: { file, usageWarnPct: [80, 95], contextWarnPct: [70, 90], pollMs: 10 } });
 
     await vi.waitFor(() => expect(texts().some((t) => t.startsWith('⚠️ 使用量（5 時間枠）が 85%'))).toBe(true));
     h.socket.emit('slack_event', dmEnvelope('!status', { ts: '50.0' }));
