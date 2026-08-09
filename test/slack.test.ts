@@ -15,6 +15,9 @@ import {
 } from './helpers/fake-slack.js';
 import type { FakeWeb, MadeBridge } from './helpers/fake-slack.js';
 
+/** ゼロ幅スペース。一斉メンションを無効化するとき @ の直後に入る */
+const ZWSP = '\u200b';
+
 /** init 済みの SlackBridge。init が呼んだ API は calls から除く */
 async function initBridge(): Promise<MadeBridge> {
   const made = makeBridge();
@@ -117,14 +120,16 @@ describe('SlackBridge.postText', () => {
     }
   });
 
-  it('分けた結果が空白だけになるチャンクは送らない。本文が空白だけなら何も送らない', async () => {
+  it('分けた結果が空白だけになるチャンクは送らない', async () => {
     // 10998 字 + 改行 5 個は、11000 字目（改行 2 個まで）で切れて、残りが改行 3 個だけになる
     const res = await bridge.postText(DM1, 'a'.repeat(10998) + '\n'.repeat(5));
     expect(res.ts).toHaveLength(1);
     expect(web.calls.filter((c) => c.method === 'chat.postMessage')).toHaveLength(1);
+  });
 
+  it('本文が空白だけなら何も送らない', async () => {
     expect((await bridge.postText(DM1, ' \n\t ')).ts).toEqual([]);
-    expect(web.calls.filter((c) => c.method === 'chat.postMessage')).toHaveLength(1);
+    expect(web.calls.filter((c) => c.method === 'chat.postMessage')).toHaveLength(0);
   });
 
   it('短い本文は 1 通で送る', async () => {
@@ -173,31 +178,37 @@ describe('SlackBridge.postText', () => {
     await bridge.postText(DM1, '<!channel> みんな見て @here');
     const sent = String(web.calls[0]?.args.markdown_text);
     expect(sent).not.toContain('<!channel>');
-    expect(sent).toContain('@​channel');
-    expect(sent).toContain('@​here');
+    expect(sent).toContain(`@${ZWSP}channel`);
+    expect(sent).toContain(`@${ZWSP}here`);
   });
 
-  it('許可されていないチャンネルには送れない', async () => {
-    await expect(bridge.postText('D999ZZZ', 'hi')).rejects.toThrow(/許可されていない/);
-    await expect(bridge.postBlocks('D999ZZZ', 'hi', [])).rejects.toThrow(/許可されていない/);
-    await expect(bridge.updateBlocks('D999ZZZ', '1.0', 'hi', [])).rejects.toThrow(/許可されていない/);
-    await expect(bridge.updateText('D999ZZZ', '1.0', 'hi')).rejects.toThrow(/許可されていない/);
-    await expect(bridge.addReaction('D999ZZZ', '1.0', 'eyes')).rejects.toThrow(/許可されていない/);
+  it.each([
+    ['postText', (b: SlackBridge) => b.postText('D999ZZZ', 'hi')],
+    ['postBlocks', (b: SlackBridge) => b.postBlocks('D999ZZZ', 'hi', [])],
+    ['updateBlocks', (b: SlackBridge) => b.updateBlocks('D999ZZZ', '1.0', 'hi', [])],
+    ['updateText', (b: SlackBridge) => b.updateText('D999ZZZ', '1.0', 'hi')],
+    ['addReaction', (b: SlackBridge) => b.addReaction('D999ZZZ', '1.0', 'eyes')],
+  ])('%s は許可されていないチャンネルには送れない', async (_name, send) => {
+    await expect(send(bridge)).rejects.toThrow(/許可されていない/);
     expect(web.calls.length).toBe(0);
   });
 });
 
 describe('SlackBridge の送信系', () => {
-  it('postBlocks / updateBlocks は text を無害化する', async () => {
+  it('postBlocks は text を無害化し、リンクとメディアを展開させない', async () => {
     const { bridge, web } = await initBridge();
 
     const r = await bridge.postBlocks(DM1, '<!here> perm', [{ type: 'section' }]);
     expect(r.ts).toBe('100.1');
     expect(web.calls[0]?.args).toMatchObject({ unfurl_links: false, unfurl_media: false });
-    expect(String(web.calls[0]?.args.text)).toContain('@​here');
+    expect(String(web.calls[0]?.args.text)).toContain(`@${ZWSP}here`);
+  });
+
+  it('updateBlocks は text を無害化する', async () => {
+    const { bridge, web } = await initBridge();
 
     await bridge.updateBlocks(DM1, '100.1', '<!channel> done', []);
-    expect(String(web.calls[1]?.args.text)).toContain('@​channel');
+    expect(String(web.calls[0]?.args.text)).toContain(`@${ZWSP}channel`);
   });
 
   it('addReaction は失敗しても投げない', async () => {
@@ -556,12 +567,18 @@ describe('toBlockActionInput', () => {
     expect(ctx.messageTs).toBe('77.7');
   });
 
-  it('threadTs は container.thread_ts を優先し、無ければ message.thread_ts を使う', () => {
+  it('threadTs は container.thread_ts を message.thread_ts より優先する', () => {
     expect(
       toBlockActionInput({ container: { message_ts: '55.5', thread_ts: '20.0' }, message: { thread_ts: '30.0' } }).ctx
         .threadTs
     ).toBe('20.0');
+  });
+
+  it('container.thread_ts が無ければ message.thread_ts を threadTs に使う', () => {
     expect(toBlockActionInput({ message: { ts: '77.7', thread_ts: '30.0' } }).ctx.threadTs).toBe('30.0');
+  });
+
+  it('thread_ts がどこにも無ければ threadTs は undefined', () => {
     expect(toBlockActionInput({ container: { message_ts: '55.5' } }).ctx).toEqual({
       userId: undefined,
       channelId: undefined,
@@ -645,27 +662,7 @@ describe('toInboundMessage の現状固定', () => {
 });
 
 describe('SlackBridge の受信（現状固定）', () => {
-  it('container.message_ts が無ければ message.ts を messageTs に使う', async () => {
-    const { socket, ctxs } = await startWithCapture();
-    socket.emit('interactive', blockActionEnvelope({ message: { ts: '77.7' }, actions: [{ action_id: 'perm_deny', value: 'abcde' }] }));
-    await flush();
-    expect(ctxs[0]?.messageTs).toBe('77.7');
-  });
-
-  it('container.message_ts があれば message.ts より優先する', async () => {
-    const { socket, ctxs } = await startWithCapture();
-    socket.emit(
-      'interactive',
-      blockActionEnvelope({
-        container: { message_ts: '55.5' },
-        message: { ts: '77.7' },
-        actions: [{ action_id: 'perm_deny', value: 'abcde' }],
-      })
-    );
-    await flush();
-    expect(ctxs[0]?.messageTs).toBe('55.5');
-  });
-
+  // messageTs・threadTs の取り出し方は toBlockActionInput の単体で確かめる。ここでは onAction に渡る結果と ctx だけを見る
   it('actions が配列でなければ action 無しとして invalid_request_id になる', async () => {
     const { socket, actions, ctxs } = await startWithCapture();
     socket.emit('interactive', blockActionEnvelope({ actions: { action_id: 'perm_allow', value: 'abcde' } }));
@@ -769,7 +766,7 @@ describe('SlackBridge の送信（現状固定）', () => {
     await bridge.updateText(DM1, '1.0', '<b> & <!here>');
     expect(web.calls[0]?.method).toBe('chat.update');
     expect(web.calls[0]?.args.blocks).toEqual([]);
-    expect(web.calls[0]?.args.text).toBe('&lt;b&gt; &amp; @​here');
+    expect(web.calls[0]?.args.text).toBe(`&lt;b&gt; &amp; @${ZWSP}here`);
   });
 
   it('postToAll は失敗したチャンネルを結果から除いて続行する', async () => {
