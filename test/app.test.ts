@@ -173,6 +173,9 @@ function useHarness(
   return slot;
 }
 
+/** 本文の末尾の署名に付く、代理投稿したアプリのボットのユーザー ID（このブリッジの BOT とは別のアプリ） */
+const OTHER_APP_BOT = 'U0BF61P77U1';
+
 /** ツールの結果の 1 つ目の文 */
 function toolText(res: Awaited<ReturnType<Client['callTool']>>): string {
   const first = (res.content as { type: string; text?: string }[])[0];
@@ -192,6 +195,15 @@ function blockAction(actionId: string, value: string, overrides: Record<string, 
 /** Claude 側から permission_request を送り、ブリッジが処理し終えるのを待つ。省略した項目は Bash の ls */
 async function requestPermission(client: Client, params: Partial<PermissionRequestParams> = {}): Promise<void> {
   await notifyPermissionRequest(client, params);
+  await flush();
+}
+
+/**
+ * 受信の後に続く処理まで待つ。ボタンやコマンドの処理は、受信の列の中でさらに非同期の処理
+ * （ファイルの書き込み・コンソールへの送信・投稿）を待つ。flush 1 回では、その後の段が終わらないことがある
+ */
+async function settle(): Promise<void> {
+  await flush();
   await flush();
 }
 
@@ -653,6 +665,9 @@ describe('停止', () => {
 });
 
 describe('縮退モード', () => {
+  /** 縮退モードでツールが返す error 文 */
+  const BUSY_REPLY = 'error: 別のインスタンスが動いているため、この Slack ブリッジは送信できない';
+
   it('ツールはすべて error 文を返し、permission_request は warn で無視する', async () => {
     const logger = new Logger({ stderr: false });
     const warnSpy = vi.spyOn(logger, 'warn');
@@ -660,13 +675,12 @@ describe('縮退モード', () => {
     const app = await startDegradedApp({ logger, transport: serverTransport });
     await connect();
 
-    const busy = 'error: 別のインスタンスが動いているため、この Slack ブリッジは送信できない';
     const reply = await client.callTool({ name: 'reply', arguments: { chat_id: DM1, text: 'hi' } });
-    expect(reply.content).toEqual([{ type: 'text', text: busy }]);
+    expect(reply.content).toEqual([{ type: 'text', text: BUSY_REPLY }]);
     const react = await client.callTool({ name: 'react', arguments: { chat_id: DM1, message_id: '1', emoji: 'eyes' } });
-    expect(react.content).toEqual([{ type: 'text', text: busy }]);
+    expect(react.content).toEqual([{ type: 'text', text: BUSY_REPLY }]);
     const edit = await client.callTool({ name: 'edit_message', arguments: { chat_id: DM1, message_id: '1', text: 'x' } });
-    expect(edit.content).toEqual([{ type: 'text', text: busy }]);
+    expect(edit.content).toEqual([{ type: 'text', text: BUSY_REPLY }]);
 
     await requestPermission(client);
     expect(warnSpy.mock.calls[0]?.[0]).toContain('縮退モード');
@@ -676,8 +690,6 @@ describe('縮退モード', () => {
   });
 
   describe('ロックの取り直し（relock）', () => {
-    const busy = 'error: 別のインスタンスが動いているため、この Slack ブリッジは送信できない';
-
     /** tryAcquire が results の順に答える偽のロック（尽きたら最後の値）。calls.free を true にすると、それ以降は取れる */
     function fakeLock(results: boolean[]) {
       const calls = { acquire: 0, release: 0, free: false };
@@ -719,16 +731,16 @@ describe('縮退モード', () => {
       return { app, client, web, socket, calls, notifications, promoted: () => promoted };
     }
 
+    /** cond が true になるまで 5ms 間隔で待つ。約 1 秒で打ち切る */
     async function waitFor(cond: () => boolean): Promise<void> {
-      for (let i = 0; i < 200 && !cond(); i += 1) await new Promise((r) => setTimeout(r, 5));
-      expect(cond()).toBe(true);
+      await vi.waitFor(() => expect(cond()).toBe(true), { timeout: 1000, interval: 5 });
     }
 
     it('取れるまでは縮退のまま。取れたら同じ MCP の接続のまま通常のブリッジに戻り、Slack には投稿しない', async () => {
       const d = await startDegraded([false]);
       await waitFor(() => d.calls.acquire >= 2);
       const before = await d.client.callTool({ name: 'reply', arguments: { chat_id: DM1, text: 'hi' } });
-      expect(toolText(before)).toBe(busy);
+      expect(toolText(before)).toBe(BUSY_REPLY);
 
       d.calls.free = true;
       await waitFor(() => d.promoted() === 1);
@@ -763,7 +775,7 @@ describe('縮退モード', () => {
       const d = await startDegraded([true, false], ['auth']);
       await waitFor(() => d.calls.acquire >= 2);
       const reply = await d.client.callTool({ name: 'reply', arguments: { chat_id: DM1, text: 'hi' } });
-      expect(toolText(reply)).toBe(busy);
+      expect(toolText(reply)).toBe(BUSY_REPLY);
       expect(d.promoted()).toBe(0);
       await d.app.stop();
       await d.client.close();
@@ -1021,15 +1033,15 @@ describe('parseCommand', () => {
   });
 
   it('アプリの署名（太字 + メンション）が末尾にあっても認める', () => {
-    expect(parseCommand('!status *使用して送信されました* <@U0BF61P77U1>')).toBe('status');
-    expect(parseCommand('!compact\n*Sent using* <@U0BF61P77U1|Claude>')).toBe('compact');
+    expect(parseCommand(`!status *使用して送信されました* <@${OTHER_APP_BOT}>`)).toBe('status');
+    expect(parseCommand(`!compact\n*Sent using* <@${OTHER_APP_BOT}|Claude>`)).toBe('compact');
   });
 
   it('コマンドの後ろに普通の文があればコマンドにしない', () => {
     expect(parseCommand('!restart してから続けて')).toBeUndefined();
     expect(parseCommand('!restart\nそのあと *これ* を見て')).toBeUndefined();
-    expect(parseCommand('!status <@U0BF61P77U1>')).toBeUndefined();
-    expect(parseCommand('status *a* <@U0BF61P77U1>')).toBeUndefined();
+    expect(parseCommand(`!status <@${OTHER_APP_BOT}>`)).toBeUndefined();
+    expect(parseCommand(`status *a* <@${OTHER_APP_BOT}>`)).toBeUndefined();
   });
 });
 
@@ -1099,8 +1111,7 @@ describe('ターミナル画面と許可リスト（!screen / 今後も許可 / 
       'interactive',
       blockAction(pick?.action_id ?? '', pick?.value ?? '', { container: { message_ts: '100.1', thread_ts: '50.1' } })
     );
-    await flush();
-    await flush();
+    await settle();
     expect(sent).toEqual([['Down', 'Enter']]);
   });
 
@@ -1109,8 +1120,7 @@ describe('ターミナル画面と許可リスト（!screen / 今後も許可 / 
     h.web.calls.length = 0;
 
     h.socket.emit('interactive', blockAction('perm_always', 'abcde', { container: { message_ts: '100.1' } }));
-    await flush();
-    await flush();
+    await settle();
 
     expect(h.verdicts()[0]).toEqual({ request_id: 'abcde', behavior: 'allow' });
     const proposal = h.posts().find((p) => String(p.args.text).includes('Bash(git status)'));
@@ -1119,8 +1129,7 @@ describe('ターミナル画面と許可リスト（!screen / 今後も許可 / 
       ?.elements?.find((e) => e.action_id === 'rule_add');
 
     h.socket.emit('interactive', blockAction('rule_add', add?.value ?? '', { container: { message_ts: '100.2' } }));
-    await flush();
-    await flush();
+    await settle();
     expect(JSON.parse(fs.readFileSync(path.join(harness.dir, 'allow-extra.json'), 'utf8'))).toEqual({ allow: ['Bash(git status)'] });
   });
 
@@ -1130,8 +1139,7 @@ describe('ターミナル画面と許可リスト（!screen / 今後も許可 / 
     h.web.calls.length = 0;
 
     h.socket.emit('interactive', blockAction('perm_always', 'abcde', { container: { message_ts: '100.1' } }));
-    await flush();
-    await flush();
+    await settle();
 
     expect(h.verdicts()[0]).toEqual({ request_id: 'abcde', behavior: 'allow' });
     const notice = h.posts().find((p) => String(p.args.markdown_text).includes('deny に当たる'));
@@ -1235,7 +1243,7 @@ describe('!status / !restart / !compact / !clear / !help', () => {
   });
 
   it('アプリが代理投稿した !status（末尾に署名付き）もコマンドとして扱う', async () => {
-    h.socket.emit('slack_event', dmEnvelope('!status *使用して送信されました* <@U0BF61P77U1>', { ts: '80.2' }));
+    h.socket.emit('slack_event', dmEnvelope(`!status *使用して送信されました* <@${OTHER_APP_BOT}>`, { ts: '80.2' }));
     await flush();
 
     expect(h.delivered()).toEqual([]);
@@ -1244,8 +1252,7 @@ describe('!status / !restart / !compact / !clear / !help', () => {
 
   it('!restart は restart.flag を置いて /exit を送る', async () => {
     h.socket.emit('slack_event', dmEnvelope('!restart', { ts: '81.1' }));
-    await flush();
-    await flush();
+    await settle();
 
     expect(fs.existsSync(flag)).toBe(true);
     expect(commands).toEqual(['exit']);
@@ -1256,8 +1263,7 @@ describe('!status / !restart / !compact / !clear / !help', () => {
   it('入力待ちでなければ /exit を送らず、置いた印を消す（残すと、後で手元で終了したときに起動し直す）', async () => {
     screen = 'Thinking…\n⠋ Working';
     h.socket.emit('slack_event', dmEnvelope('!restart', { ts: '82.1' }));
-    await flush();
-    await flush();
+    await settle();
 
     expect(commands).toEqual([]);
     expect(h.postTexts().join('\n')).toContain('入力待ちでない');
@@ -1266,8 +1272,7 @@ describe('!status / !restart / !compact / !clear / !help', () => {
 
   it('!restart force は印を置いて claude.exe を止める', async () => {
     h.socket.emit('slack_event', dmEnvelope('!restart  force', { ts: '83.1' }));
-    await flush();
-    await flush();
+    await settle();
 
     expect(fs.existsSync(flag)).toBe(true);
     expect(killed).toBe(1);
@@ -1276,8 +1281,7 @@ describe('!status / !restart / !compact / !clear / !help', () => {
 
   it('!compact は /compact を送り、印は置かない', async () => {
     h.socket.emit('slack_event', dmEnvelope('!compact', { ts: '84.1' }));
-    await flush();
-    await flush();
+    await settle();
 
     expect(commands).toEqual(['compact']);
     expect(fs.existsSync(flag)).toBe(false);
@@ -1285,8 +1289,7 @@ describe('!status / !restart / !compact / !clear / !help', () => {
 
   it('!clear は /clear を送り、印は置かない', async () => {
     h.socket.emit('slack_event', dmEnvelope('!clear', { ts: '85.1' }));
-    await flush();
-    await flush();
+    await settle();
 
     expect(h.delivered()).toEqual([]);
     expect(commands).toEqual(['clear']);
@@ -1297,8 +1300,7 @@ describe('!status / !restart / !compact / !clear / !help', () => {
   it('入力待ちでなければ /clear を送らない', async () => {
     screen = 'Thinking…\n⠋ Working';
     h.socket.emit('slack_event', dmEnvelope('!clear', { ts: '85.2' }));
-    await flush();
-    await flush();
+    await settle();
 
     expect(commands).toEqual([]);
     expect(h.postTexts().join('\n')).toContain('入力待ちでない');
@@ -1441,16 +1443,14 @@ describe('自分のセッションの hook だけ扱う（session_tag）と、!r
     await drainHooks(h, file, { session_tag: 'tag-mine' });
 
     h.socket.emit('slack_event', dmEnvelope('!restart', { ts: '90.1' }));
-    await flush();
-    await flush();
+    await settle();
     const written = JSON.parse(fs.readFileSync(flag, 'utf8')) as { sessionId?: string };
     expect(written.sessionId).toBe(MINE);
   });
 
   it('session_id がまだ分からなければ、印に id を書かない（start.ps1 は新しい会話で起動する）', async () => {
     h.socket.emit('slack_event', dmEnvelope('!restart', { ts: '91.1' }));
-    await flush();
-    await flush();
+    await settle();
     const written = JSON.parse(fs.readFileSync(flag, 'utf8')) as Record<string, unknown>;
     expect(written).not.toHaveProperty('sessionId');
   });
@@ -1490,8 +1490,7 @@ describe('このセッション中は全部許可', () => {
     await requestBash(h.client, 'git status');
     expect(actionIds(h.posts()[0])).toContain('perm_session');
     h.socket.emit('interactive', blockAction('perm_session', 'abcde', { container: { message_ts: '100.1', thread_ts: '20.0' } }));
-    await flush();
-    await flush();
+    await settle();
     h.web.calls.length = 0;
   }
 
