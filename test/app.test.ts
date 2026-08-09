@@ -267,21 +267,32 @@ describe('Slack → MCP', () => {
     expect(h.web.calls).toEqual([]);
   });
 
-  it('permission_request が全 DM に配信され、"yes ID" で verdict が返り、リアクションと書き換えが行われる', async () => {
+  /** permission_request を全 DM に配信させてから、DM1 で "yes ABCDE" と答える。配信の投稿は calls から除く */
+  async function answerYes(): Promise<void> {
+    await requestPermission(h.client);
+    h.web.calls.length = 0;
+    h.socket.emit('slack_event', dmEnvelope('yes ABCDE'));
+    await flush();
+  }
+
+  it('permission_request はボタン付きで全 DM に配信される', async () => {
     await requestPermission(h.client);
 
     const posts = h.posts();
     expect(posts.map((p) => p.args.channel)).toEqual([DM1, DM2]);
     expect(posts[0]?.args.blocks).toBeDefined();
     expect(String(posts[0]?.args.text)).toContain('Bash');
-    h.web.calls.length = 0;
+  });
 
-    h.socket.emit('slack_event', dmEnvelope('yes ABCDE'));
-    await flush();
+  it('"yes ID" は allow の verdict になり、通常のメッセージとしては届かない', async () => {
+    await answerYes();
 
     expect(h.verdicts()[0]).toEqual({ request_id: 'abcde', behavior: 'allow' });
-    // 通常のメッセージとしては届かない
     expect(h.delivered()).toEqual([]);
+  });
+
+  it('"yes ID" の後は、全 DM の確認を書き換えてから、答えた DM に許可のリアクションを付ける', async () => {
+    await answerYes();
 
     const updates = h.web.calls.filter((c) => c.method === 'chat.update');
     expect(updates.map((u) => [u.args.channel, u.args.ts])).toEqual([
@@ -558,7 +569,8 @@ describe('停止', () => {
     });
   }
 
-  it('stop は lock.release → relay.denyAll → bridge.stop → server.close の順で、2 回呼んでも 1 回だけ片付ける', async () => {
+  /** 片付けの各段の呼び出しを記録するハーネスを起動する。stopOrder() は stop が呼んだ順を返す */
+  async function startRecordingStop(): Promise<{ h: Harness; stopOrder: () => string[] }> {
     const order: string[] = [];
     recordServerClose(order);
     const h = await startHarness();
@@ -570,9 +582,20 @@ describe('停止', () => {
     await h.client.close();
     order.length = 0;
     h.order.length = 0;
+    return { h, stopOrder: () => [...h.order, ...order] };
+  }
+
+  it('stop は lock.release → relay.denyAll → bridge.stop → server.close の順で片付ける', async () => {
+    const { h, stopOrder } = await startRecordingStop();
+    await h.stop();
+    expect(stopOrder()).toEqual(['lock.release', 'relay.denyAll', 'bridge.stop', 'server.close']);
+  });
+
+  it('stop を 2 回呼んでも 1 回だけ片付ける', async () => {
+    const { h, stopOrder } = await startRecordingStop();
     await h.stop();
     await h.stop();
-    expect([...h.order, ...order]).toEqual(['lock.release', 'relay.denyAll', 'bridge.stop', 'server.close']);
+    expect(stopOrder()).toEqual(['lock.release', 'relay.denyAll', 'bridge.stop', 'server.close']);
     expect(h.socket.disconnected).toBe(1);
     expect(h.lockReleased).toBe(1);
   });
@@ -668,20 +691,31 @@ describe('縮退モード', () => {
   /** 縮退モードでツールが返す error 文 */
   const BUSY_REPLY = 'error: 別のインスタンスが動いているため、この Slack ブリッジは送信できない';
 
-  it('ツールはすべて error 文を返し、permission_request は warn で無視する', async () => {
+  /** 縮退モード（ロックの取り直し無し）で起動し、MCP の client をつなぐ */
+  async function startDegradedClient() {
     const logger = new Logger({ stderr: false });
     const warnSpy = vi.spyOn(logger, 'warn');
     const { client, serverTransport, connect } = linkClient();
     const app = await startDegradedApp({ logger, transport: serverTransport });
     await connect();
+    return { app, client, warnSpy };
+  }
 
-    const reply = await client.callTool({ name: 'reply', arguments: { chat_id: DM1, text: 'hi' } });
-    expect(reply.content).toEqual([{ type: 'text', text: BUSY_REPLY }]);
-    const react = await client.callTool({ name: 'react', arguments: { chat_id: DM1, message_id: '1', emoji: 'eyes' } });
-    expect(react.content).toEqual([{ type: 'text', text: BUSY_REPLY }]);
-    const edit = await client.callTool({ name: 'edit_message', arguments: { chat_id: DM1, message_id: '1', text: 'x' } });
-    expect(edit.content).toEqual([{ type: 'text', text: BUSY_REPLY }]);
+  it.each([
+    ['reply', { chat_id: DM1, text: 'hi' }],
+    ['react', { chat_id: DM1, message_id: '1', emoji: 'eyes' }],
+    ['edit_message', { chat_id: DM1, message_id: '1', text: 'x' }],
+  ])('ツール %s は error 文を返す', async (name, args) => {
+    const { app, client } = await startDegradedClient();
+    const res = await client.callTool({ name, arguments: args });
+    expect(res.content).toEqual([{ type: 'text', text: BUSY_REPLY }]);
 
+    await client.close();
+    await app.stop();
+  });
+
+  it('permission_request は warn で無視する', async () => {
+    const { app, client, warnSpy } = await startDegradedClient();
     await requestPermission(client);
     expect(warnSpy.mock.calls[0]?.[0]).toContain('縮退モード');
 
@@ -835,7 +869,8 @@ describe('縮退モード', () => {
 });
 
 describe('createToolHandlers 単体', () => {
-  it('bridge の例外を error 文にして返し、logger.error に残す', async () => {
+  /** postText は Error を、updateText は Error でない値を投げ、addReactionOrThrow は成功する bridge で作る */
+  function handlersWithFailingBridge() {
     const logger = new Logger({ stderr: false });
     const errorSpy = vi.spyOn(logger, 'error');
     const handlers = createToolHandlers(
@@ -850,10 +885,25 @@ describe('createToolHandlers 単体', () => {
       },
       logger
     );
+    return { handlers, errorSpy };
+  }
+
+  it('bridge が Error を投げたら、message を error 文にして返し、logger.error に残す', async () => {
+    const { handlers, errorSpy } = handlersWithFailingBridge();
     expect(await handlers.onReply({ chat_id: DM1, text: 'x' })).toBe('error: boom');
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('bridge が Error でない値を投げても、文字列にして error 文で返し、logger.error に残す', async () => {
+    const { handlers, errorSpy } = handlersWithFailingBridge();
     expect(await handlers.onEdit({ chat_id: DM1, message_id: '1', text: 'x' })).toBe('error: not-an-error');
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('bridge が成功すれば結果を返し、logger.error には残さない', async () => {
+    const { handlers, errorSpy } = handlersWithFailingBridge();
     expect(await handlers.onReact({ chat_id: DM1, message_id: '1', emoji: ':+1:' })).toBe('reacted');
-    expect(errorSpy).toHaveBeenCalledTimes(2);
+    expect(errorSpy).not.toHaveBeenCalled();
   });
 
   it('onActivity（無応答の見張りを解く）は返事にあたる reply / react / edit_message だけで呼び、download_file では呼ばない', async () => {
@@ -1022,13 +1072,18 @@ describe('無応答の見張り（replyTimeoutMs）', () => {
 });
 
 describe('parseCommand', () => {
-  it('コマンドだけの本文を正規化して返す', () => {
-    expect(parseCommand('!status')).toBe('status');
-    expect(parseCommand('  !RESTART   FORCE ')).toBe('restart force');
-    expect(parseCommand('!clear')).toBe('clear');
-    expect(parseCommand('!Help')).toBe('help');
-    expect(parseCommand('!keepalive')).toBe('keepalive');
-    expect(parseCommand('!keepalive  OFF')).toBe('keepalive off');
+  it.each([
+    ['!status', 'status'],
+    ['  !RESTART   FORCE ', 'restart force'],
+    ['!clear', 'clear'],
+    ['!Help', 'help'],
+    ['!keepalive', 'keepalive'],
+    ['!keepalive  OFF', 'keepalive off'],
+  ])('コマンドだけの本文 %j を正規化して %j を返す', (text, expected) => {
+    expect(parseCommand(text)).toBe(expected);
+  });
+
+  it('!keepalive の後ろが知らない語ならコマンドにしない', () => {
     expect(parseCommand('!keepalive maybe')).toBeUndefined();
   });
 
@@ -1612,6 +1667,9 @@ describe('キャッシュのつなぎ止め', () => {
     expect(posted[1]).toContain('無効');
     expect(posted[2]).toContain('有効');
     expect(h.notifications).toEqual([]);
+  });
+
+  it('つなぎ止めで送る文は、Claude に ok とだけ書くよう頼む', () => {
     expect(KEEPALIVE_TEXT).toContain('ok とだけ書く');
   });
 
