@@ -329,7 +329,7 @@ describe('loadHomeCustom', () => {
   });
 
   it('BOM 付きでも読める', () => {
-    fs.writeFileSync(path.join(dir, 'home.json'), '﻿' + JSON.stringify({ greetings: ['やっほー'] }));
+    fs.writeFileSync(path.join(dir, 'home.json'), '\uFEFF' + JSON.stringify({ greetings: ['やっほー'] }));
     expect(loadHomeCustom(dir)).toEqual({ greetings: ['やっほー'] });
   });
 

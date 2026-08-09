@@ -12,6 +12,7 @@ import {
   type PermissionRequest
 } from '../src/permission.js';
 import type { ParsedAccess } from '../src/config.js';
+import { actionIdsOf, actionsOf, blockTypesOf, blockViewsOf, previewTextOf } from './helpers/block-kit.js';
 
 const access: ParsedAccess = { teamId: 'T123', allowFrom: ['U123'] };
 
@@ -95,40 +96,28 @@ describe('buildPermissionBlocks', () => {
     const { text, blocks, truncated } = buildPermissionBlocks(sampleReq);
     expect(truncated).toBe(false);
     expect(text).toContain('Write');
-    const header = blocks[0] as { type: string; text: { type: string; text: string } };
-    expect(header.type).toBe('header');
-    expect(header.text.type).toBe('plain_text');
-    const section = blocks[1] as { type: string; text: { type: string } };
-    expect(section.type).toBe('section');
-    expect(section.text.type).toBe('plain_text');
+    const [header, section] = blockViewsOf(blocks);
+    expect(header?.type).toBe('header');
+    expect(header?.text?.type).toBe('plain_text');
+    expect(section?.type).toBe('section');
+    expect(section?.text?.type).toBe('plain_text');
   });
 
   it('truncates a long input_preview and sets truncated=true, adding a See more button', () => {
     const longReq: PermissionRequest = { ...sampleReq, input_preview: 'x'.repeat(5000) };
     const { blocks, truncated } = buildPermissionBlocks(longReq, { previewLimit: 100 });
     expect(truncated).toBe(true);
-    const preformatted = blocks.find(
-      (b): b is { type: string; elements: unknown[] } => (b as { type: string }).type === 'rich_text'
-    ) as { elements: { elements: { text: string }[] }[] };
-    const previewText = preformatted.elements[0]?.elements[0]?.text ?? '';
+    const previewText = previewTextOf(blocks);
     expect(previewText.length).toBeLessThanOrEqual(100);
     expect(previewText).toContain('文字省略');
 
-    const actions = blocks.find((b) => (b as { type: string }).type === 'actions') as { elements: { action_id: string }[] };
-    expect(actions.elements.some((e) => e.action_id === 'perm_more')).toBe(true);
+    expect(actionIdsOf(blocks)).toContain('perm_more');
   });
-
-  function previewOf(blocks: unknown[]): string {
-    const rich = blocks.find((b) => (b as { type: string }).type === 'rich_text') as {
-      elements: { elements: { text: string }[] }[];
-    };
-    return rich.elements[0]?.elements[0]?.text ?? '';
-  }
 
   it('長い input_preview は先頭と末尾を残し、省略した文字数を間に入れる（既定で先頭約 2000 + 末尾約 600）', () => {
     const preview = 'H'.repeat(3000) + 'M'.repeat(3000) + 'T'.repeat(3000);
     const { blocks } = buildPermissionBlocks({ ...sampleReq, input_preview: preview });
-    const text = previewOf(blocks);
+    const text = previewTextOf(blocks);
     expect(text.length).toBeLessThanOrEqual(2800);
     const m = /^(H+)\n…（途中 (\d+) 文字省略）…\n(T+)$/.exec(text);
     expect(m).not.toBeNull();
@@ -140,12 +129,11 @@ describe('buildPermissionBlocks', () => {
 
   it('input_preview を省略したときだけ警告行（context）を preview の直後に足す', () => {
     const long = buildPermissionBlocks({ ...sampleReq, input_preview: 'x'.repeat(5000) });
-    const types = long.blocks.map((b) => (b as { type: string }).type);
-    expect(types).toEqual(['header', 'section', 'section', 'rich_text', 'context', 'context', 'actions']);
+    expect(blockTypesOf(long.blocks)).toEqual(['header', 'section', 'section', 'rich_text', 'context', 'context', 'actions']);
     expect(JSON.stringify(long.blocks[4])).toContain('See more');
 
     const short = buildPermissionBlocks(sampleReq);
-    expect(short.blocks.map((b) => (b as { type: string }).type)).toEqual([
+    expect(blockTypesOf(short.blocks)).toEqual([
       'header',
       'section',
       'section',
@@ -156,17 +144,17 @@ describe('buildPermissionBlocks', () => {
   });
 
   it('双方向制御文字・ゼロ幅文字・BOM を \\u{XXXX} の形で見えるようにする', () => {
-    const invisible = '‪‫‬‭‮⁦⁧⁨⁩​‌‍﻿';
+    const invisible = '\u202A\u202B\u202C\u202D\u202E\u2066\u2067\u2068\u2069\u200B\u200C\u200D\uFEFF';
     const { blocks } = buildPermissionBlocks({
       ...sampleReq,
-      description: `desc‮gnp.exe`,
+      description: 'desc\u202Egnp.exe',
       input_preview: `rm${invisible}x`
     });
-    expect(previewOf(blocks)).toBe(
+    expect(previewTextOf(blocks)).toBe(
       'rm\\u{202A}\\u{202B}\\u{202C}\\u{202D}\\u{202E}\\u{2066}\\u{2067}\\u{2068}\\u{2069}\\u{200B}\\u{200C}\\u{200D}\\u{FEFF}x'
     );
     expect(JSON.stringify(blocks)).not.toMatch(/[\u202A-\u202E\u2066-\u2069\u200B-\u200D\uFEFF]/);
-    expect((blocks[2] as { text: { text: string } }).text.text).toBe('desc\\u{202E}gnp.exe');
+    expect(blockViewsOf(blocks)[2]?.text?.text).toBe('desc\\u{202E}gnp.exe');
   });
 
   it('向きの印・ソフトハイフン・埋め文字・C0/C1 制御文字も見えるようにし、タブと改行はそのまま残す', () => {
@@ -174,7 +162,7 @@ describe('buildPermissionBlocks', () => {
       ...sampleReq,
       input_preview: 'a\u200Eb\u00ADc\u2060d\u3164e\u001Bf\u0000g\u009Fh\tI\nj\rk'
     });
-    expect(previewOf(blocks)).toBe('a\\u{200E}b\\u{AD}c\\u{2060}d\\u{3164}e\\u{1B}f\\u{0}g\\u{9F}h\tI\nj\rk');
+    expect(previewTextOf(blocks)).toBe('a\\u{200E}b\\u{AD}c\\u{2060}d\\u{3164}e\\u{1B}f\\u{0}g\\u{9F}h\tI\nj\rk');
   });
 
   it('点字の空白・行と段落の区切り・異体字セレクタ・タグ文字（補助面）も見えるようにする', () => {
@@ -182,15 +170,15 @@ describe('buildPermissionBlocks', () => {
       ...sampleReq,
       input_preview: 'a\u2800b\u2028c\u2029d\uFE0Fe\u{E0041}f\u{E0100}g\u{1D173}h\uFFF9i',
     });
-    expect(previewOf(blocks)).toBe(
+    expect(previewTextOf(blocks)).toBe(
       'a\\u{2800}b\\u{2028}c\\u{2029}d\\u{FE0F}e\\u{E0041}f\\u{E0100}g\\u{1D173}h\\u{FFF9}i'
     );
   });
 
   it('切り詰めの境目でサロゲートペアや可視化したエスケープを割らない', () => {
-    const preview = ('😀‮').repeat(2000);
+    const preview = '😀\u202E'.repeat(2000);
     const { blocks } = buildPermissionBlocks({ ...sampleReq, input_preview: preview }, { previewLimit: 101 });
-    const text = previewOf(blocks);
+    const text = previewTextOf(blocks);
     expect(text.length).toBeLessThanOrEqual(101);
     const [head = '', tail = ''] = text.split(/\n…（途中 \d+ 文字省略）…\n/);
     expect(head).toMatch(/^(😀\\u\{202E\}|😀)*$/);
@@ -200,15 +188,10 @@ describe('buildPermissionBlocks', () => {
 
   it('does not add a See more button when nothing is truncated', () => {
     const { blocks } = buildPermissionBlocks(sampleReq);
-    const actions = blocks.find((b) => (b as { type: string }).type === 'actions') as { elements: { action_id: string }[] };
-    expect(actions.elements.some((e) => e.action_id === 'perm_more')).toBe(false);
+    expect(actionIdsOf(blocks)).not.toContain('perm_more');
   });
 
   it('♾ 今後も許可のボタンは、alwaysButton が true のときだけ付ける（既定は付けない）', () => {
-    const actionIdsOf = (blocks: unknown[]): string[] =>
-      (blocks.find((b) => (b as { type: string }).type === 'actions') as { elements: { action_id: string }[] }).elements.map(
-        (e) => e.action_id
-      );
     expect(actionIdsOf(buildPermissionBlocks(sampleReq).blocks)).not.toContain('perm_always');
     expect(actionIdsOf(buildPermissionBlocks(sampleReq, { showSessionButton: false, showAlwaysButton: true }).blocks)).toContain('perm_always');
     expect(actionIdsOf(buildPermissionBlocks(sampleReq, { showSessionButton: false, showAlwaysButton: false }).blocks)).not.toContain('perm_always');
@@ -216,11 +199,9 @@ describe('buildPermissionBlocks', () => {
 
   it('sets action_id and value correctly on Allow/Deny buttons', () => {
     const { blocks } = buildPermissionBlocks(sampleReq);
-    const actions = blocks.find((b) => (b as { type: string }).type === 'actions') as {
-      elements: { action_id: string; value: string; style?: string }[];
-    };
-    const allow = actions.elements.find((e) => e.action_id === 'perm_allow');
-    const deny = actions.elements.find((e) => e.action_id === 'perm_deny');
+    const buttons = actionsOf(blocks);
+    const allow = buttons.find((e) => e.action_id === 'perm_allow');
+    const deny = buttons.find((e) => e.action_id === 'perm_deny');
     expect(allow?.value).toBe('abcde');
     expect(allow?.style).toBe('primary');
     expect(deny?.value).toBe('abcde');
@@ -235,8 +216,7 @@ describe('buildPermissionBlocks', () => {
       input_preview: 'P'.repeat(4000)
     };
     const { blocks } = buildPermissionBlocks(hugeReq);
-    for (const b of blocks) {
-      const block = b as { type: string; text?: { type: string; text: string } };
+    for (const block of blockViewsOf(blocks)) {
       if (block.type === 'section' && block.text?.type === 'plain_text') {
         expect(block.text.text.length).toBeLessThanOrEqual(3000);
       }
@@ -247,10 +227,9 @@ describe('buildPermissionBlocks', () => {
 describe('空の項目', () => {
   function texts(blocks: unknown[]): string[] {
     const out: string[] = [];
-    for (const b of blocks) {
-      const block = b as { type: string; text?: { text: string }; elements?: { elements?: { text: string }[] }[] };
+    for (const block of blockViewsOf(blocks)) {
       if (block.type === 'section' && block.text) out.push(block.text.text);
-      if (block.type === 'rich_text') out.push(block.elements?.[0]?.elements?.[0]?.text ?? '');
+      if (block.type === 'rich_text') out.push(previewTextOf([block]));
     }
     return out;
   }
@@ -319,6 +298,10 @@ describe('PendingPermissions.remove', () => {
     now = 5000;
     expect(pending.remove('abcde')).toEqual(sampleReq);
     expect(pending.remove('abcde')).toBeUndefined();
+  });
+
+  it('ttl は作るときに渡した期限を返す', () => {
+    const pending = new PendingPermissions(1000, () => 1000);
     expect(pending.ttl).toBe(1000);
   });
 });
