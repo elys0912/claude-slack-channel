@@ -17,7 +17,7 @@ import { RESTART_FLAG_FILE } from './session-control.js';
 import { USAGE_FILE } from './statusline.js';
 import { CRASH_FILE } from './crash-notice.js';
 import { isPlaceholder, runPlaceholder } from './placeholder.js';
-import { managedSettingsFiles } from './allow-rules.js';
+import { managedSettingsFiles } from './settings-files.js';
 
 /** リポジトリのルート（dist/src/main.js の 2 つ上） */
 const repoRoot = path.resolve(import.meta.dirname, '..', '..');

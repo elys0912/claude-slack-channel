@@ -18,7 +18,9 @@ import { MS_PER_MINUTE, ResponseWatchdog, buildNoResponseText } from './watchdog
 import type { ConsoleAccess } from './console.js';
 import { ScreenRelay, noticeBlocks } from './screen-relay.js';
 import { RuleRelay } from './rule-relay.js';
-import { AllowRuleStore, buildRejectedRulesText, partitionStoredRules, readAsk, readDeny } from './allow-rules.js';
+import { buildRejectedRulesText, partitionStoredRules } from './allow-rules.js';
+import { AllowRuleStore } from './allow-rule-store.js';
+import { readAsk, readDeny } from './settings-files.js';
 import { SessionAllowAll } from './session-allow.js';
 import { buildForbiddenHomeView, buildHomeView } from './home.js';
 import type { HomeCustom } from './home.js';
