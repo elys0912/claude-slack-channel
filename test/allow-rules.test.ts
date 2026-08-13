@@ -4,21 +4,20 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
-  AllowRuleStore,
   buildRejectedRulesText,
   denyOverlaps,
   deriveRule,
   isCompoundCommand,
   isDerivableRule,
   isReadOnlyMcpTool,
-  managedSettingsFiles,
   normalizeCommandName,
   parseRuleForCheck,
   partitionStoredRules,
   proposeRule,
-  readDeny,
   toRulePath,
 } from '../src/allow-rules.js';
+import { AllowRuleStore } from '../src/allow-rule-store.js';
+import { managedSettingsFiles, readDeny } from '../src/settings-files.js';
 import type { PermissionRequest } from '../src/permission.js';
 
 function req(tool: string, input: unknown): PermissionRequest {

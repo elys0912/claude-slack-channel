@@ -6,7 +6,8 @@
 // Windows PowerShell 5.1 は外部コマンドの出力をコンソールの文字コードで読むので、ASCII 以外の文字は \uXXXX にして書く。
 // このファイルは claude-slack-channel と claude-discord-channel で同じ内容にしている（直すときは両方を直す）。
 import { pathToFileURL } from 'node:url';
-import { AllowRuleStore, partitionStoredRules } from './allow-rules.js';
+import { partitionStoredRules } from './allow-rules.js';
+import { AllowRuleStore } from './allow-rule-store.js';
 import { errMessage } from './errors.js';
 
 /** ASCII の外の文字（制御文字の DEL を含む） */
