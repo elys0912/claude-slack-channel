@@ -34,6 +34,8 @@ import {
   platformError,
 } from './helpers/fake-slack.js';
 import { linkClient, notifyPermissionRequest } from './helpers/mcp-client.js';
+import { actionsOf } from './helpers/block-kit.js';
+import { CHROME_CHOICE_SCREEN } from './fixtures/screens.js';
 import type { ApiCall, FakeSocket, FakeWeb } from './helpers/fake-slack.js';
 import type { Notification, PermissionRequestParams } from './helpers/mcp-client.js';
 import type { ParsedAccess } from '../src/config.js';
@@ -1131,12 +1133,6 @@ describe('起動時の、今の方式では作れない保存済みのルール�
 });
 
 describe('ターミナル画面と許可リスト（!screen / 今後も許可 / !rules）', () => {
-  const CHROME = [
-    ' Claude wants to use your browser',
-    '    Install extension  Opens the install page in Chrome',
-    '  > Not now            Continue without browser tools',
-    "    Don't ask again    Revisit anytime with /chrome",
-  ].join('\n');
   let h: Harness;
   let sent: ConsoleKey[][];
   const harness = useHarness((started) => (h = started), {
@@ -1146,7 +1142,7 @@ describe('ターミナル画面と許可リスト（!screen / 今後も許可 / 
       fs.writeFileSync(denyFile, JSON.stringify({ permissions: { deny: ['Bash(pwd -P:*)'] } }));
       sent = [];
       return {
-        console: { read: async () => CHROME, sendKeys: async (keys) => void sent.push(keys), sendCommand: async () => undefined },
+        console: { read: async () => CHROME_CHOICE_SCREEN, sendKeys: async (keys) => void sent.push(keys), sendCommand: async () => undefined },
         allowExtraFile: path.join(dir, 'allow-extra.json'),
         denyFiles: [denyFile],
       };
@@ -1158,8 +1154,7 @@ describe('ターミナル画面と許可リスト（!screen / 今後も許可 / 
     await flush();
 
     expect(h.delivered()).toEqual([]);
-    const blocks = h.posts()[0]?.args.blocks as { type: string; elements?: { action_id: string; value: string }[] }[];
-    const pick = blocks.find((b) => b.type === 'actions')?.elements?.[2];
+    const pick = actionsOf(h.posts()[0]?.args.blocks as unknown[])[2];
     expect(pick?.action_id).toBe('screen_pick_2');
 
     h.socket.emit(
@@ -1179,9 +1174,7 @@ describe('ターミナル画面と許可リスト（!screen / 今後も許可 / 
 
     expect(h.verdicts()[0]).toEqual({ request_id: 'abcde', behavior: 'allow' });
     const proposal = h.posts().find((p) => String(p.args.text).includes('Bash(git status)'));
-    const add = (proposal?.args.blocks as { type: string; elements?: { action_id: string; value: string }[] }[])
-      .find((b) => b.type === 'actions')
-      ?.elements?.find((e) => e.action_id === 'rule_add');
+    const add = actionsOf(proposal?.args.blocks as unknown[]).find((e) => e.action_id === 'rule_add');
 
     h.socket.emit('interactive', blockAction('rule_add', add?.value ?? '', { container: { message_ts: '100.2' } }));
     await settle();
