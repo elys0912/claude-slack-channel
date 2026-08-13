@@ -4,6 +4,35 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { loadAccess, loadHomeCustom, loadTokens, parseDotenv, stateDir } from '../src/config.js';
 
+/** 形の正しい bot / app トークンの 2 行 */
+const VALID_TOKENS = 'SLACK_BOT_TOKEN=xoxb-TEST-DUMMY\nSLACK_APP_TOKEN=xapp-TEST-DUMMY\n';
+
+function writeDotenv(dir: string, content: string): void {
+  fs.writeFileSync(path.join(dir, '.env'), content);
+}
+
+/** 正しいトークンの 2 行の後ろに extra を足した .env を書く */
+function writeEnv(dir: string, extra = ''): void {
+  writeDotenv(dir, VALID_TOKENS + extra);
+}
+
+function writeAccess(dir: string, access: unknown): void {
+  fs.writeFileSync(path.join(dir, 'access.json'), JSON.stringify(access));
+}
+
+/** fn が投げた Error の message。Error を投げなければテストを失敗させる */
+function errorMessageOf(fn: () => unknown): string {
+  let caught: unknown;
+  try {
+    fn();
+  } catch (e) {
+    caught = e;
+  }
+  expect(caught).toBeInstanceOf(Error);
+
+  return (caught as Error).message;
+}
+
 describe('stateDir', () => {
   it('環境変数があればそれを使う', () => {
     const abs = path.resolve(os.tmpdir(), 'custom', 'dir');
@@ -99,10 +128,7 @@ describe('loadTokens', () => {
   });
 
   it('正常系: bot/app トークンを読み込める', () => {
-    fs.writeFileSync(
-      path.join(dir, '.env'),
-      'SLACK_BOT_TOKEN=xoxb-TEST-DUMMY\nSLACK_APP_TOKEN=xapp-TEST-DUMMY\n',
-    );
+    writeEnv(dir);
     const tokens = loadTokens(dir);
     expect(tokens).toEqual({
       botToken: 'xoxb-TEST-DUMMY',
@@ -112,28 +138,31 @@ describe('loadTokens', () => {
     });
   });
 
-  it('USAGE_WATCH としきい値を読み、空なら知らせない・形が違えば投げる', () => {
-    const write = (extra: string) =>
-      fs.writeFileSync(path.join(dir, '.env'), `SLACK_BOT_TOKEN=xoxb-TEST-DUMMY\nSLACK_APP_TOKEN=xapp-TEST-DUMMY\n${extra}`);
-    write('USAGE_WATCH=off\nUSAGE_WARN_PCT=90,50\nCONTEXT_WARN_PCT=\n');
+  it('USAGE_WATCH としきい値を読み、しきい値が空なら知らせない', () => {
+    writeEnv(dir, 'USAGE_WATCH=off\nUSAGE_WARN_PCT=90,50\nCONTEXT_WARN_PCT=\n');
     expect(loadTokens(dir).usageWatch).toEqual({ enabled: false, usageWarnPct: [50, 90], contextWarnPct: [] });
-    write('USAGE_WARN_PCT=101\n');
-    expect(() => loadTokens(dir)).toThrow(/USAGE_WARN_PCT/);
-    write('USAGE_WATCH=maybe\n');
-    expect(() => loadTokens(dir)).toThrow(/USAGE_WATCH は on か off/);
   });
 
-  it('KEEPALIVE の設定を読み、off・時間帯なし・範囲外を扱う', () => {
-    const write = (extra: string) =>
-      fs.writeFileSync(path.join(dir, '.env'), `SLACK_BOT_TOKEN=xoxb-TEST-DUMMY\nSLACK_APP_TOKEN=xapp-TEST-DUMMY\n${extra}`);
-    write('KEEPALIVE=off\nKEEPALIVE_AFTER_MIN=50\nKEEPALIVE_MAX=3\nKEEPALIVE_QUIET=\n');
+  it.each([
+    ['しきい値が範囲外', 'USAGE_WARN_PCT=101\n', /USAGE_WARN_PCT/],
+    ['USAGE_WATCH が on / off 以外', 'USAGE_WATCH=maybe\n', /USAGE_WATCH は on か off/],
+  ])('%s なら投げる', (_label, extra, message) => {
+    writeEnv(dir, extra);
+    expect(() => loadTokens(dir)).toThrow(message);
+  });
+
+  it('KEEPALIVE の設定を読み、off・時間帯なしを扱う', () => {
+    writeEnv(dir, 'KEEPALIVE=off\nKEEPALIVE_AFTER_MIN=50\nKEEPALIVE_MAX=3\nKEEPALIVE_QUIET=\n');
     expect(loadTokens(dir).keepalive).toEqual({ enabled: false, afterMin: 50, max: 3, quiet: undefined });
-    write('KEEPALIVE_AFTER_MIN=60\n');
-    expect(() => loadTokens(dir)).toThrow(/KEEPALIVE_AFTER_MIN/);
-    write('KEEPALIVE_QUIET=1-7\n');
-    expect(() => loadTokens(dir)).toThrow(/KEEPALIVE_QUIET/);
-    write('KEEPALIVE=maybe\n');
-    expect(() => loadTokens(dir)).toThrow(/KEEPALIVE は on か off/);
+  });
+
+  it.each([
+    ['KEEPALIVE_AFTER_MIN が範囲外', 'KEEPALIVE_AFTER_MIN=60\n', /KEEPALIVE_AFTER_MIN/],
+    ['KEEPALIVE_QUIET の形が違う', 'KEEPALIVE_QUIET=1-7\n', /KEEPALIVE_QUIET/],
+    ['KEEPALIVE が on / off 以外', 'KEEPALIVE=maybe\n', /KEEPALIVE は on か off/],
+  ])('%s なら投げる', (_label, extra, message) => {
+    writeEnv(dir, extra);
+    expect(() => loadTokens(dir)).toThrow(message);
   });
 
   it('ファイルが無ければ Error', () => {
@@ -142,7 +171,7 @@ describe('loadTokens', () => {
 
   it('DOWNLOAD_DIR があれば絶対パスとして downloadDir に入れる', () => {
     const target = path.join(dir, 'dl');
-    fs.writeFileSync(path.join(dir, '.env'), `SLACK_BOT_TOKEN=xoxb-TEST-DUMMY\nSLACK_APP_TOKEN=xapp-TEST-DUMMY\nDOWNLOAD_DIR="${target}"\n`);
+    writeEnv(dir, `DOWNLOAD_DIR="${target}"\n`);
     expect(loadTokens(dir).downloadDir).toBe(target);
   });
 
@@ -157,71 +186,48 @@ describe('loadTokens', () => {
     ['only', false],
     ['', false],
   ])('SESSION_ALLOW_ALL=%s なら「全部許可」を使えるのは %s', (value, expected) => {
-    fs.writeFileSync(path.join(dir, '.env'), `SLACK_BOT_TOKEN=xoxb-TEST-DUMMY\nSLACK_APP_TOKEN=xapp-TEST-DUMMY\nSESSION_ALLOW_ALL=${value}\n`);
+    writeEnv(dir, `SESSION_ALLOW_ALL=${value}\n`);
     expect(loadTokens(dir).sessionAllowAll === true).toBe(expected);
   });
 
   it('SESSION_ALLOW_ALL が on / off 以外なら、起動は止めずに off にして知らせる', () => {
-    fs.writeFileSync(path.join(dir, '.env'), 'SLACK_BOT_TOKEN=xoxb-TEST-DUMMY\nSLACK_APP_TOKEN=xapp-TEST-DUMMY\nSESSION_ALLOW_ALL=yes\n');
+    writeEnv(dir, 'SESSION_ALLOW_ALL=yes\n');
     const warnings: string[] = [];
     expect('sessionAllowAll' in loadTokens(dir, (m) => warnings.push(m))).toBe(false);
     expect(warnings).toEqual(['.env の SESSION_ALLOW_ALL の値（3 文字）は on / off のどちらでもないので off にした']);
   });
 
   it('SESSION_ALLOW_ALL が無ければ「全部許可」は使えない', () => {
-    fs.writeFileSync(path.join(dir, '.env'), 'SLACK_BOT_TOKEN=xoxb-TEST-DUMMY\nSLACK_APP_TOKEN=xapp-TEST-DUMMY\n');
+    writeEnv(dir);
     expect('sessionAllowAll' in loadTokens(dir)).toBe(false);
   });
 
   it('DOWNLOAD_DIR が無ければ downloadDir は無い', () => {
-    fs.writeFileSync(path.join(dir, '.env'), 'SLACK_BOT_TOKEN=xoxb-TEST-DUMMY\nSLACK_APP_TOKEN=xapp-TEST-DUMMY\n');
+    writeEnv(dir);
     expect('downloadDir' in loadTokens(dir)).toBe(false);
   });
 
   it('DOWNLOAD_DIR が相対パスなら Error', () => {
-    fs.writeFileSync(path.join(dir, '.env'), 'SLACK_BOT_TOKEN=xoxb-TEST-DUMMY\nSLACK_APP_TOKEN=xapp-TEST-DUMMY\nDOWNLOAD_DIR=downloads\n');
+    writeEnv(dir, 'DOWNLOAD_DIR=downloads\n');
     expect(() => loadTokens(dir)).toThrow(/DOWNLOAD_DIR/);
   });
 
   it('bot トークンの接頭辞が誤りなら Error（値を含まない）', () => {
-    fs.writeFileSync(
-      path.join(dir, '.env'),
-      'SLACK_BOT_TOKEN=wrong-prefix-TEST-DUMMY\nSLACK_APP_TOKEN=xapp-TEST-DUMMY\n',
-    );
-    let caught: unknown;
-    try {
-      loadTokens(dir);
-    } catch (e) {
-      caught = e;
-    }
-    expect(caught).toBeInstanceOf(Error);
-    const message = (caught as Error).message;
+    writeDotenv(dir, 'SLACK_BOT_TOKEN=wrong-prefix-TEST-DUMMY\nSLACK_APP_TOKEN=xapp-TEST-DUMMY\n');
+    const message = errorMessageOf(() => loadTokens(dir));
     expect(message).not.toContain('wrong-prefix-TEST-DUMMY');
     expect(message).toContain('SLACK_BOT_TOKEN');
   });
 
   it('app トークンの接頭辞が誤りなら Error（値を含まない）', () => {
-    fs.writeFileSync(
-      path.join(dir, '.env'),
-      'SLACK_BOT_TOKEN=xoxb-TEST-DUMMY\nSLACK_APP_TOKEN=wrong-prefix-TEST-DUMMY\n',
-    );
-    let caught: unknown;
-    try {
-      loadTokens(dir);
-    } catch (e) {
-      caught = e;
-    }
-    expect(caught).toBeInstanceOf(Error);
-    const message = (caught as Error).message;
+    writeDotenv(dir, 'SLACK_BOT_TOKEN=xoxb-TEST-DUMMY\nSLACK_APP_TOKEN=wrong-prefix-TEST-DUMMY\n');
+    const message = errorMessageOf(() => loadTokens(dir));
     expect(message).not.toContain('wrong-prefix-TEST-DUMMY');
     expect(message).toContain('SLACK_APP_TOKEN');
   });
 
   it('process.env を変更しない', () => {
-    fs.writeFileSync(
-      path.join(dir, '.env'),
-      'SLACK_BOT_TOKEN=xoxb-TEST-DUMMY\nSLACK_APP_TOKEN=xapp-TEST-DUMMY\n',
-    );
+    writeEnv(dir);
     expect(process.env.SLACK_BOT_TOKEN).toBeUndefined();
     loadTokens(dir);
     expect(process.env.SLACK_BOT_TOKEN).toBeUndefined();
@@ -241,18 +247,12 @@ describe('loadAccess', () => {
   });
 
   it('正常系', () => {
-    fs.writeFileSync(
-      path.join(dir, 'access.json'),
-      JSON.stringify({ teamId: 'T12345', allowFrom: ['U12345', 'U67890'] }),
-    );
+    writeAccess(dir, { teamId: 'T12345', allowFrom: ['U12345', 'U67890'] });
     expect(loadAccess(dir)).toEqual({ teamId: 'T12345', allowFrom: ['U12345', 'U67890'] });
   });
 
   it('channels を読み込める（C と、古い非公開チャンネルの G）', () => {
-    fs.writeFileSync(
-      path.join(dir, 'access.json'),
-      JSON.stringify({ teamId: 'T12345', allowFrom: ['U12345'], channels: ['C12345', 'G12345'] }),
-    );
+    writeAccess(dir, { teamId: 'T12345', allowFrom: ['U12345'], channels: ['C12345', 'G12345'] });
     expect(loadAccess(dir).channels).toEqual(['C12345', 'G12345']);
   });
 
@@ -260,42 +260,29 @@ describe('loadAccess', () => {
     ['DM の ID', ['D12345'], /channels のID形式が不正/],
     ['重複', ['C12345', 'C12345'], /channels に重複がある/],
   ])('channels に%sがあれば拒否する', (_label, channels, message) => {
-    fs.writeFileSync(
-      path.join(dir, 'access.json'),
-      JSON.stringify({ teamId: 'T12345', allowFrom: ['U12345'], channels }),
-    );
+    writeAccess(dir, { teamId: 'T12345', allowFrom: ['U12345'], channels });
     expect(() => loadAccess(dir)).toThrow(message);
   });
 
   it('teamId は T で始まるものだけ、allowFrom は U で始まるものだけ受け付ける', () => {
-    const write = (v: unknown): void => fs.writeFileSync(path.join(dir, 'access.json'), JSON.stringify(v));
-    write({ teamId: 'E12345', allowFrom: ['U12345'] });
+    writeAccess(dir, { teamId: 'E12345', allowFrom: ['U12345'] });
     expect(() => loadAccess(dir)).toThrow(/teamId/);
-    write({ teamId: 'T12345', allowFrom: ['W12345'] });
+    writeAccess(dir, { teamId: 'T12345', allowFrom: ['W12345'] });
     expect(() => loadAccess(dir)).toThrow(/allowFrom/);
   });
 
   it('未知のキーは拒否する', () => {
-    fs.writeFileSync(
-      path.join(dir, 'access.json'),
-      JSON.stringify({ teamId: 'T12345', allowFrom: ['U12345'], extra: 'nope' }),
-    );
+    writeAccess(dir, { teamId: 'T12345', allowFrom: ['U12345'], extra: 'nope' });
     expect(() => loadAccess(dir)).toThrow();
   });
 
   it('allowFrom が空なら拒否する', () => {
-    fs.writeFileSync(
-      path.join(dir, 'access.json'),
-      JSON.stringify({ teamId: 'T12345', allowFrom: [] }),
-    );
+    writeAccess(dir, { teamId: 'T12345', allowFrom: [] });
     expect(() => loadAccess(dir)).toThrow();
   });
 
   it('ID の形式が違えば拒否する', () => {
-    fs.writeFileSync(
-      path.join(dir, 'access.json'),
-      JSON.stringify({ teamId: 'bad-id', allowFrom: ['U12345'] }),
-    );
+    writeAccess(dir, { teamId: 'bad-id', allowFrom: ['U12345'] });
     expect(() => loadAccess(dir)).toThrow();
   });
 
@@ -333,9 +320,12 @@ describe('loadHomeCustom', () => {
     expect(loadHomeCustom(dir)).toEqual({ greetings: ['やっほー'] });
   });
 
-  it('未知のキー・壊れた JSON は投げる', () => {
+  it('未知のキーは投げる', () => {
     fs.writeFileSync(path.join(dir, 'home.json'), JSON.stringify({ greeting: 'typo' }));
     expect(() => loadHomeCustom(dir)).toThrow(/home.json の検証に失敗/);
+  });
+
+  it('壊れた JSON は投げる', () => {
     fs.writeFileSync(path.join(dir, 'home.json'), '{ broken');
     expect(() => loadHomeCustom(dir)).toThrow();
   });
