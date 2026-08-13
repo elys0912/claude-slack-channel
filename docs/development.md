@@ -66,6 +66,7 @@ GitHub Actions（`.github/workflows/ci.yml`）は、main への push と pull re
 | `src/notice.ts` | ブリッジからの通知の投稿（最後のスレッド、無ければ DM） |
 | `src/status.ts` | `!status` の文面（純関数） |
 | `src/session-control.ts` | `!restart` / `!compact` / `!clear`（再起動フラグと、ターミナルへの決まったコマンドの送信） |
+| `src/parent-process.ts` | `!restart force` で親プロセス（Claude Code 本体）を止める（Windows は taskkill でツリーごと） |
 | `src/console.ts` | ターミナル画面の読み取りと選択キーの送信（`scripts/console.ps1` の呼び出し） |
 | `src/screen.ts` | 画面のテキストから選択画面を取り出す（純関数） |
 | `src/screen-relay.ts` | `!screen` と選択肢ボタンの処理 |

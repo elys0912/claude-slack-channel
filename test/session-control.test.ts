@@ -2,8 +2,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { SessionControl, defaultKillParent, parseTasklistName } from '../src/session-control.js';
-import type { KillParentDeps, SessionControlOptions } from '../src/session-control.js';
+import { SessionControl } from '../src/session-control.js';
+import type { SessionControlOptions } from '../src/session-control.js';
+import { defaultKillParent, parseTasklistName } from '../src/parent-process.js';
+import type { KillParentDeps } from '../src/parent-process.js';
 import { Logger } from '../src/log.js';
 import type { ConsoleAccess, ConsoleCommand } from '../src/console.js';
 
