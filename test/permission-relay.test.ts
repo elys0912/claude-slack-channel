@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PermissionRelay } from '../src/permission-relay.js';
 import type { RelayClaude, RelaySlack } from '../src/permission-relay.js';
 import { PendingPermissions } from '../src/permission.js';
@@ -13,16 +13,27 @@ const REQ: PermissionRequest = {
   input_preview: '{"file_path":"hello.txt"}',
 };
 
-/** スレッド返信（postBlocks）を使わないテスト用の実装 */
-const noReply = async (): Promise<{ ts: string }> => ({ ts: '' });
+/** 保留の期限。期限切れで自動 deny するタイマーもこの長さになる */
+const TTL_MS = 1000;
+/** 期限を十分に過ぎた時刻・経過時間 */
+const WELL_PAST_TTL_MS = TTL_MS * 5;
 
-function setup(now: () => number = () => 0, opts: { reply?: 'ok' | 'throw' | 'empty' } = {}) {
+interface SetupOptions {
+  now?: () => number;
+  /** スレッド返信（postBlocks）の結果。既定は ts '2.0' が返る */
+  reply?: 'ok' | 'throw' | 'empty';
+  /** 既定の偽物から差し替える操作 */
+  slack?: Partial<RelaySlack>;
+  claude?: Partial<RelayClaude>;
+}
+
+function setup({ now = () => 0, reply = 'ok', slack, claude }: SetupOptions = {}) {
   const posts: { text: string; threadFor: (ch: string) => string | undefined }[] = [];
   const replies: { channel: string; threadTs: string | undefined }[] = [];
   const updates: { channel: string; ts: string; text: string }[] = [];
   const verdicts: Verdict[] = [];
 
-  const slack: RelaySlack = {
+  const fakeSlack: RelaySlack = {
     postToAll: async (text, _blocks, threadFor) => {
       posts.push({ text, threadFor: threadFor ?? (() => undefined) });
       return [
@@ -31,23 +42,38 @@ function setup(now: () => number = () => 0, opts: { reply?: 'ok' | 'throw' | 'em
       ];
     },
     postBlocks: async (channel, _text, _blocks, threadTs) => {
-      if (opts.reply === 'throw') throw new Error('not_in_channel');
+      if (reply === 'throw') throw new Error('not_in_channel');
       replies.push({ channel, threadTs });
-      return { ts: opts.reply === 'empty' ? '' : '2.0' };
+      return { ts: reply === 'empty' ? '' : '2.0' };
     },
     updateBlocks: async (channel, ts, text) => {
       updates.push({ channel, ts, text });
     },
+    ...slack,
   };
-  const claude: RelayClaude = {
+  const fakeClaude: RelayClaude = {
     sendVerdict: async (v) => {
       verdicts.push(v);
     },
+    ...claude,
   };
 
-  const pending = new PendingPermissions(1000, now);
-  const relay = new PermissionRelay(slack, claude, new Logger({ stderr: false }), pending);
-  return { relay, posts, replies, updates, verdicts };
+  const logger = new Logger({ stderr: false });
+  const pending = new PendingPermissions(TTL_MS, now);
+  const relay = new PermissionRelay(fakeSlack, fakeClaude, logger, pending);
+  return { relay, posts, replies, updates, verdicts, logger };
+}
+
+/** 配信先 1 件（D1）だけに届いたことにする postToAll */
+const postToD1Only: RelaySlack['postToAll'] = async () => [{ channel: 'D1', ts: '1.0' }];
+
+/** REQ のボタンを U1 が押す。at は押されたメッセージ（既定は DM 配信の D1） */
+function pressButton(
+  relay: PermissionRelay,
+  behavior: Verdict['behavior'],
+  at: { channel: string; ts: string } = { channel: 'D1', ts: '1.0' }
+): Promise<void> {
+  return relay.answerByButton({ requestId: 'abcde', behavior }, 'U1', at);
 }
 
 describe('PermissionRelay', () => {
@@ -66,7 +92,7 @@ describe('PermissionRelay', () => {
     const { relay, updates } = setup();
     relay.rememberThread('C1', '7.7');
     await relay.request(REQ);
-    await relay.answerByButton({ requestId: 'abcde', behavior: 'allow' }, 'U1', { channel: 'C1', ts: '2.0' });
+    await pressButton(relay, 'allow', { channel: 'C1', ts: '2.0' });
 
     expect(updates).toEqual([expect.objectContaining({ channel: 'C1', ts: '2.0' })]);
   });
@@ -83,7 +109,7 @@ describe('PermissionRelay', () => {
     ['投げた', 'throw' as const],
     ['ts が返らなかった', 'empty' as const],
   ])('スレッドへの返信が%sら、覚えておいた DM のスレッドを使って DM 全体に配信する', async (_label, reply) => {
-    const { relay, posts, verdicts } = setup(() => 0, { reply });
+    const { relay, posts, verdicts } = setup({ reply });
     relay.rememberThread('D1', '9.9');
     relay.rememberThread('C1', '7.7');
     await relay.request(REQ);
@@ -98,7 +124,7 @@ describe('PermissionRelay', () => {
   it('ボタンで回答すると Claude に送り、投稿済みのメッセージだけを書き換える', async () => {
     const { relay, updates, verdicts } = setup();
     await relay.request(REQ);
-    await relay.answerByButton({ requestId: 'abcde', behavior: 'allow' }, 'U1', { channel: 'D1', ts: '1.0' });
+    await pressButton(relay, 'allow');
 
     expect(verdicts).toEqual([{ requestId: 'abcde', behavior: 'allow' }]);
     expect(updates).toHaveLength(1);
@@ -114,51 +140,52 @@ describe('PermissionRelay', () => {
     expect(posts).toHaveLength(1);
     expect(relay.lookup('abcde')).toEqual(REQ);
 
-    await relay.answerByButton({ requestId: 'abcde', behavior: 'deny' }, 'U1', { channel: 'D1', ts: '1.0' });
+    await pressButton(relay, 'deny');
     expect(verdicts).toEqual([{ requestId: 'abcde', behavior: 'deny' }]);
     expect(updates).toEqual([expect.objectContaining({ channel: 'D1', ts: '1.0' })]);
   });
 
-  it.each([
-    ['ボタン', (relay: PermissionRelay) => relay.answerByButton({ requestId: 'abcde', behavior: 'allow' }, 'U1', { channel: 'D1', ts: '1.0' })],
-    ['テキスト', (relay: PermissionRelay) => relay.answerByText({ requestId: 'abcde', behavior: 'allow' }, 'U1')],
-  ])('%sの回答を Claude に送れなかったら、投げずにメッセージを「送れなかった」表示にし、期限のタイマーも止める', async (_label, answer) => {
-    vi.useFakeTimers();
-    const updates: string[] = [];
-    const sent: Verdict[] = [];
-    const relay = new PermissionRelay(
-      {
-        postToAll: async () => [{ channel: 'D1', ts: '1.0' }],
-        postBlocks: noReply,
-        updateBlocks: async (_channel, _ts, text) => void updates.push(text),
-      },
-      {
-        sendVerdict: async (v) => {
-          sent.push(v);
-          throw new Error('not connected');
-        },
-      },
-      new Logger({ stderr: false }),
-      new PendingPermissions(1000, () => 0)
-    );
-    await relay.request(REQ);
-    updates.length = 0;
-    await expect(answer(relay)).resolves.not.toThrow();
+  describe('回答を Claude に送れなかったとき', () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
 
-    expect(updates).toEqual([expect.stringContaining('Allow を Claude に送れなかった')]);
-    expect(relay.lookup('abcde')).toBeUndefined();
-    // 期限が来ても deny を重ねて送らない（Claude には既に届いていない）
-    await vi.advanceTimersByTimeAsync(2000);
-    expect(sent).toEqual([{ requestId: 'abcde', behavior: 'allow' }]);
-    vi.useRealTimers();
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it.each([
+      ['ボタン', (relay: PermissionRelay) => pressButton(relay, 'allow')],
+      ['テキスト', (relay: PermissionRelay) => relay.answerByText({ requestId: 'abcde', behavior: 'allow' }, 'U1')],
+    ])('%sの回答を Claude に送れなかったら、投げずにメッセージを「送れなかった」表示にし、期限のタイマーも止める', async (_label, answer) => {
+      const sent: Verdict[] = [];
+      const { relay, updates } = setup({
+        slack: { postToAll: postToD1Only },
+        claude: {
+          sendVerdict: async (v) => {
+            sent.push(v);
+            throw new Error('not connected');
+          },
+        },
+      });
+      await relay.request(REQ);
+      updates.length = 0;
+      await expect(answer(relay)).resolves.not.toThrow();
+
+      expect(updates.map((u) => u.text)).toEqual([expect.stringContaining('Allow を Claude に送れなかった')]);
+      expect(relay.lookup('abcde')).toBeUndefined();
+      // 期限が来ても deny を重ねて送らない（Claude には既に届いていない）
+      await vi.advanceTimersByTimeAsync(WELL_PAST_TTL_MS);
+      expect(sent).toEqual([{ requestId: 'abcde', behavior: 'allow' }]);
+    });
   });
 
   it('期限切れのボタンは Claude に送らず、押されたメッセージを期限切れ表示にする', async () => {
     let t = 0;
-    const { relay, updates, verdicts } = setup(() => t);
+    const { relay, updates, verdicts } = setup({ now: () => t });
     await relay.request(REQ);
-    t = 5000;
-    await relay.answerByButton({ requestId: 'abcde', behavior: 'allow' }, 'U1', { channel: 'D1', ts: '1.0' });
+    t = WELL_PAST_TTL_MS;
+    await pressButton(relay, 'allow');
 
     expect(verdicts).toEqual([]);
     expect(updates).toHaveLength(1);
@@ -175,9 +202,9 @@ describe('PermissionRelay', () => {
 
   it('テキストの回答でも、期限切れの ID は Claude に送らない', async () => {
     let t = 0;
-    const { relay, verdicts } = setup(() => t);
+    const { relay, verdicts } = setup({ now: () => t });
     await relay.request(REQ);
-    t = 5000;
+    t = WELL_PAST_TTL_MS;
     expect(await relay.answerByText({ requestId: 'abcde', behavior: 'allow' }, 'U1')).toBe(false);
     expect(verdicts).toEqual([]);
   });
@@ -219,23 +246,20 @@ describe('PermissionRelay', () => {
 
     it('deny の送信や書き換えに失敗しても、残りを続けて投げない', async () => {
       const verdicts: string[] = [];
-      const relay = new PermissionRelay(
-        {
-          postToAll: async () => [{ channel: 'D1', ts: '1.0' }],
-          postBlocks: noReply,
+      const { relay } = setup({
+        slack: {
+          postToAll: postToD1Only,
           updateBlocks: async () => {
             throw new Error('slack down');
           },
         },
-        {
+        claude: {
           sendVerdict: async (v) => {
             verdicts.push(v.requestId);
             if (v.requestId === 'abcde') throw new Error('not connected');
           },
         },
-        new Logger({ stderr: false }),
-        new PendingPermissions(1000, () => 0)
-      );
+      });
       await relay.request(REQ);
       await relay.request({ ...REQ, request_id: 'fghij' });
       await expect(relay.denyAll('ブリッジ終了')).resolves.toBeUndefined();
@@ -244,65 +268,58 @@ describe('PermissionRelay', () => {
   });
 
   describe('配信先が 0 件', () => {
-    function relayWith(results: { channel: string; ts: string }[]) {
-      const verdicts: Verdict[] = [];
-      const logger = new Logger({ stderr: false });
-      const errorSpy = vi.spyOn(logger, 'error');
-      const relay = new PermissionRelay(
-        { postToAll: async () => results, postBlocks: noReply, updateBlocks: async () => undefined },
-        { sendVerdict: async (v) => void verdicts.push(v) },
-        logger,
-        new PendingPermissions(1000, () => 0)
-      );
-      return { relay, verdicts, errorSpy };
-    }
+    describe('タイマーを進めて確かめるもの', () => {
+      beforeEach(() => {
+        vi.useFakeTimers();
+      });
 
-    it.each([
-      ['全チャンネルで失敗', [{ channel: 'D1', ts: '' }, { channel: 'D2', ts: '' }]],
-      ['DM チャンネルが無い', []],
-    ])('%s なら、その場で deny を送って保留から消し、error を残す', async (_label, results) => {
-      vi.useFakeTimers();
-      const { relay, verdicts, errorSpy } = relayWith(results);
-      await expect(relay.request(REQ)).resolves.toBeUndefined();
+      afterEach(() => {
+        vi.useRealTimers();
+      });
 
-      expect(verdicts).toEqual([{ requestId: 'abcde', behavior: 'deny' }]);
-      expect(relay.lookup('abcde')).toBeUndefined();
-      expect(errorSpy).toHaveBeenCalled();
-      // 期限が来ても重ねて送らない
-      await vi.advanceTimersByTimeAsync(5000);
-      expect(verdicts).toHaveLength(1);
-      vi.useRealTimers();
+      it.each([
+        ['全チャンネルで失敗', [{ channel: 'D1', ts: '' }, { channel: 'D2', ts: '' }]],
+        ['DM チャンネルが無い', []],
+      ])('%s なら、その場で deny を送って保留から消し、error を残す', async (_label, results) => {
+        const { relay, verdicts, logger } = setup({ slack: { postToAll: async () => results } });
+        const errorSpy = vi.spyOn(logger, 'error');
+        await expect(relay.request(REQ)).resolves.toBeUndefined();
+
+        expect(verdicts).toEqual([{ requestId: 'abcde', behavior: 'deny' }]);
+        expect(relay.lookup('abcde')).toBeUndefined();
+        expect(errorSpy).toHaveBeenCalled();
+        // 期限が来ても重ねて送らない
+        await vi.advanceTimersByTimeAsync(WELL_PAST_TTL_MS);
+        expect(verdicts).toHaveLength(1);
+      });
     });
 
     it('postToAll が投げても、deny を送って投げない', async () => {
-      const verdicts: Verdict[] = [];
-      const relay = new PermissionRelay(
-        {
+      const { relay, verdicts } = setup({
+        slack: {
           postToAll: async () => {
             throw new Error('boom');
           },
-          postBlocks: noReply,
-          updateBlocks: async () => undefined,
         },
-        { sendVerdict: async (v) => void verdicts.push(v) },
-        new Logger({ stderr: false }),
-        new PendingPermissions(1000, () => 0)
-      );
+      });
       await expect(relay.request(REQ)).resolves.toBeUndefined();
       expect(verdicts).toEqual([{ requestId: 'abcde', behavior: 'deny' }]);
     });
   });
 
   describe('期限切れの自動 deny', () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
     afterEach(() => {
       vi.useRealTimers();
     });
 
     it('TTL を過ぎたら Claude に deny を送り、投稿済みのメッセージを自動拒否の表示にして保留から消す', async () => {
-      vi.useFakeTimers();
       const { relay, updates, verdicts } = setup();
       await relay.request(REQ);
-      await vi.advanceTimersByTimeAsync(999);
+      await vi.advanceTimersByTimeAsync(TTL_MS - 1);
       expect(verdicts).toEqual([]);
 
       await vi.advanceTimersByTimeAsync(1);
@@ -313,16 +330,15 @@ describe('PermissionRelay', () => {
       expect(relay.lookup('abcde')).toBeUndefined();
 
       // 自動 deny の後のボタンは Claude に送らない
-      await relay.answerByButton({ requestId: 'abcde', behavior: 'allow' }, 'U1', { channel: 'D1', ts: '1.0' });
+      await pressButton(relay, 'allow');
       expect(verdicts).toHaveLength(1);
     });
 
     it('期限前に回答済みなら、期限が来ても deny を重ねて送らない', async () => {
-      vi.useFakeTimers();
       const { relay, updates, verdicts } = setup();
       await relay.request(REQ);
       expect(await relay.answerByText({ requestId: 'abcde', behavior: 'allow' }, 'U1')).toBe(true);
-      await vi.advanceTimersByTimeAsync(5000);
+      await vi.advanceTimersByTimeAsync(WELL_PAST_TTL_MS);
 
       expect(verdicts).toEqual([{ requestId: 'abcde', behavior: 'allow' }]);
       expect(updates).toHaveLength(1);
@@ -330,39 +346,30 @@ describe('PermissionRelay', () => {
     });
 
     it('期限切れ後・タイマー前に押されたボタンは送らず、その後のタイマーで deny を 1 回だけ送る', async () => {
-      vi.useFakeTimers();
       let t = 0;
-      const { relay, verdicts } = setup(() => t);
+      const { relay, verdicts } = setup({ now: () => t });
       await relay.request(REQ);
-      t = 5000;
-      await relay.answerByButton({ requestId: 'abcde', behavior: 'allow' }, 'U1', { channel: 'D1', ts: '1.0' });
+      t = WELL_PAST_TTL_MS;
+      await pressButton(relay, 'allow');
       expect(verdicts).toEqual([]);
 
-      await vi.advanceTimersByTimeAsync(1000);
+      await vi.advanceTimersByTimeAsync(TTL_MS);
       expect(verdicts).toEqual([{ requestId: 'abcde', behavior: 'deny' }]);
     });
 
     it('deny の送信に失敗しても投げず、メッセージの書き換えは行う', async () => {
-      vi.useFakeTimers();
-      const updates: string[] = [];
-      const relay = new PermissionRelay(
-        {
-          postToAll: async () => [{ channel: 'D1', ts: '1.0' }],
-          postBlocks: noReply,
-          updateBlocks: async (_channel, _ts, text) => void updates.push(text),
-        },
-        {
+      const { relay, updates } = setup({
+        slack: { postToAll: postToD1Only },
+        claude: {
           sendVerdict: async () => {
             throw new Error('not connected');
           },
         },
-        new Logger({ stderr: false }),
-        new PendingPermissions(1000, () => 0)
-      );
+      });
       await relay.request(REQ);
-      await vi.advanceTimersByTimeAsync(1000);
+      await vi.advanceTimersByTimeAsync(TTL_MS);
       expect(updates).toHaveLength(1);
-      expect(updates[0]).toContain('自動で拒否した');
+      expect(updates[0]?.text).toContain('自動で拒否した');
     });
   });
 });
