@@ -2,6 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { Logger } from '../src/log.js';
 import { RuleRelay } from '../src/rule-relay.js';
 import type { PermissionRequest } from '../src/permission.js';
+import { actionsOf, blockViewsOf } from './helpers/block-kit.js';
+
+/** 候補を確認に出してから押せるまでの期限（src/rule-relay.ts の PROPOSAL_TTL_MS と同じ値） */
+const PROPOSAL_TTL_MS = 10 * 60 * 1000;
 
 function bash(command: string): PermissionRequest {
   return { request_id: 'abcde', tool_name: 'Bash', description: '', input_preview: JSON.stringify({ command }) };
@@ -88,32 +92,41 @@ describe('RuleRelay', () => {
     expect(posts[0]?.text).toContain('許可リストのコマンドを引数なしで呼んだものではない');
   });
 
-  it('やめる・期限切れでは保存しない', async () => {
-    const { relay, rules, posts, pressed, advance } = setup();
+  it('やめるを押したら保存しない', async () => {
+    const { relay, rules, posts, pressed } = setup();
     await relay.propose(bash('git status'), 'C1', '9.0');
     await relay.confirm('prop0001', false, pressed, 'U1');
-    expect(posts.at(-1)?.text).toContain('追加しなかった');
 
+    expect(posts.at(-1)?.text).toContain('追加しなかった');
+    expect(rules).toEqual([]);
+  });
+
+  it('期限切れの後に追加するを押しても保存しない', async () => {
+    const { relay, rules, posts, pressed, advance } = setup();
     await relay.propose(bash('git status'), 'C1', '9.0');
-    advance(10 * 60 * 1000 + 1);
+    advance(PROPOSAL_TTL_MS + 1);
     await relay.confirm('prop0001', true, pressed, 'U1');
+
     expect(posts.at(-1)?.text).toContain('期限切れ');
     expect(rules).toEqual([]);
   });
 
-  it('一覧は削除ボタン（action_id は重複しない）付きで出し、削除できる', async () => {
-    const { relay, rules, posts, pressed } = setup();
+  it('一覧は削除ボタン（action_id は重複しない）付きで出す', async () => {
+    const { relay, rules, posts } = setup();
     rules.push('Bash(git status)', 'WebFetch');
     await relay.list('C1', '9.0');
-    const actions = (posts[0]?.blocks as { type: string; elements?: { action_id: string; value: string }[] }[]).find(
-      (b) => b.type === 'actions'
-    );
-    expect(actions?.elements?.map((e) => [e.action_id, e.value])).toEqual([
+
+    expect(actionsOf(posts[0]?.blocks ?? []).map((e) => [e.action_id, e.value])).toEqual([
       ['rule_remove_0', 'Bash(git status)'],
       ['rule_remove_1', 'WebFetch'],
     ]);
+  });
 
+  it('削除を押したらそのルールだけを消す', async () => {
+    const { relay, rules, pressed } = setup();
+    rules.push('Bash(git status)', 'WebFetch');
     await relay.remove('WebFetch', pressed, 'U1');
+
     expect(rules).toEqual(['Bash(git status)']);
   });
 
@@ -121,9 +134,9 @@ describe('RuleRelay', () => {
     const { relay, rules, posts } = setup();
     for (let i = 0; i < 20; i++) rules.push(`Read(//c/${'deep/'.repeat(40)}${i}/**)`);
     await relay.list('C1', '9.0');
-    const blocks = posts[0]?.blocks as { type: string; text?: { text: string }; elements?: unknown[] }[];
-    expect(blocks[0]?.text?.text.length).toBeLessThanOrEqual(3000);
-    expect(blocks.find((b) => b.type === 'actions')?.elements).toHaveLength(20);
+    const blocks = posts[0]?.blocks ?? [];
+    expect(blockViewsOf(blocks)[0]?.text?.text.length).toBeLessThanOrEqual(3000);
+    expect(actionsOf(blocks)).toHaveLength(20);
   });
 
   it('一覧が空ならその旨を返す', async () => {
