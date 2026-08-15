@@ -3,10 +3,10 @@
 // Slack からは「👀 は付いたのに何も返ってこない」ようにしか見えないため、一定時間で警告を出す。
 import type { Logger } from './log.js';
 import type { ThreadRef } from './types.js';
+import { MS_PER_MINUTE } from './text.js';
 
 /** 既定の待ち時間（分） */
 export const DEFAULT_REPLY_TIMEOUT_MIN = 5;
-export const MS_PER_MINUTE = 60000;
 
 /** 見張るスレッド */
 export type WatchdogTarget = ThreadRef;
@@ -57,10 +57,9 @@ export class ResponseWatchdog {
     this.clear();
   }
 
-  /** 終了時用。見張りを解く */
+  /** 終了時用。見張りを解く（終了時も、応答があったときと同じく待ち時間の計測をやめるだけでよい） */
   stop(): void {
-    this.waitingSinceMs = undefined;
-    this.clear();
+    this.activity();
   }
 
   /** メッセージを渡したまま応答を受け取っていない（警告を出した後も含む）。見張りが無効でも分かる */

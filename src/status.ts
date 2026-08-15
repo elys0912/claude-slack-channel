@@ -1,7 +1,6 @@
 // `!status` の文面（純関数）
-import { formatTime } from './text.js';
+import { MS_PER_MINUTE, formatTime } from './text.js';
 import type { HookEvent } from './hook-event.js';
-import { MS_PER_MINUTE } from './watchdog.js';
 
 export interface StatusState {
   startedAt: Date;
@@ -31,21 +30,27 @@ function hookLine(event: HookEvent): string {
   return `${formatTime(new Date(event.at))} ${kind}${detail ? ` (${detail})` : ''}`;
 }
 
+function connectionLabel(connected: boolean | undefined): string {
+  if (connected === undefined) return '(不明)';
+  return connected ? '接続中' : '切断中（再接続待ち）';
+}
+
+/** 「全部許可」の行。機能が無ければ（undefined）行を出さない */
+function sessionAllowLines(since: Date | null | undefined): string[] {
+  if (since === undefined) return [];
+  if (since === null) return ['全部許可: 無効'];
+  return [`全部許可: 有効（${formatTime(since)} から。!lock で解除）`];
+}
+
 export function buildStatusText(state: StatusState): string {
   const lines = [
     '📊 ブリッジの状態',
     `稼働開始: ${formatTime(state.startedAt)}（${elapsed(state.startedAt, state.now)} 経過）`,
     `作業フォルダー: ${state.workDir || '(不明)'}`,
-    `Slack 接続: ${state.slackConnected === undefined ? '(不明)' : state.slackConnected ? '接続中' : '切断中（再接続待ち）'}`,
+    `Slack 接続: ${connectionLabel(state.slackConnected)}`,
     `Claude への返事待ち: ${state.waitingSince ? `${formatTime(state.waitingSince)} から（${elapsed(state.waitingSince, state.now)}）` : '無し'}`,
     `回答待ちの実行許可: ${state.pendingPermissions} 件`,
-    ...(state.sessionAllowSince === undefined
-      ? []
-      : [
-          state.sessionAllowSince === null
-            ? '全部許可: 無効'
-            : `全部許可: 有効（${formatTime(state.sessionAllowSince)} から。!lock で解除）`,
-        ]),
+    ...sessionAllowLines(state.sessionAllowSince),
     ...(state.extraLines ?? []),
     state.lastHooks.length > 0 ? `直近の hook:\n${state.lastHooks.map((e) => `  ${hookLine(e)}`).join('\n')}` : '直近の hook: 無し',
   ];
