@@ -1,9 +1,9 @@
 // 使用量とコンテキストの見張り。statusline（statusline.ts）が書く usage.json を定期的に読み、
 // 使用量（5 時間枠・7 日枠）とコンテキストの使用率がしきい値を越えたら知らせる。使用量の上限に当たった後、
 // 枠のリセット時刻を過ぎたら「上限が戻った」を知らせる（Claude に作業の再開は送らない。続けるかは人が決める）。
-import fs from 'node:fs';
 import type { Logger } from './log.js';
 import { formatTime } from './text.js';
+import { isObject, readJsonFile } from './state-file.js';
 import type { UsageSnapshot, UsageWindow } from './statusline.js';
 
 export const DEFAULT_USAGE_WARN_PCT: readonly number[] = [80, 95];
@@ -28,16 +28,14 @@ export function parsePercents(text: string): number[] {
   return [...new Set(values)].sort((a, b) => a - b);
 }
 
+/** 記録時刻（at）だけを確かめる。ほかの欄は statusline.ts が書いた形のまま信じる */
+function isUsageSnapshot(value: unknown): value is UsageSnapshot {
+  return isObject(value) && typeof value.at === 'number';
+}
+
 /** usage.json を読む。無い・壊れていれば undefined */
 export function readUsage(file: string): UsageSnapshot | undefined {
-  try {
-    const parsed: unknown = JSON.parse(fs.readFileSync(file, 'utf8'));
-    return typeof parsed === 'object' && parsed !== null && typeof (parsed as UsageSnapshot).at === 'number'
-      ? (parsed as UsageSnapshot)
-      : undefined;
-  } catch {
-    return undefined;
-  }
+  return readJsonFile(file, isUsageSnapshot);
 }
 
 /** used が越えたしきい値のうち最大のもの。越えていなければ undefined */
@@ -45,6 +43,11 @@ function reachedLevel(used: number, levels: readonly number[]): number | undefin
   let reached: number | undefined;
   for (const level of levels) if (used >= level) reached = level;
   return reached;
+}
+
+/** level が最上位のしきい値か。しきい値が 1 つだけなら、強い文面にはしないので false */
+function isTopLevel(level: number, levels: readonly number[]): boolean {
+  return level === levels.at(-1) && levels.length > 1;
 }
 
 export interface UsageWatchOptions {
@@ -100,7 +103,7 @@ export class UsageWatch {
     if (snapshot && (this.opts.sessionTag === undefined || snapshot.session_tag === this.opts.sessionTag)) {
       this.latest = snapshot;
     }
-    const messages = [...this.usageMessages(), ...this.contextMessages(), ...this.recoveredMessages()];
+    const messages = [...this.takeUsageMessages(), ...this.takeContextMessages(), ...this.takeRecoveredMessages()];
     for (const text of messages) {
       try {
         await this.opts.notify(text);
@@ -161,9 +164,9 @@ export class UsageWatch {
     return result;
   }
 
-  private usageMessages(): string[] {
+  /** 新しく越えたしきい値の知らせ。1 回だけ知らせるため、返した分は知らせた印（usageNotified）を進める */
+  private takeUsageMessages(): string[] {
     const levels = this.opts.usageWarnPct;
-    const top = levels.at(-1);
     const messages: string[] = [];
     for (const { key, label, window } of this.activeWindows()) {
       const level = reachedLevel(window.used, levels);
@@ -173,7 +176,7 @@ export class UsageWatch {
       const resets = formatTime(new Date(window.resets_at * 1000));
       const used = Math.round(window.used);
       messages.push(
-        level === top && levels.length > 1
+        isTopLevel(level, levels)
           ? `🛑 使用量（${label}）が ${used}%。重い作業は区切りのよいところで止める（リセット ${resets}）`
           : `⚠️ 使用量（${label}）が ${used}%（リセット ${resets}）`
       );
@@ -181,7 +184,8 @@ export class UsageWatch {
     return messages;
   }
 
-  private contextMessages(): string[] {
+  /** 新しく越えたコンテキストのしきい値の知らせ。返した分は知らせた印（contextNotified）を進める */
+  private takeContextMessages(): string[] {
     const s = this.latest;
     if (!s?.context) return [];
     // 会話が替わったら数え直す（SessionStart の知らせより先に usage.json が替わることがある）
@@ -195,13 +199,14 @@ export class UsageWatch {
     this.contextNotified = level;
     const used = Math.round(s.context.used);
     return [
-      level === levels.at(-1) && levels.length > 1
+      isTopLevel(level, levels)
         ? `⚠️ コンテキストが ${used}%。!compact（要約して縮める）か !clear（新しい会話）を勧める`
         : `ℹ️ コンテキストが ${used}%。区切りのよいところで !compact を検討する`,
     ];
   }
 
-  private recoveredMessages(): string[] {
+  /** 上限のリセット時刻を過ぎていれば、戻った知らせ。返したら上限の印を消す（limitCleared） */
+  private takeRecoveredMessages(): string[] {
     if (!this.limited || this.limitedUntil === undefined || this.now() < this.limitedUntil) return [];
     const at = formatTime(new Date(this.limitedUntil));
     this.limitCleared();

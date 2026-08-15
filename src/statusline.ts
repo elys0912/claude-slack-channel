@@ -8,6 +8,7 @@ import { pathToFileURL } from 'node:url';
 import { stateDir } from './config.js';
 import { SESSION_TAG_ENV } from './hook-event.js';
 import { errMessage } from './errors.js';
+import { isObject } from './state-file.js';
 
 /** 状態ディレクトリに置く使用量の記録 */
 export const USAGE_FILE = 'usage.json';
@@ -30,10 +31,6 @@ export interface UsageSnapshot {
   context?: { used: number; size?: number };
   five_hour?: UsageWindow;
   seven_day?: UsageWindow;
-}
-
-function isObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
 }
 
 function finiteNumber(value: unknown): number | undefined {
@@ -110,6 +107,8 @@ export function writeUsage(dir: string, snapshot: UsageSnapshot): boolean {
 
   fs.mkdirSync(dir, { recursive: true });
   const text = JSON.stringify(snapshot) + '\n';
+  // state-file.ts の writeFileAtomic は使わない。一時ファイルの名前と、置き換えに失敗したときの後始末・直接書きが違うため。
+  // 一時ファイルに書けなければ投げる（main() が「記録に失敗」を出す）
   const temp = `${file}.${process.pid}.tmp`;
   fs.writeFileSync(temp, text);
   try {
