@@ -12,6 +12,7 @@ scripts/dialog-answer.ps1
 scripts/start.cmd
 
 src/allow-extra-check.ts
+src/allow-rule-store.ts
 src/allow-rules.ts
 src/bounded-map.ts
 src/chunk.ts
@@ -26,11 +27,14 @@ src/hook.ts
 src/keepalive.ts
 src/lock.ts
 src/log.ts
+src/parent-process.ts
 src/permission-core.ts
 src/placeholder.ts
 src/screen.ts
 src/session-allow.ts
 src/session-control.ts
+src/settings-files.ts
+src/state-file.ts
 src/status.ts
 src/statusline.ts
 src/stdio-guard.ts
@@ -44,10 +48,14 @@ test/allow-extra-check.test.ts
 test/allow-rules.test.ts
 test/bounded-map.test.ts
 test/chunk-legacy.test.ts
+test/chunk-reconstruct.test.ts
 test/chunk.test.ts
 test/env-switch.test.ts
 test/console-script.test.ts
 test/crash-notice.test.ts
+test/helpers/chunk-reconstruct.ts
+test/helpers/powershell.ts
+test/helpers/random-text.ts
 test/hook-inbox.test.ts
 test/hook.test.ts
 test/keepalive.test.ts
