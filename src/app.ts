@@ -14,7 +14,7 @@ import type { PressedMessage, ThreadRef } from './types.js';
 import { SessionControl } from './session-control.js';
 import type { SessionControlOptions } from './session-control.js';
 import { buildStatusText } from './status.js';
-import { MS_PER_MINUTE, ResponseWatchdog, buildNoResponseText } from './watchdog.js';
+import { ResponseWatchdog, buildNoResponseText } from './watchdog.js';
 import type { ConsoleAccess } from './console.js';
 import { ScreenRelay, noticeBlocks } from './screen-relay.js';
 import { RuleRelay } from './rule-relay.js';
@@ -33,7 +33,7 @@ import { hookToNotice } from './hook-notices.js';
 import { NoticePoster } from './notice.js';
 import { Keepalive, keepaliveStatusLine } from './keepalive.js';
 import type { KeepaliveStatus, QuietHours } from './keepalive.js';
-import { formatTime } from './text.js';
+import { MS_PER_MINUTE, formatTime } from './text.js';
 import { UsageWatch } from './usage-watch.js';
 import { takeCrashNotice } from './crash-notice.js';
 
