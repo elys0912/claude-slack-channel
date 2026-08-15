@@ -1,8 +1,8 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { runPowerShellCommand } from './helpers/powershell.js';
 
 const common = path.join(import.meta.dirname, '..', 'scripts', 'common.ps1');
 // 会話の記録を置く ID と、記録の無い ID（どちらも UUID の形）
@@ -11,11 +11,7 @@ const SESSION_ID_WITHOUT_TRANSCRIPT = '794af7ae-57b1-4a74-9ef5-89328e03a33d';
 
 /** common.ps1 を読み込んでから command を実行し、stdout を返す */
 function ps(command: string): string {
-  const r = spawnSync(
-    'powershell.exe',
-    ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', `. '${common}'; ${command}`],
-    { encoding: 'utf8', windowsHide: true }
-  );
+  const r = runPowerShellCommand(`. '${common}'; ${command}`);
   if (r.status !== 0) throw new Error(`powershell が失敗: ${r.stderr}`);
   return r.stdout.trim();
 }
