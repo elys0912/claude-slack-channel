@@ -81,10 +81,6 @@ export class Logger {
     this.toStderr = opts.stderr ?? true;
   }
 
-  setLevel(level: LogLevel): void {
-    this.level = level;
-  }
-
   getLevel(): LogLevel {
     return this.level;
   }
@@ -140,23 +136,28 @@ export class Logger {
         fs.mkdirSync(dir, { recursive: true });
       }
 
-      try {
-        const stat = fs.statSync(file);
-        if (stat.size > this.maxBytes) {
-          const rotated = `${file}.1`;
-          try {
-            fs.renameSync(file, rotated);
-          } catch {
-            // ローテーション失敗は無視して書き込みを続ける
-          }
-        }
-      } catch {
-        // ファイルがまだ無いだけなら何もしない
-      }
-
+      this.rotateIfNeeded(file);
       fs.appendFileSync(file, line);
     } catch {
       // ファイル書き込みの失敗も呼び出し元へは伝えない
+    }
+  }
+
+  /** maxBytes を超えていたら `<file>.1` へ移す。失敗しても投げない（書き込みは続ける） */
+  private rotateIfNeeded(file: string): void {
+    let size: number;
+    try {
+      size = fs.statSync(file).size;
+    } catch {
+      // ファイルがまだ無いだけなら何もしない
+      return;
+    }
+    if (size <= this.maxBytes) return;
+
+    try {
+      fs.renameSync(file, `${file}.1`);
+    } catch {
+      // ローテーション失敗は無視して書き込みを続ける
     }
   }
 }

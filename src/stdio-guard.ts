@@ -9,16 +9,14 @@ const globalWithFlag = globalThis as typeof globalThis & {
 };
 
 if (!globalWithFlag[GUARD_FLAG]) {
-  const toStderr =
-    (): ((...args: unknown[]) => void) =>
-    (...args: unknown[]) => {
-      console.error(...args);
-    };
+  const toStderr = (...args: unknown[]): void => {
+    console.error(...args);
+  };
 
-  console.log = toStderr();
-  console.info = toStderr();
-  console.debug = toStderr();
-  console.trace = toStderr();
+  console.log = toStderr;
+  console.info = toStderr;
+  console.debug = toStderr;
+  console.trace = toStderr;
 
   globalWithFlag[GUARD_FLAG] = true;
 }

@@ -119,17 +119,24 @@ export class Keepalive {
 
   private schedule(): void {
     this.clear();
-    if (!this.enabled || this.lastRequestAt === undefined || this.sent >= this.opts.max) return;
+    if (this.lastRequestAt === undefined || this.scheduleBlocker() !== undefined) return;
     const at = this.lastRequestAt + this.opts.afterMs;
     this.nextAt = at;
     this.timer = setTimeout(() => void this.fire(), Math.max(0, at - this.now()));
     this.timer.unref?.();
   }
 
-  /** 送る前の確認。送らない理由があれば返す */
-  private skipReason(): string | undefined {
+  /** 送る予定そのものを立てない理由（無効・送った回数が上限）。無ければ undefined */
+  private scheduleBlocker(): string | undefined {
     if (!this.enabled) return '無効';
     if (this.sent >= this.opts.max) return `上限（${this.opts.max} 回）`;
+    return undefined;
+  }
+
+  /** 送る前の確認。送らない理由があれば返す。作業中か・時間帯・使用量の上限は送る時点で変わるので、ここで見る */
+  private skipReason(): string | undefined {
+    const blocker = this.scheduleBlocker();
+    if (blocker) return blocker;
     if (this.opts.isBusy()) return '作業中か回答待ち';
     if (inQuietHours(this.opts.quiet, new Date(this.now()))) return '送らない時間帯';
     if (this.opts.isLimited()) return '使用量の上限';

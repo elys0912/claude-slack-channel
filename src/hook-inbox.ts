@@ -35,16 +35,13 @@ export interface HookInboxOptions {
   now?: (() => number) | undefined;
 }
 
-export class HookInbox {
+/**
+ * 追記されていくファイルの、前回から増えた分を行にして返す（hooks.jsonl の追尾）。
+ * 回転（hooks.jsonl → hooks.jsonl.1）・切り詰め・チャンクの境目で割れた文字と行を扱い、行の中身は解釈しない
+ */
+class AppendedLineReader {
   private readonly file: string;
   private readonly logger: Logger;
-  private readonly onEvent: HookInboxOptions['onEvent'];
-  private readonly sessionTag: string | undefined;
-  private readonly pollMs: number;
-  private readonly replayWindowMs: number;
-  private readonly now: () => number;
-  private readonly seen = new EventDedupe(DEDUPE_CAPACITY);
-  private readonly history: HookEvent[] = [];
   /** 読み終えた位置（バイト） */
   private offset = 0;
   /** 読んでいるファイルの識別子（回されて別のファイルになったことを検知する） */
@@ -55,63 +52,17 @@ export class HookInbox {
   private skipToNewline = false;
   /** チャンクの境目で割れた UTF-8 の文字を次の回につなぐ */
   private decoder = new StringDecoder('utf8');
-  private timer: ReturnType<typeof setInterval> | undefined;
-  private polling = false;
-  /** stop 済み。以後 start しても何も始めない */
-  private stopped = false;
 
-  constructor(opts: HookInboxOptions) {
-    this.file = opts.file;
-    this.logger = opts.logger;
-    this.onEvent = opts.onEvent;
-    this.sessionTag = opts.sessionTag;
-    this.pollMs = opts.pollMs ?? DEFAULT_POLL_MS;
-    this.replayWindowMs = opts.replayWindowMs ?? DEFAULT_REPLAY_WINDOW_MS;
-    this.now = opts.now ?? Date.now;
-  }
-
-  /** 既にある行のうち直近のものだけ渡してから、定期的に読み始める。stop の後（最初の読み込みの途中で stop された場合も）は何もしない */
-  async start(): Promise<void> {
-    if (this.stopped) return;
-    const since = this.now() - this.replayWindowMs;
-    await this.poll((events) => fromLastSessionStart(events.filter((e) => e.at >= since)));
-    if (this.stopped) return;
-    this.timer = setInterval(() => void this.poll(), this.pollMs);
-    this.timer.unref?.();
-  }
-
-  stop(): void {
-    this.stopped = true;
-    if (this.timer !== undefined) clearInterval(this.timer);
-    this.timer = undefined;
-  }
-
-  /** 渡した順に直近 n 件（!status 用） */
-  lastEvents(n: number): HookEvent[] {
-    return this.history.slice(-n);
-  }
-
-  /** 増えた分を読んで渡す。select を渡すと、読めた行のうちそれが返したものだけ渡す（残りは読み飛ばす） */
-  private async poll(select: (events: HookEvent[]) => HookEvent[] = (events) => events): Promise<void> {
-    if (this.polling) return;
-    this.polling = true;
-    try {
-      const events = this.readNewLines()
-        .map((line) => this.parseLine(line))
-        .filter((e): e is HookEvent => e !== undefined);
-      for (const event of select(events)) await this.deliver(event);
-    } catch (e) {
-      this.logger.warn('hooks.jsonl の読み込みに失敗', e);
-    } finally {
-      this.polling = false;
-    }
+  constructor(file: string, logger: Logger) {
+    this.file = file;
+    this.logger = logger;
   }
 
   /**
    * 前回の位置から増えた分を行に分けて返す。ファイルが無い・小さくなっていれば先頭から読み直す。
    * 回されて別のファイルになったときは、旧ファイル（hooks.jsonl.1）の読み残しを読み切ってから新しいファイルに移る
    */
-  private readNewLines(): string[] {
+  readNewLines(): string[] {
     let stat: fs.Stats;
     try {
       stat = fs.statSync(this.file);
@@ -200,6 +151,69 @@ export class HookInbox {
       this.skipToNewline = true;
     }
     return lines.filter((l) => l.trim() !== '');
+  }
+}
+
+export class HookInbox {
+  private readonly reader: AppendedLineReader;
+  private readonly logger: Logger;
+  private readonly onEvent: HookInboxOptions['onEvent'];
+  private readonly sessionTag: string | undefined;
+  private readonly pollMs: number;
+  private readonly replayWindowMs: number;
+  private readonly now: () => number;
+  private readonly seen = new EventDedupe(DEDUPE_CAPACITY);
+  private readonly history: HookEvent[] = [];
+  private timer: ReturnType<typeof setInterval> | undefined;
+  private polling = false;
+  /** stop 済み。以後 start しても何も始めない */
+  private stopped = false;
+
+  constructor(opts: HookInboxOptions) {
+    this.reader = new AppendedLineReader(opts.file, opts.logger);
+    this.logger = opts.logger;
+    this.onEvent = opts.onEvent;
+    this.sessionTag = opts.sessionTag;
+    this.pollMs = opts.pollMs ?? DEFAULT_POLL_MS;
+    this.replayWindowMs = opts.replayWindowMs ?? DEFAULT_REPLAY_WINDOW_MS;
+    this.now = opts.now ?? Date.now;
+  }
+
+  /** 既にある行のうち直近のものだけ渡してから、定期的に読み始める。stop の後（最初の読み込みの途中で stop された場合も）は何もしない */
+  async start(): Promise<void> {
+    if (this.stopped) return;
+    const since = this.now() - this.replayWindowMs;
+    await this.poll((events) => fromLastSessionStart(events.filter((e) => e.at >= since)));
+    if (this.stopped) return;
+    this.timer = setInterval(() => void this.poll(), this.pollMs);
+    this.timer.unref?.();
+  }
+
+  stop(): void {
+    this.stopped = true;
+    if (this.timer !== undefined) clearInterval(this.timer);
+    this.timer = undefined;
+  }
+
+  /** 渡した順に直近 n 件（!status 用） */
+  lastEvents(n: number): HookEvent[] {
+    return this.history.slice(-n);
+  }
+
+  /** 増えた分を読んで渡す。select を渡すと、読めた行のうちそれが返したものだけ渡す（残りは読み飛ばす） */
+  private async poll(select: (events: HookEvent[]) => HookEvent[] = (events) => events): Promise<void> {
+    if (this.polling) return;
+    this.polling = true;
+    try {
+      const events = this.reader.readNewLines()
+        .map((line) => this.parseLine(line))
+        .filter((e): e is HookEvent => e !== undefined);
+      for (const event of select(events)) await this.deliver(event);
+    } catch (e) {
+      this.logger.warn('hooks.jsonl の読み込みに失敗', e);
+    } finally {
+      this.polling = false;
+    }
   }
 
   /** 1 行を読む。読めない行（警告を出す）と、別のセッションの行（session_tag が違う）は undefined */

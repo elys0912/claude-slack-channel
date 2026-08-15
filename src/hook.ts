@@ -31,7 +31,7 @@ export function toHookEvent(stdinText: string, now: number = Date.now(), tag?: s
   const event: HookEvent = { at: now, hook_event_name: raw.hook_event_name };
   for (const field of HOOK_STRING_FIELDS) {
     const value = raw[field];
-    if (typeof value === 'string' && field !== 'hook_event_name') event[field] = value.slice(0, FIELD_MAX);
+    if (typeof value === 'string') event[field] = value.slice(0, FIELD_MAX);
   }
   // error_details は版によってオブジェクト（{"status":429,"message":"..."} など）の例がある。message か JSON にして写す
   const details = raw.error_details;

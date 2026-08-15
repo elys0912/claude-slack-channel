@@ -79,7 +79,10 @@ export function sanitizeFileName(name: string, fallback: string): string {
   if (WINDOWS_RESERVED_RE.test(safe)) safe = `_${safe}`;
   if (safe.length > MAX_NAME_LENGTH) {
     const { stem, ext } = splitName(safe);
-    safe = stem.slice(0, Math.max(1, MAX_NAME_LENGTH - ext.length)) + ext.slice(0, MAX_NAME_LENGTH - 1);
+    const stemRoom = Math.max(1, MAX_NAME_LENGTH - ext.length);
+    // 拡張子だけで上限に届くときも、stem を 1 文字残して全体を MAX_NAME_LENGTH に収める
+    const keptExt = ext.slice(0, MAX_NAME_LENGTH - 1);
+    safe = stem.slice(0, stemRoom) + keptExt;
   }
   return safe;
 }
@@ -218,9 +221,32 @@ async function runTar(tarPath: string, archive: string, dir: string, limits: Ext
   });
 
   let overLimit: Error | undefined;
+  const stopWatching = watchTreeLimit(dir, limits, (e) => {
+    overLimit = e;
+    child.kill();
+  });
+
+  try {
+    const code = await new Promise<number | null>((resolve, reject) => {
+      child.once('error', reject);
+      child.once('close', resolve);
+    });
+    if (overLimit) throw overLimit;
+    if (code !== 0) throw new Error(`展開に失敗（tar code=${code}）: ${clip(stderr.trim(), STDERR_MAX)}`);
+  } finally {
+    stopWatching();
+  }
+}
+
+/**
+ * EXTRACT_POLL_MS ごとに dir の中身を数え、上限を超えたら onOver を 1 回だけ呼ぶ。前の確認が終わるまで次は始めない。
+ * 止める関数を返す
+ */
+function watchTreeLimit(dir: string, limits: ExtractLimits, onOver: (error: Error) => void): () => void {
   let checking = false;
+  let exceeded = false;
   const timer = setInterval(() => {
-    if (checking || overLimit) return;
+    if (checking || exceeded) return;
     checking = true;
     void statTree(dir)
       .then(
@@ -228,8 +254,8 @@ async function runTar(tarPath: string, archive: string, dir: string, limits: Ext
           try {
             assertWithin(tree, limits);
           } catch (e) {
-            overLimit = e as Error;
-            child.kill();
+            exceeded = true;
+            onOver(e as Error);
           }
         },
         () => {
@@ -240,17 +266,7 @@ async function runTar(tarPath: string, archive: string, dir: string, limits: Ext
         checking = false;
       });
   }, EXTRACT_POLL_MS);
-
-  try {
-    const code = await new Promise<number | null>((resolve, reject) => {
-      child.once('error', reject);
-      child.once('close', resolve);
-    });
-    if (overLimit) throw overLimit;
-    if (code !== 0) throw new Error(`展開に失敗（tar code=${code}）: ${clip(stderr.trim(), STDERR_MAX)}`);
-  } finally {
-    clearInterval(timer);
-  }
+  return () => clearInterval(timer);
 }
 
 /** 取りに行く添付の情報（チャネルの側で作る） */
@@ -297,14 +313,14 @@ export async function downloadAttachment<Ref, F extends RemoteFile>(deps: Downlo
     throw e;
   }
 
+  const extracted = extract && archiveKind(target) ? await extractArchive(target, deps.dir, limits, deps.tarPath) : undefined;
+  return formatDownloadResult(target, bytes, extract, extracted);
+}
+
+/** Claude に返す結果の文面。展開を頼まれたのに extracted が無ければ、圧縮ファイルではなかった */
+function formatDownloadResult(target: string, bytes: number, extract: boolean, extracted: ExtractResult | undefined): string {
   const lines = [`saved: ${target} (${bytes} bytes)`];
-  if (extract) {
-    if (archiveKind(target)) {
-      const r = await extractArchive(target, deps.dir, limits, deps.tarPath);
-      lines.push(`extracted: ${r.path} (${r.files} files, ${r.bytes} bytes)`);
-    } else {
-      lines.push('extract: 圧縮ファイルではないので展開していない');
-    }
-  }
+  if (extracted) lines.push(`extracted: ${extracted.path} (${extracted.files} files, ${extracted.bytes} bytes)`);
+  else if (extract) lines.push('extract: 圧縮ファイルではないので展開していない');
   return lines.join('\n');
 }
