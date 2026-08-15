@@ -3,15 +3,13 @@ import { spawnSync } from 'node:child_process';
 import { describe, expect, it, vi } from 'vitest';
 import { PowerShellConsole } from '../src/console.js';
 import { Logger } from '../src/log.js';
+import { runPowerShellFile } from './helpers/powershell.js';
 
 const script = path.join(import.meta.dirname, '..', 'scripts', 'console.ps1');
 
 /** powershell.exe -File で console.ps1 を実行する（ブリッジ・dialog-answer.ps1 と同じ渡し方） */
 function run(...args: string[]): { status: number | null; stdout: string; stderr: string } {
-  const r = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script, ...args], {
-    encoding: 'utf8',
-    windowsHide: true,
-  });
+  const r = runPowerShellFile(script, args);
   return { status: r.status, stdout: r.stdout, stderr: r.stderr };
 }
 

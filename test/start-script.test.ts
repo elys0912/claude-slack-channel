@@ -3,9 +3,9 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
 import type { SpawnSyncReturns } from 'node:child_process';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { runPowerShellFile } from './helpers/powershell.js';
 
 const scriptsDir = path.join(import.meta.dirname, '..', 'scripts');
 
@@ -15,11 +15,7 @@ function envKey(name: string): string {
 }
 
 function runScript(script: string, args: string[], env: NodeJS.ProcessEnv = process.env): SpawnSyncReturns<string> {
-  return spawnSync(
-    'powershell.exe',
-    ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', path.join(scriptsDir, script), ...args],
-    { encoding: 'utf8', windowsHide: true, env }
-  );
+  return runPowerShellFile(path.join(scriptsDir, script), args, env);
 }
 
 // powershell.exe の起動は CI の初回だと 5 秒を超えることがある
