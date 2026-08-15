@@ -27,6 +27,6 @@ describe('newToken', () => {
   it('permission.ts の TOKEN_ID_RE に合う 8 文字を毎回違う値で返す', () => {
     const tokens = new Set(Array.from({ length: 50 }, () => newToken()));
     for (const t of tokens) expect(t).toMatch(TOKEN_ID_RE);
-    expect(tokens.size).toBeGreaterThan(45);
+    expect(tokens.size).toBe(50);
   });
 });

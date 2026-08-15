@@ -103,11 +103,21 @@ describe('parseChoiceScreen', () => {
 });
 
 describe('choiceFingerprint', () => {
-  it('カーソル位置が変われば別の指紋になる', () => {
-    const a = parseChoiceScreen(CHROME_SCREEN);
-    const b = parseChoiceScreen(CHROME_SCREEN.replace('  > Not now', '    Not now').replace('    Install extension', '  > Install extension'));
-    expect(a && b && choiceFingerprint(a) !== choiceFingerprint(b)).toBe(true);
-    expect(a && choiceFingerprint(a) === choiceFingerprint(parseChoiceScreen(CHROME_SCREEN)!)).toBe(true);
+  /** 選択肢として読めることを確かめてから返す（読めなければ、指紋の比較より前にそこで落とす） */
+  function parseOrFail(screen: string): NonNullable<ReturnType<typeof parseChoiceScreen>> {
+    const parsed = parseChoiceScreen(screen);
+    expect(parsed).toBeDefined();
+    if (!parsed) throw new Error('選択肢の画面として読めない');
+    return parsed;
+  }
+
+  it('カーソル位置が変われば別の指紋になり、同じ画面なら同じ指紋になる', () => {
+    const original = parseOrFail(CHROME_SCREEN);
+    const moved = parseOrFail(CHROME_SCREEN.replace('  > Not now', '    Not now').replace('    Install extension', '  > Install extension'));
+    const same = parseOrFail(CHROME_SCREEN);
+
+    expect(choiceFingerprint(original)).not.toBe(choiceFingerprint(moved));
+    expect(choiceFingerprint(original)).toBe(choiceFingerprint(same));
   });
 });
 

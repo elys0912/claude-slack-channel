@@ -117,35 +117,6 @@ describe('InstanceLock', () => {
     expect(fs.readdirSync(dir)).toEqual([]);
   });
 
-  it('heartbeat は intervalMs ごとにファイルの heartbeat だけを更新する', () => {
-    vi.useFakeTimers();
-    try {
-      const lock = new InstanceLock(file, { now, pid: 111, intervalMs: 1000 });
-      expect(lock.tryAcquire().acquired).toBe(true);
-
-      clock += 1500;
-      vi.advanceTimersByTime(1000);
-      let info = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>;
-      expect(info).toEqual({ pid: 111, heartbeat: 1_001_500, startedAt: 1_000_000 });
-
-      clock += 1000;
-      vi.advanceTimersByTime(1000);
-      info = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>;
-      expect(info.heartbeat).toBe(1_002_500);
-      expect(info.startedAt).toBe(1_000_000);
-
-      // release 後は更新されない
-      lock.release();
-      fs.writeFileSync(file, JSON.stringify({ pid: DEAD_PID, heartbeat: 1, startedAt: 1 }));
-      clock += 1000;
-      vi.advanceTimersByTime(1000);
-      info = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>;
-      expect(info.heartbeat).toBe(1);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
   it('stale 判定の境界: heartbeat からちょうど staleMs 経過では取得できず、それを超えると取得できる', () => {
     fs.writeFileSync(file, JSON.stringify({ pid: DEAD_PID, heartbeat: clock, startedAt: clock }));
     clock += 30000;
@@ -191,18 +162,26 @@ describe('InstanceLock', () => {
       vi.useRealTimers();
     });
 
+    const infoOf = (): Record<string, unknown> => JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>;
     const heartbeatOf = (): number => (JSON.parse(fs.readFileSync(file, 'utf8')) as { heartbeat: number }).heartbeat;
 
-    it('取っている間は intervalMs ごとに heartbeat を書き、release の後は書かない', () => {
-      const lock = new InstanceLock(file, { now, pid: 111, intervalMs: 10 });
+    it('取っている間は intervalMs ごとに heartbeat だけを書き（pid・startedAt はそのまま）、release の後は書かない', () => {
+      const lock = new InstanceLock(file, { now, pid: 111, intervalMs: 1000 });
       expect(lock.tryAcquire().acquired).toBe(true);
-      clock += 100;
-      vi.advanceTimersByTime(10);
-      expect(heartbeatOf()).toBe(clock);
 
+      clock += 1500;
+      vi.advanceTimersByTime(1000);
+      expect(infoOf()).toEqual({ pid: 111, heartbeat: 1_001_500, startedAt: 1_000_000 });
+
+      clock += 1000;
+      vi.advanceTimersByTime(1000);
+      expect(infoOf()).toEqual({ pid: 111, heartbeat: 1_002_500, startedAt: 1_000_000 });
+
+      // ファイルの pid が自分のままでも、release の後は書き戻さない
       lock.release();
       fs.writeFileSync(file, JSON.stringify({ pid: 111, heartbeat: 1, startedAt: 1 }));
-      vi.advanceTimersByTime(100);
+      clock += 3000;
+      vi.advanceTimersByTime(3000);
       expect(heartbeatOf()).toBe(1);
     });
 
