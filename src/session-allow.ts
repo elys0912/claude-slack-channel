@@ -216,6 +216,11 @@ export class SessionAllowAll {
     }
   }
 
+  /** 全部許可のボタンを出してよいか。まだ有効になっておらず、ask を読める（available）とき */
+  canOffer(): boolean {
+    return this.state === undefined && this.available();
+  }
+
   /**
    * 自動で許可してよいか。無効なら false。ask に当たるか、ルールを読めなければ、当たったルール（または理由）付きで false
    */
