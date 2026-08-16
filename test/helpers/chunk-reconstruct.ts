@@ -16,6 +16,9 @@ export function fenceStateAfter(initial: string | undefined, content: string): s
   return state;
 }
 
+/** 末尾が上位サロゲート（サロゲートペアの前半）で終わる文字列 */
+export const ENDS_WITH_HIGH_SURROGATE_RE = /[\uD800-\uDBFF]$/;
+
 /** チャンク列から、開き直し／閉じ直しを取り除いて元の文字列を復元しつつ、prefix/suffix の整合を検証する */
 export function reconstructAndCheck(chunks: string[], limit: number): string {
   let open: string | undefined = undefined;
@@ -25,7 +28,7 @@ export function reconstructAndCheck(chunks: string[], limit: number): string {
     let body = chunk;
     if (open !== undefined) {
       const prefix = '```' + open + '\n';
-      expect(body.startsWith(prefix)).toBe(true);
+      expect(body.slice(0, prefix.length)).toBe(prefix);
       body = body.slice(prefix.length);
     }
     const isLast = i === chunks.length - 1;
@@ -42,8 +45,7 @@ export function reconstructAndCheck(chunks: string[], limit: number): string {
       }
       expect(body.length).toBeGreaterThan(0);
       // サロゲートペアの途中で終わらない
-      const last = body.charCodeAt(body.length - 1);
-      expect(last >= 0xd800 && last <= 0xdbff).toBe(false);
+      expect(body).not.toMatch(ENDS_WITH_HIGH_SURROGATE_RE);
     }
     out += body;
   });

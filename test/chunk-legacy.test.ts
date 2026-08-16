@@ -1,10 +1,21 @@
 // chunkText の出力が、分割前の実装（test/fixtures/chunk-legacy.ts）と一致することを固定シードで確認する。
 // あわせて、出力の不変条件（content の連結 = 元の文字列、prefix/suffix がフェンス状態と一致）を検証する。
 import { describe, expect, it } from 'vitest';
-import { chunkText, splitPieces } from '../src/chunk.js';
+import { MIN_LIMIT, chunkText, splitPieces } from '../src/chunk.js';
 import { chunkText as chunkTextLegacy } from './fixtures/chunk-legacy.js';
 import { fenceStateAfter, reconstructAndCheck } from './helpers/chunk-reconstruct.js';
 import { mulberry32, randomText } from './helpers/random-text.js';
+
+/**
+ * 乱数の入力 1 件。limit は MIN_LIMIT から extraLimit 未満を足した値、長さは limit の lengthFactor 倍未満。
+ * 乱数を引く順（limit → 長さ → 本文）は固定シードの結果を変えないよう保つ。label は失敗したときに出す
+ */
+function randomCase(rand: () => number, index: number, opts: { extraLimit: number; lengthFactor: number }) {
+  const limit = MIN_LIMIT + Math.floor(rand() * opts.extraLimit);
+  const len = Math.floor(rand() * limit * opts.lengthFactor);
+  const text = randomText(rand, len);
+  return { text, limit, label: `case #${index} limit=${limit} text=${JSON.stringify(text)}` };
+}
 
 describe('chunkText は分割前の実装と同じ出力を返す', () => {
   it('固定シードで 2000 ケース以上、新旧の出力が一致する', () => {
@@ -12,12 +23,9 @@ describe('chunkText は分割前の実装と同じ出力を返す', () => {
     let cases = 0;
     let multiChunk = 0;
     for (let i = 0; i < 2400; i++) {
-      const limit = 64 + Math.floor(rand() * 300);
-      const len = Math.floor(rand() * limit * 6);
-      const text = randomText(rand, len);
+      const { text, limit, label } = randomCase(rand, i, { extraLimit: 300, lengthFactor: 6 });
       const actual = chunkText(text, limit);
-      const expected = chunkTextLegacy(text, limit);
-      expect(actual, `case #${i} limit=${limit} text=${JSON.stringify(text)}`).toEqual(expected);
+      expect(actual, label).toEqual(chunkTextLegacy(text, limit));
       cases += 1;
       if (actual.length > 1) multiChunk += 1;
     }
@@ -48,26 +56,21 @@ describe('chunkText の不変条件', () => {
   it('content の連結が元の文字列に戻り、prefix/suffix がフェンス状態と一致する', () => {
     const rand = mulberry32(7);
     for (let i = 0; i < 1000; i++) {
-      const limit = 64 + Math.floor(rand() * 200);
-      const len = Math.floor(rand() * limit * 5);
-      const text = randomText(rand, len);
+      const { text, limit, label } = randomCase(rand, i, { extraLimit: 200, lengthFactor: 5 });
       const chunks = chunkText(text, limit);
       if (text === '') {
         expect(chunks).toEqual([]);
         continue;
       }
-      expect(reconstructAndCheck(chunks, limit), `case #${i} limit=${limit} text=${JSON.stringify(text)}`).toBe(text);
+      expect(reconstructAndCheck(chunks, limit), label).toBe(text);
     }
   });
 
   it('splitPieces: content の連結が元の文字列、prefix/suffix がフェンス状態と一致、chunkText と整合', () => {
     const rand = mulberry32(99);
     for (let i = 0; i < 1000; i++) {
-      const limit = 64 + Math.floor(rand() * 200);
-      const len = Math.floor(rand() * limit * 5);
-      const text = randomText(rand, len);
+      const { text, limit, label } = randomCase(rand, i, { extraLimit: 200, lengthFactor: 5 });
       const pieces = splitPieces(text, limit);
-      const label = `case #${i} limit=${limit} text=${JSON.stringify(text)}`;
 
       expect(pieces.map((p) => p.content).join(''), label).toBe(text);
       expect(pieces.map((p) => p.prefix + p.content + p.suffix), label).toEqual(chunkText(text, limit));
