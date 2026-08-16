@@ -61,8 +61,10 @@ function formatArg(a: unknown): string {
 export interface LoggerOptions {
   file?: string;
   level?: LogLevel;
-  maxBytes?: number; // 既定 5MB
-  stderr?: boolean; // 既定 true
+  /** ファイルをこれを超えたら `<file>.1` へ回す。省略時は DEFAULT_MAX_BYTES */
+  maxBytes?: number;
+  /** stderr にも書くか。省略時は true */
+  stderr?: boolean;
 }
 
 const DEFAULT_MAX_BYTES = 5 * 1024 * 1024;
@@ -89,10 +91,10 @@ export function rotateIfLarger(file: string, maxBytes: number): void {
 }
 
 export class Logger {
-  private file: string | undefined;
+  private readonly file: string | undefined;
   private level: LogLevel;
-  private maxBytes: number;
-  private toStderr: boolean;
+  private readonly maxBytes: number;
+  private readonly toStderr: boolean;
   private name = '';
 
   constructor(opts: LoggerOptions = {}) {

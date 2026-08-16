@@ -10,8 +10,10 @@ export interface LockInfo {
 }
 
 export interface InstanceLockOptions {
-  staleMs?: number; // 既定 30000
-  intervalMs?: number; // 既定 10000
+  /** heartbeat がこれより古いロックは取ってよい。省略時は DEFAULT_STALE_MS */
+  staleMs?: number;
+  /** heartbeat を書き直す間隔。省略時は DEFAULT_INTERVAL_MS */
+  intervalMs?: number;
   now?: () => number;
   pid?: number;
   /** 記録された pid のプロセスが生きているか。死んでいれば heartbeat が新しくても取る。省略時は確認しない（常に生きている扱い） */
