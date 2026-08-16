@@ -54,6 +54,8 @@ $HookLogFileName = 'hooks.jsonl'
 $AllowExtraFileName = 'allow-extra.json'
 # トークンなどを書く設定（src/config.ts の loadTokens が読むものと同じ名前にすること）
 $EnvFileName = '.env'
+# 許可するユーザー・チャンネルの設定（src/config.ts の ACCESS_FILE と同じ名前にすること）
+$AccessFileName = 'access.json'
 # local スコープに登録する slackbridge を、待つだけにする環境変数（src/placeholder.ts の PLACEHOLDER_ENV と値 1。common.ps1 の Test-PlaceholderServer も同じ）
 $PlaceholderEnvAssignment = 'SLACK_CHANNEL_PLACEHOLDER=1'
 
@@ -114,7 +116,7 @@ function Confirm-Built {
 
 # .env と access.json が揃っているかだけ見る（トークンを扱わないよう、中身は読まない）
 function Confirm-StateFiles {
-    $missing = @($EnvFileName, 'access.json') | Where-Object { -not (Test-Path -LiteralPath (Join-Path $resolvedStateDir $_)) }
+    $missing = @($EnvFileName, $AccessFileName) | Where-Object { -not (Test-Path -LiteralPath (Join-Path $resolvedStateDir $_)) }
     if (-not $missing) { return }
 
     $message = "$resolvedStateDir に $($missing -join ' と ') が無い。README のセットアップ手順に従って、" +
