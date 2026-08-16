@@ -55,8 +55,10 @@ test/env-switch.test.ts
 test/console-script.test.ts
 test/crash-notice.test.ts
 test/helpers/chunk-reconstruct.ts
+test/helpers/permission-request.ts
 test/helpers/powershell.ts
 test/helpers/random-text.ts
+test/helpers/temp-dir.ts
 test/hook-inbox.test.ts
 test/hook.test.ts
 test/keepalive.test.ts

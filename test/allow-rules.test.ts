@@ -1,8 +1,7 @@
 // このファイルは claude-slack-channel と claude-discord-channel で同じ内容にしている（直すときは両方を直す）。
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import {
   buildRejectedRulesText,
   denyOverlaps,
@@ -18,18 +17,9 @@ import {
 } from '../src/allow-rules.js';
 import { AllowRuleStore } from '../src/allow-rule-store.js';
 import { managedSettingsFiles, readDeny } from '../src/settings-files.js';
-import type { PermissionRequest } from '../src/permission.js';
+import { HOME, req } from './helpers/permission-request.js';
+import { useTempDir } from './helpers/temp-dir.js';
 
-function req(tool: string, input: unknown): PermissionRequest {
-  return {
-    request_id: 'abcde',
-    tool_name: tool,
-    description: '',
-    input_preview: typeof input === 'string' ? input : JSON.stringify(input),
-  };
-}
-
-const HOME = 'C:\\Users\\me';
 const CTX = { workDir: 'C:\\dev\\foo', home: HOME };
 
 describe('normalizeCommandName', () => {
@@ -65,6 +55,31 @@ describe('normalizeCommandName', () => {
     ['Remove-Item', 'remove-item'],
   ])('%s → %s', (word, name) => {
     expect(normalizeCommandName(word)).toBe(name);
+  });
+});
+
+describe('isCompoundCommand', () => {
+  it('ask の照合と同じ区切り（途中の & を含む）と、リダイレクトを複合とみなす', () => {
+    for (const command of ['a && b', 'a || b', 'a; b', 'a | b', 'a & b', 'a\nb', 'a $(b)', 'a `b`', 'a > b', 'a < b']) {
+      expect(isCompoundCommand(command)).toBe(true);
+    }
+    expect(isCompoundCommand('git status')).toBe(false);
+  });
+});
+
+describe('toRulePath', () => {
+  it.each([
+    ['C:\\dev\\foo', '//c/dev/foo'],
+    ['D:/Work/x/', '//d/Work/x'],
+    ['C:\\', '//c'],
+    ['/home/a/proj', '//home/a/proj'],
+  ])('%s → %s', (input, expected) => {
+    expect(toRulePath(input)).toBe(expected);
+  });
+
+  it('相対パスや UNC は undefined', () => {
+    expect(toRulePath('dev\\foo')).toBeUndefined();
+    expect(toRulePath('//server/share')).toBeUndefined();
   });
 });
 
@@ -134,9 +149,7 @@ describe('deriveRule（シェル）', () => {
     './ls',
     'C:\\tools\\ls.exe',
   ])('"%s" からは作らない（許可リストのコマンドを引数なしで呼んだものではない）', (command) => {
-    const result = deriveRule(req('Bash', { command }));
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.reason).toContain('許可リストのコマンドを引数なしで呼んだものではない');
+    expect(deriveRule(req('Bash', { command }))).toMatchObject({ ok: false, reason: expect.stringContaining('許可リストのコマンドを引数なしで呼んだものではない') });
   });
 
   it.each([
@@ -152,9 +165,7 @@ describe('deriveRule（シェル）', () => {
     'ls 2>&1',
     'Get-Location < in.txt',
   ])('"%s" からは作らない（複数のコマンド・リダイレクト）', (command) => {
-    const result = deriveRule(req('Bash', { command }));
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.reason).toContain('複数のコマンドをつないだ・リダイレクトを含む');
+    expect(deriveRule(req('Bash', { command }))).toMatchObject({ ok: false, reason: expect.stringContaining('複数のコマンドをつないだ・リダイレクトを含む') });
   });
 
   it('入力が JSON でない（省略されている）ときは作らない', () => {
@@ -162,12 +173,35 @@ describe('deriveRule（シェル）', () => {
   });
 });
 
-describe('isCompoundCommand', () => {
-  it('ask の照合と同じ区切り（途中の & を含む）と、リダイレクトを複合とみなす', () => {
-    for (const command of ['a && b', 'a || b', 'a; b', 'a | b', 'a & b', 'a\nb', 'a $(b)', 'a `b`', 'a > b', 'a < b']) {
-      expect(isCompoundCommand(command)).toBe(true);
-    }
-    expect(isCompoundCommand('git status')).toBe(false);
+describe('deriveRule（パスを取るツール）', () => {
+  it.each([
+    ['Read', { file_path: 'C:\\dev\\foo\\src\\a.ts' }, 'Read(//c/dev/foo/src/**)'],
+    ['Read', { file_path: '/home/u/proj/a.ts' }, 'Read(//home/u/proj/**)'],
+    ['Grep', { pattern: 'x', path: 'C:\\dev\\foo' }, 'Read(//c/dev/foo/**)'],
+    ['Glob', { pattern: '**/*.ts', path: 'C:\\dev\\foo\\src' }, 'Read(//c/dev/foo/src/**)'],
+    ['Edit', { file_path: 'C:\\dev\\foo\\a.ts' }, 'Edit(//c/dev/foo/**)'],
+    ['Write', { file_path: 'C:\\dev\\foo\\a.ts', content: '' }, 'Edit(//c/dev/foo/**)'],
+    ['NotebookEdit', { notebook_path: 'C:\\dev\\foo\\n.ipynb' }, 'Edit(//c/dev/foo/**)'],
+  ])('%s %j から %s を作る', (tool, input, rule) => {
+    expect(deriveRule(req(tool, input), HOME)).toMatchObject({ ok: true, rule });
+  });
+
+  it.each([
+    ['Grep', { pattern: 'x' }, 'パスを読み取れなかった'],
+    ['Read', { file_path: 'a.ts' }, '絶対パスでない'],
+    ['Write', { file_path: 'a.txt' }, '絶対パスでない'],
+    ['Read', { file_path: 'C:\\dev\\a.ts' }, '浅すぎる'],
+    ['Read', { file_path: 'C:\\a.ts' }, '浅すぎる'],
+    ['Read', { file_path: 'C:\\Users\\me\\a.txt' }, 'ホームフォルダー'],
+    ['Grep', { pattern: 'x', path: 'C:\\Users' }, '浅すぎる'],
+    ['Read', { file_path: 'C:\\dev\\[x]\\a.ts' }, '特殊な文字'],
+    ['Read', { file_path: 'C:\\dev\\foo\\..\\..\\a.ts' }, '..'],
+  ])('%s %j からは作らない（%s）', (tool, input, reason) => {
+    expect(deriveRule(req(tool, input), HOME)).toMatchObject({ ok: false, reason: expect.stringContaining(reason) });
+  });
+
+  it('入力が JSON でない（省略されている）ときは作らない', () => {
+    expect(deriveRule(req('Read', '{"file_path":"C:\\\\dev\\\\fo…'), HOME).ok).toBe(false);
   });
 });
 
@@ -187,9 +221,7 @@ describe('deriveRule（WebFetch）', () => {
     [{ url: 'https://*.example.com/' }, 'ホストが想定外'],
     [{ url: 'http://[::1]/' }, 'ホストが想定外'],
   ])('WebFetch %j からは作らない（%s）', (input, reason) => {
-    const result = deriveRule(req('WebFetch', input));
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.reason).toContain(reason);
+    expect(deriveRule(req('WebFetch', input))).toMatchObject({ ok: false, reason: expect.stringContaining(reason) });
   });
 });
 
@@ -224,9 +256,7 @@ describe('deriveRule（MCP とそれ以外のツール）', () => {
     'mcp__gh__view_and_approve',
     'mcp__gh__find_replace',
   ])('それ以外のツール（%s）からは作らない', (tool) => {
-    const result = deriveRule(req(tool, {}));
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.reason).toContain('読み取り専用と分かる MCP');
+    expect(deriveRule(req(tool, {}))).toMatchObject({ ok: false, reason: expect.stringContaining('読み取り専用と分かる MCP') });
   });
 
   it('isReadOnlyMcpTool は MCP の個別のツール名だけを見る', () => {
@@ -294,13 +324,19 @@ describe('isDerivableRule / partitionStoredRules / buildRejectedRulesText（D-SD
     });
   });
 
-  it('作れないルールの知らせは、無ければ undefined、あれば件数と一覧（多ければ件数だけ足す）', () => {
+  it('作れないルールが無ければ、知らせは undefined', () => {
     expect(buildRejectedRulesText([])).toBeUndefined();
+  });
+
+  it('作れないルールの知らせには、件数と一覧と !rules の案内を書く', () => {
     const text = buildRejectedRulesText(['Bash(git log:*)', 'WebFetch']) ?? '';
     expect(text).toContain('2 件');
     expect(text).toContain('• Bash(git log:*)');
     expect(text).toContain('• WebFetch');
     expect(text).toContain('!rules');
+  });
+
+  it('作れないルールが 20 件を超えたら、一覧は 20 件までにして残りは件数だけ書く', () => {
     const many = buildRejectedRulesText(Array.from({ length: 25 }, (_, i) => `Bash(x${i}:*)`)) ?? '';
     expect(many).toContain('25 件');
     expect(many).toContain('• Bash(x19:*)');
@@ -380,135 +416,6 @@ describe('denyOverlaps / proposeRule', () => {
   });
 });
 
-describe('readDeny / AllowRuleStore / managedSettingsFiles', () => {
-  let dir: string;
-
-  beforeEach(() => {
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'allow-rules-'));
-  });
-
-  afterEach(() => {
-    fs.rmSync(dir, { recursive: true, force: true });
-  });
-
-  it('settings の permissions.deny を読む（無ければ空、壊れていれば投げる）', () => {
-    const file = path.join(dir, 's.json');
-    fs.writeFileSync(file, '\uFEFF' + JSON.stringify({ permissions: { deny: ['Read(.env)', 1] } }));
-    expect(readDeny(file)).toEqual(['Read(.env)']);
-    expect(readDeny(path.join(dir, 'none.json'))).toEqual([]);
-    fs.writeFileSync(file, '{ broken');
-    expect(() => readDeny(file)).toThrow('JSON 構文が不正');
-  });
-
-  it('managedSettingsFiles: managed-settings.json と managed-settings.d の *.json を名前順に返す', () => {
-    const dropIn = path.join(dir, 'managed-settings.d');
-    fs.mkdirSync(dropIn);
-    for (const name of ['20-b.json', '10-a.json', '.hidden.json', 'note.txt']) fs.writeFileSync(path.join(dropIn, name), '{}');
-    expect(managedSettingsFiles([dir])).toEqual([
-      path.join(dir, 'managed-settings.json'),
-      path.join(dropIn, '10-a.json'),
-      path.join(dropIn, '20-b.json'),
-    ]);
-  });
-
-  it('managedSettingsFiles: managed-settings.d が無ければ managed-settings.json だけ。読めなければ投げる', () => {
-    expect(managedSettingsFiles([dir])).toEqual([path.join(dir, 'managed-settings.json')]);
-    fs.writeFileSync(path.join(dir, 'managed-settings.d'), 'not a dir');
-    expect(() => managedSettingsFiles([dir])).toThrow('を読めない');
-  });
-
-  it('managedSettingsFiles: 候補のフォルダー（今の置き場所と古い置き場所）を全部読む（D-DC-04）', () => {
-    const current = path.join(dir, 'Program Files', 'ClaudeCode');
-    const legacy = path.join(dir, 'ProgramData', 'ClaudeCode');
-    fs.mkdirSync(path.join(legacy, 'managed-settings.d'), { recursive: true });
-    fs.writeFileSync(path.join(legacy, 'managed-settings.d', 'a.json'), '{}');
-    expect(managedSettingsFiles([current, legacy])).toEqual([
-      path.join(current, 'managed-settings.json'),
-      path.join(legacy, 'managed-settings.json'),
-      path.join(legacy, 'managed-settings.d', 'a.json'),
-    ]);
-  });
-
-  it.runIf(process.platform === 'win32')('managedSettingsFiles: Windows の既定は Program Files と ProgramData の両方', () => {
-    const files = managedSettingsFiles();
-    expect(files).toContain('C:\\Program Files\\ClaudeCode\\managed-settings.json');
-    expect(files).toContain('C:\\ProgramData\\ClaudeCode\\managed-settings.json');
-  });
-
-  it('壊れた allow-extra.json は一覧では空扱いにし、読む・追加・削除は投げて上書きしない', () => {
-    const file = path.join(dir, 'allow-extra.json');
-    fs.writeFileSync(file, '{ broken');
-    const store = new AllowRuleStore(file);
-    expect(store.list()).toEqual([]);
-    expect(() => store.read()).toThrow('JSON 構文が不正');
-    expect(() => store.add('WebFetch')).toThrow('JSON 構文が不正');
-    expect(() => store.remove('WebFetch')).toThrow('JSON 構文が不正');
-    expect(fs.readFileSync(file, 'utf8')).toBe('{ broken');
-  });
-
-  it('追加・重複・削除', () => {
-    const store = new AllowRuleStore(path.join(dir, 'sub', 'allow-extra.json'));
-    expect(store.list()).toEqual([]);
-    expect(store.add('Bash(git status)')).toBe(true);
-    expect(store.add('Bash(git status)')).toBe(false);
-    expect(store.add('WebFetch')).toBe(true);
-    expect(store.list()).toEqual(['Bash(git status)', 'WebFetch']);
-    expect(store.remove('Bash(git status)')).toBe(true);
-    expect(store.remove('Bash(git status)')).toBe(false);
-    expect(store.list()).toEqual(['WebFetch']);
-  });
-});
-
-describe('toRulePath', () => {
-  it.each([
-    ['C:\\dev\\foo', '//c/dev/foo'],
-    ['D:/Work/x/', '//d/Work/x'],
-    ['C:\\', '//c'],
-    ['/home/a/proj', '//home/a/proj'],
-  ])('%s → %s', (input, expected) => {
-    expect(toRulePath(input)).toBe(expected);
-  });
-
-  it('相対パスや UNC は undefined', () => {
-    expect(toRulePath('dev\\foo')).toBeUndefined();
-    expect(toRulePath('//server/share')).toBeUndefined();
-  });
-});
-
-describe('deriveRule（パスを取るツール）', () => {
-  it.each([
-    ['Read', { file_path: 'C:\\dev\\foo\\src\\a.ts' }, 'Read(//c/dev/foo/src/**)'],
-    ['Read', { file_path: '/home/u/proj/a.ts' }, 'Read(//home/u/proj/**)'],
-    ['Grep', { pattern: 'x', path: 'C:\\dev\\foo' }, 'Read(//c/dev/foo/**)'],
-    ['Glob', { pattern: '**/*.ts', path: 'C:\\dev\\foo\\src' }, 'Read(//c/dev/foo/src/**)'],
-    ['Edit', { file_path: 'C:\\dev\\foo\\a.ts' }, 'Edit(//c/dev/foo/**)'],
-    ['Write', { file_path: 'C:\\dev\\foo\\a.ts', content: '' }, 'Edit(//c/dev/foo/**)'],
-    ['NotebookEdit', { notebook_path: 'C:\\dev\\foo\\n.ipynb' }, 'Edit(//c/dev/foo/**)'],
-  ])('%s %j から %s を作る', (tool, input, rule) => {
-    expect(deriveRule(req(tool, input), HOME)).toMatchObject({ ok: true, rule });
-  });
-
-  it.each([
-    ['Grep', { pattern: 'x' }, 'パスを読み取れなかった'],
-    ['Read', { file_path: 'a.ts' }, '絶対パスでない'],
-    ['Write', { file_path: 'a.txt' }, '絶対パスでない'],
-    ['Read', { file_path: 'C:\\dev\\a.ts' }, '浅すぎる'],
-    ['Read', { file_path: 'C:\\a.ts' }, '浅すぎる'],
-    ['Read', { file_path: 'C:\\Users\\me\\a.txt' }, 'ホームフォルダー'],
-    ['Grep', { pattern: 'x', path: 'C:\\Users' }, '浅すぎる'],
-    ['Read', { file_path: 'C:\\dev\\[x]\\a.ts' }, '特殊な文字'],
-    ['Read', { file_path: 'C:\\dev\\foo\\..\\..\\a.ts' }, '..'],
-  ])('%s %j からは作らない（%s）', (tool, input, reason) => {
-    const result = deriveRule(req(tool, input), HOME);
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.reason).toContain(reason);
-  });
-
-  it('入力が JSON でない（省略されている）ときは作らない', () => {
-    expect(deriveRule(req('Read', '{"file_path":"C:\\\\dev\\\\fo…'), HOME).ok).toBe(false);
-  });
-});
-
 describe('denyOverlaps（パスのルール）', () => {
   const candidate = { tool: 'Read', prefix: '//c/dev/foo/**' };
 
@@ -549,5 +456,100 @@ describe('denyOverlaps（パスのルール）', () => {
   it('proposeRule: 親フォルダーが丸ごと deny なら断る', () => {
     const result = proposeRule(req('Write', { file_path: 'C:\\dev\\foo\\a.ts' }), ['Edit(//c/dev/**)'], CTX);
     expect(result).toMatchObject({ ok: false, denyHits: ['Edit(//c/dev/**)'] });
+  });
+});
+
+describe('readDeny / AllowRuleStore / managedSettingsFiles', () => {
+  const tempDir = useTempDir('allow-rules-');
+  let dir: string;
+
+  beforeEach(() => {
+    dir = tempDir();
+  });
+
+  it('readDeny: settings の permissions.deny のうち文字列だけを読む（先頭の BOM は外す）', () => {
+    const file = path.join(dir, 's.json');
+    fs.writeFileSync(file, '\uFEFF' + JSON.stringify({ permissions: { deny: ['Read(.env)', 1] } }));
+    expect(readDeny(file)).toEqual(['Read(.env)']);
+  });
+
+  it('readDeny: ファイルが無ければ空', () => {
+    expect(readDeny(path.join(dir, 'none.json'))).toEqual([]);
+  });
+
+  it('readDeny: JSON として壊れていれば投げる', () => {
+    const file = path.join(dir, 's.json');
+    fs.writeFileSync(file, '{ broken');
+    expect(() => readDeny(file)).toThrow('JSON 構文が不正');
+  });
+
+  it('managedSettingsFiles: managed-settings.json と managed-settings.d の *.json を名前順に返す', () => {
+    const dropIn = path.join(dir, 'managed-settings.d');
+    fs.mkdirSync(dropIn);
+    for (const name of ['20-b.json', '10-a.json', '.hidden.json', 'note.txt']) fs.writeFileSync(path.join(dropIn, name), '{}');
+    expect(managedSettingsFiles([dir])).toEqual([
+      path.join(dir, 'managed-settings.json'),
+      path.join(dropIn, '10-a.json'),
+      path.join(dropIn, '20-b.json'),
+    ]);
+  });
+
+  it('managedSettingsFiles: managed-settings.d が無ければ managed-settings.json だけ', () => {
+    expect(managedSettingsFiles([dir])).toEqual([path.join(dir, 'managed-settings.json')]);
+  });
+
+  it('managedSettingsFiles: managed-settings.d がフォルダーとして読めなければ投げる', () => {
+    fs.writeFileSync(path.join(dir, 'managed-settings.d'), 'not a dir');
+    expect(() => managedSettingsFiles([dir])).toThrow('を読めない');
+  });
+
+  it('managedSettingsFiles: 候補のフォルダー（今の置き場所と古い置き場所）を全部読む（D-DC-04）', () => {
+    const current = path.join(dir, 'Program Files', 'ClaudeCode');
+    const legacy = path.join(dir, 'ProgramData', 'ClaudeCode');
+    fs.mkdirSync(path.join(legacy, 'managed-settings.d'), { recursive: true });
+    fs.writeFileSync(path.join(legacy, 'managed-settings.d', 'a.json'), '{}');
+    expect(managedSettingsFiles([current, legacy])).toEqual([
+      path.join(current, 'managed-settings.json'),
+      path.join(legacy, 'managed-settings.json'),
+      path.join(legacy, 'managed-settings.d', 'a.json'),
+    ]);
+  });
+
+  it.runIf(process.platform === 'win32')('managedSettingsFiles: Windows の既定は Program Files と ProgramData の両方', () => {
+    const files = managedSettingsFiles();
+    expect(files).toContain('C:\\Program Files\\ClaudeCode\\managed-settings.json');
+    expect(files).toContain('C:\\ProgramData\\ClaudeCode\\managed-settings.json');
+  });
+
+  it('壊れた allow-extra.json は一覧では空扱いにし、読む・追加・削除は投げて上書きしない', () => {
+    const file = path.join(dir, 'allow-extra.json');
+    fs.writeFileSync(file, '{ broken');
+    const store = new AllowRuleStore(file);
+    expect(store.list()).toEqual([]);
+    expect(() => store.read()).toThrow('JSON 構文が不正');
+    expect(() => store.add('WebFetch')).toThrow('JSON 構文が不正');
+    expect(() => store.remove('WebFetch')).toThrow('JSON 構文が不正');
+    expect(fs.readFileSync(file, 'utf8')).toBe('{ broken');
+  });
+
+  it('AllowRuleStore: ファイルが無ければ一覧は空', () => {
+    expect(new AllowRuleStore(path.join(dir, 'sub', 'allow-extra.json')).list()).toEqual([]);
+  });
+
+  it('AllowRuleStore: 追加したルールを足した順に並べ、同じルールの追加は false を返して増やさない', () => {
+    const store = new AllowRuleStore(path.join(dir, 'sub', 'allow-extra.json'));
+    expect(store.add('Bash(git status)')).toBe(true);
+    expect(store.add('Bash(git status)')).toBe(false);
+    expect(store.add('WebFetch')).toBe(true);
+    expect(store.list()).toEqual(['Bash(git status)', 'WebFetch']);
+  });
+
+  it('AllowRuleStore: 削除はあったルールだけ true を返して消し、無いルールは false', () => {
+    const store = new AllowRuleStore(path.join(dir, 'sub', 'allow-extra.json'));
+    store.add('Bash(git status)');
+    store.add('WebFetch');
+    expect(store.remove('Bash(git status)')).toBe(true);
+    expect(store.remove('Bash(git status)')).toBe(false);
+    expect(store.list()).toEqual(['WebFetch']);
   });
 });

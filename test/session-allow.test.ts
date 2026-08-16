@@ -1,19 +1,15 @@
 // このファイルは claude-slack-channel と claude-discord-channel で同じ内容にしている（直すときは両方を直す）。
 import { describe, expect, it } from 'vitest';
 import { SessionAllowAll, matchingRule } from '../src/session-allow.js';
-import type { PermissionRequest } from '../src/permission.js';
-
-function req(tool: string, input: unknown): PermissionRequest {
-  return {
-    request_id: 'abcde',
-    tool_name: tool,
-    description: '',
-    input_preview: typeof input === 'string' ? input : JSON.stringify(input),
-  };
-}
+import { HOME, req } from './helpers/permission-request.js';
 
 const PUSH = 'Bash(git push:*)';
 const PS_PUSH = 'PowerShell(git push:*)';
+
+/** tool で command を実行するリクエストが、ask の rule に当たる（rule が返る）ことを確かめる */
+function expectAsk(tool: string, command: string, rule: string): void {
+  expect(matchingRule(req(tool, { command }), [rule])).toBe(rule);
+}
 
 describe('matchingRule', () => {
   it('ツール全体のルールは、そのツールの全リクエストに当たる', () => {
@@ -57,7 +53,7 @@ describe('matchingRule', () => {
     'git.exe push origin main',
     'GIT.CMD push',
   ])('複合コマンドは部分ごとに照合し、先頭の語は正規化する（%s）', (command) => {
-    expect(matchingRule(req('Bash', { command }), [PUSH])).toBe(PUSH);
+    expectAsk('Bash', command, PUSH);
   });
 
   it.each([
@@ -73,7 +69,7 @@ describe('matchingRule', () => {
     '/usr/bin/git status',
     'C:\\tools\\x.exe ls',
   ])('先頭が環境変数の代入・ラッパー・パスの部分（%s）は当たりにする', (command) => {
-    expect(matchingRule(req('Bash', { command }), [PUSH])).toBe(PUSH);
+    expectAsk('Bash', command, PUSH);
   });
 
   it.each([
@@ -105,8 +101,8 @@ describe('matchingRule', () => {
     'Invoke-Expression "git push"',
     'iex "git push"',
   ])('引用符・バッククォート・かっこ・制御構文を含むもの（%s）は、解釈しないので当たりにする', (command) => {
-    expect(matchingRule(req('Bash', { command }), [PUSH])).toBe(PUSH);
-    expect(matchingRule(req('PowerShell', { command }), [PS_PUSH])).toBe(PS_PUSH);
+    expectAsk('Bash', command, PUSH);
+    expectAsk('PowerShell', command, PS_PUSH);
   });
 
   it.each([
@@ -115,27 +111,27 @@ describe('matchingRule', () => {
     'Get-Date | ? Name -eq x',
     'Get-Date | Where-Object Name -eq x',
   ])('Where-Object とその別名（%s）を含むものは、解釈しないので当たりにする', (command) => {
-    expect(matchingRule(req('PowerShell', { command }), [PS_PUSH])).toBe(PS_PUSH);
+    expectAsk('PowerShell', command, PS_PUSH);
   });
 
   it.each(['start x', 'saps x', 'Start-Process x', 'iex x', 'Invoke-Expression x', 'icm x', 'Invoke-Command x', 'sajb x', 'Start-Job x'])(
     '先頭が PowerShell のラッパーか、その別名（%s）なら当たりにする',
     (command) => {
-      expect(matchingRule(req('PowerShell', { command }), [PS_PUSH])).toBe(PS_PUSH);
+      expectAsk('PowerShell', command, PS_PUSH);
     }
   );
 
-  it.each(['git -C x push','git --no-pager push', 'git.exe -c a=b push', 'git $x origin', 'git pu* origin', 'git pu?h'])(
+  it.each(['git -C x push', 'git --no-pager push', 'git.exe -c a=b push', 'git $x origin', 'git pu* origin', 'git pu?h'])(
     'サブコマンドの位置がオプションか、展開で変わりうる語（%s）なら当たりにする',
     (command) => {
-      expect(matchingRule(req('Bash', { command }), [PUSH])).toBe(PUSH);
+      expectAsk('Bash', command, PUSH);
     }
   );
 
   it.each(['find . -exec git push', 'echo git push', 'xargs git push', 'nohup git push'])(
     '部分の途中にプレフィックスの語が並ぶもの（%s）も当たりにする（確認が出るだけなので安全側）',
     (command) => {
-      expect(matchingRule(req('Bash', { command }), [PUSH])).toBe(PUSH);
+      expectAsk('Bash', command, PUSH);
     }
   );
 
@@ -159,8 +155,8 @@ describe('matchingRule', () => {
     ['ii a', 'Invoke-Item a', 'PowerShell(Invoke-Item:*)'],
     ['icm -ComputerName a', 'Invoke-Command -ComputerName a', 'PowerShell(Invoke-Command:*)'],
   ])('PowerShell の別名（%s）は、本来のコマンドレット（%s）と同じく ask に当たる', (aliased, canonical, rule) => {
-    expect(matchingRule(req('PowerShell', { command: canonical }), [rule])).toBe(rule);
-    expect(matchingRule(req('PowerShell', { command: aliased }), [rule])).toBe(rule);
+    expectAsk('PowerShell', canonical, rule);
+    expectAsk('PowerShell', aliased, rule);
   });
 
   it('ask のルールが別名で書かれていても、本来のコマンドレットのコマンドに当たる', () => {
@@ -193,7 +189,7 @@ describe('matchingRule', () => {
 });
 
 describe('matchingRule（パスの ask ルール）', () => {
-  const ctx = { workDir: 'C:\\dev\\portfolio', home: 'C:\\Users\\me' };
+  const ctx = { workDir: 'C:\\dev\\portfolio', home: HOME };
   // FOX3 の deny と同じ形のルールを ask に置いたとき（2026-10-03 に実機で、どの Read も当たりになった）
   const rules = ['Read(~/.claude/channels/**)', 'Read(~/.ssh/**)', 'Read(.env)', 'Read(**/*.pem)', 'Edit(./Tool/FOX3-partner/**)'];
 
@@ -253,5 +249,22 @@ describe('SessionAllowAll', () => {
 
   it('ルールを読めれば available は true', () => {
     expect(new SessionAllowAll(() => []).available()).toBe(true);
+  });
+
+  it('canOffer: 有効になる前で、ルールを読めれば true', () => {
+    expect(new SessionAllowAll(() => []).canOffer()).toBe(true);
+  });
+
+  it('canOffer: 有効な間は false（ボタンを出し直さない）', () => {
+    const s = new SessionAllowAll(() => []);
+    s.enable('U1');
+    expect(s.canOffer()).toBe(false);
+  });
+
+  it('canOffer: ルールを読めなければ false', () => {
+    const s = new SessionAllowAll(() => {
+      throw new Error('broken json');
+    });
+    expect(s.canOffer()).toBe(false);
   });
 });

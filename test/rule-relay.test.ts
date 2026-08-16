@@ -3,12 +3,13 @@ import { Logger } from '../src/log.js';
 import { RuleRelay } from '../src/rule-relay.js';
 import type { PermissionRequest } from '../src/permission.js';
 import { actionsOf, blockViewsOf } from './helpers/block-kit.js';
+import { req } from './helpers/permission-request.js';
 
 /** 候補を確認に出してから押せるまでの期限（src/rule-relay.ts の PROPOSAL_TTL_MS と同じ値） */
 const PROPOSAL_TTL_MS = 10 * 60 * 1000;
 
 function bash(command: string): PermissionRequest {
-  return { request_id: 'abcde', tool_name: 'Bash', description: '', input_preview: JSON.stringify({ command }) };
+  return req('Bash', { command });
 }
 
 function setup(deny: string[] = []) {

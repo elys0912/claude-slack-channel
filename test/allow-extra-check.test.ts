@@ -1,23 +1,17 @@
 // このファイルは claude-slack-channel と claude-discord-channel で同じ内容にしている（直すときは両方を直す）。
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { runAllowExtraCheck } from '../src/allow-extra-check.js';
-
-const HOME = 'C:\\Users\\me';
+import { HOME } from './helpers/permission-request.js';
+import { useTempDir } from './helpers/temp-dir.js';
 
 describe('runAllowExtraCheck（start.ps1 が allow に足すルールを選ぶ）', () => {
-  let dir: string;
+  const tempDir = useTempDir('allow-extra-check-');
   let file: string;
 
   beforeEach(() => {
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'allow-extra-check-'));
-    file = path.join(dir, 'allow-extra.json');
-  });
-
-  afterEach(() => {
-    fs.rmSync(dir, { recursive: true, force: true });
+    file = path.join(tempDir(), 'allow-extra.json');
   });
 
   it('今の方式で作れるものを usable、作れないもの（前の方式で足したもの）を rejected にし、ファイルは書き換えない', () => {
