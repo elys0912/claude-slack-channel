@@ -1,9 +1,9 @@
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { describe, expect, it, vi } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { PowerShellConsole } from '../src/console.js';
 import { Logger } from '../src/log.js';
-import { runPowerShellFile } from './helpers/powershell.js';
+import { describeOnWindows, runPowerShellFile } from './helpers/powershell.js';
 
 const script = path.join(import.meta.dirname, '..', 'scripts', 'console.ps1');
 
@@ -15,8 +15,7 @@ function run(...args: string[]): { status: number | null; stdout: string; stderr
 
 // キーを実際に送るとテストを動かしているコンソールに入力が入るので、ここでは送らずに終わる経路だけを確かめる。
 // 送れることは docs/development.md の「テスト」にあるシステムテスト（別のコンソールで受け取って確かめる）で見る
-// powershell.exe の起動は CI の初回だと 5 秒を超えることがある
-describe.runIf(process.platform === 'win32')('scripts/console.ps1 の -Keys', { timeout: 30000 }, () => {
+describeOnWindows('scripts/console.ps1 の -Keys', 30000, () => {
   it('カンマ区切りを 1 つずつ照合し、許可されていないキーが混ざれば何も送らずに終わる', () => {
     const r = run('-Mode', 'keys', '-Keys', 'Down,Bogus');
     expect(r.status).toBe(2);
@@ -36,7 +35,7 @@ describe.runIf(process.platform === 'win32')('scripts/console.ps1 の -Keys', { 
   });
 });
 
-describe.runIf(process.platform === 'win32')('scripts/console.ps1 の -TargetPid', { timeout: 30000 }, () => {
+describeOnWindows('scripts/console.ps1 の -TargetPid', 30000, () => {
   it('別のコンソールを持つプロセスに付け直して、その画面を読む', async () => {
     const marker = `TARGET-${process.pid}-${Date.now()}`;
     // 非表示の新しいコンソールで、マーカーを書いて待つだけの PowerShell を動かす（読み取り対象の別コンソール）
@@ -70,7 +69,7 @@ describe.runIf(process.platform === 'win32')('scripts/console.ps1 の -TargetPid
   });
 });
 
-describe.runIf(process.platform === 'win32')('PowerShellConsole（console.ps1 の警告をログに残す）', { timeout: 30000 }, () => {
+describeOnWindows('PowerShellConsole（console.ps1 の警告をログに残す）', 30000, () => {
   it('付け直せず console.ps1 が 0 で終わっても、stderr の警告を logger.warn に残す', async () => {
     const logger = new Logger({ stderr: false });
     const warn = vi.spyOn(logger, 'warn');

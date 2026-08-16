@@ -1,11 +1,11 @@
 // scripts/start.ps1 の -DryRun と scripts/dialog-answer.ps1 を実際に動かす。
 // 起動の本体（引数の組み立て・一時ファイルの書き出し）とダイアログへの応答は、ほかのテストでは一度も実行されないため
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import type { SpawnSyncReturns } from 'node:child_process';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { runPowerShellFile } from './helpers/powershell.js';
+import { beforeEach, expect, it } from 'vitest';
+import { describeOnWindows, runPowerShellFile } from './helpers/powershell.js';
+import { useTempDir } from './helpers/temp-dir.js';
 
 const scriptsDir = path.join(import.meta.dirname, '..', 'scripts');
 
@@ -18,8 +18,8 @@ function runScript(script: string, args: string[], env: NodeJS.ProcessEnv = proc
   return runPowerShellFile(path.join(scriptsDir, script), args, env);
 }
 
-// powershell.exe の起動は CI の初回だと 5 秒を超えることがある
-describe.runIf(process.platform === 'win32')('scripts/start.ps1 -DryRun', { timeout: 60000 }, () => {
+describeOnWindows('scripts/start.ps1 -DryRun', 60000, () => {
+  const testDir = useTempDir('start-dryrun-');
   let dir: string;
   let projectDir: string;
   let stateDir: string;
@@ -27,7 +27,7 @@ describe.runIf(process.platform === 'win32')('scripts/start.ps1 -DryRun', { time
   let env: NodeJS.ProcessEnv;
 
   beforeEach(() => {
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'start-dryrun-'));
+    dir = testDir();
     // claude.exe の代わり（DryRun では起動しない。Find-ClaudeExe が PATH で見つけられればよい）
     const bin = path.join(dir, 'bin');
     fs.mkdirSync(bin);
@@ -44,10 +44,6 @@ describe.runIf(process.platform === 'win32')('scripts/start.ps1 -DryRun', { time
     const pathKey = envKey('PATH');
     env = { ...process.env, [pathKey]: `${bin}${path.delimiter}${process.env[pathKey] ?? ''}`, [envKey('TEMP')]: tempDir };
     delete env[envKey('SLACK_CHANNEL_STATE_DIR')];
-  });
-
-  afterEach(() => {
-    fs.rmSync(dir, { recursive: true, force: true });
   });
 
   it('起動せずにコマンドラインを表示して 0 で終わり、mcp.json は DryRun 用のフォルダーに node の絶対パスで書く', () => {
@@ -76,15 +72,12 @@ describe.runIf(process.platform === 'win32')('scripts/start.ps1 -DryRun', { time
   });
 });
 
-describe.runIf(process.platform === 'win32')('scripts/dialog-answer.ps1', { timeout: 60000 }, () => {
+describeOnWindows('scripts/dialog-answer.ps1', 60000, () => {
+  const dialogTestDir = useTempDir('dialog-answer-');
   let dir: string;
 
   beforeEach(() => {
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dialog-answer-'));
-  });
-
-  afterEach(() => {
-    fs.rmSync(dir, { recursive: true, force: true });
+    dir = dialogTestDir();
   });
 
   it('空白を含む Pattern を 1 つの引数として受け取り、時間内にダイアログが出なければ何もせず 0 で終わってログに残す', () => {
