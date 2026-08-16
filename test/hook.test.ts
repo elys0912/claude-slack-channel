@@ -1,9 +1,9 @@
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { HOOK_LOG_MAX_BYTES, appendHookLine, toHookEvent } from '../src/hook.js';
 import { HOOK_LOG_FILE } from '../src/hook-event.js';
+import { useTempDir } from './helpers/temp-dir.js';
 
 describe('toHookEvent', () => {
   it('使う欄だけを写し、記録時刻を付ける', () => {
@@ -29,17 +29,32 @@ describe('toHookEvent', () => {
     });
   });
 
-  it('JSON でない・hook_event_name が無い・文字列でない欄は扱わない', () => {
-    expect(toHookEvent('{"hook_event_name":"Stop"}', 1, 'tag-1')).toEqual({ at: 1, hook_event_name: 'Stop', session_tag: 'tag-1' });
-    // stdin に session_tag があっても写さない（記録するのは start.ps1 が渡した環境変数の値だけ）
-    expect(toHookEvent('{"hook_event_name":"Stop","session_tag":"forged"}', 1)).toEqual({ at: 1, hook_event_name: 'Stop' });
-    expect(toHookEvent('not json')).toBeUndefined();
-    // error_details がオブジェクトなら message を、message が無ければ JSON を写す
-    expect(toHookEvent('{"hook_event_name":"StopFailure","error_details":{"status":429,"message":"rate limited"}}', 1)?.error_details).toBe('rate limited');
-    expect(toHookEvent('{"hook_event_name":"StopFailure","error_details":{"status":529}}', 1)?.error_details).toBe('{"status":529}');
-    expect(toHookEvent('{"session_id":"s1"}')).toBeUndefined();
-    expect(toHookEvent('[1,2]')).toBeUndefined();
+  it.each([
+    ['JSON でない', 'not json'],
+    ['hook_event_name が無い', '{"session_id":"s1"}'],
+    ['オブジェクトでない', '[1,2]'],
+  ])('%s入力は undefined', (_label, stdinText) => {
+    expect(toHookEvent(stdinText)).toBeUndefined();
+  });
+
+  it('文字列でない欄は写さない', () => {
     expect(toHookEvent('{"hook_event_name":"Stop","error":42}', 1)).toEqual({ at: 1, hook_event_name: 'Stop' });
+  });
+
+  it('tag を渡すと session_tag に記録する', () => {
+    expect(toHookEvent('{"hook_event_name":"Stop"}', 1, 'tag-1')).toEqual({ at: 1, hook_event_name: 'Stop', session_tag: 'tag-1' });
+  });
+
+  it('stdin に session_tag があっても写さない（記録するのは start.ps1 が渡した環境変数の値だけ）', () => {
+    expect(toHookEvent('{"hook_event_name":"Stop","session_tag":"forged"}', 1)).toEqual({ at: 1, hook_event_name: 'Stop' });
+  });
+
+  it.each([
+    ['message があれば message', '{"status":429,"message":"rate limited"}', 'rate limited'],
+    ['message が無ければ JSON', '{"status":529}', '{"status":529}'],
+  ])('error_details がオブジェクトなら、%sを写す', (_label, details, expected) => {
+    const stdinText = `{"hook_event_name":"StopFailure","error_details":${details}}`;
+    expect(toHookEvent(stdinText, 1)?.error_details).toBe(expected);
   });
 
   it('長い自由文は 500 文字で切る', () => {
@@ -49,14 +64,11 @@ describe('toHookEvent', () => {
 });
 
 describe('appendHookLine', () => {
+  const tempDir = useTempDir('hook-');
   let dir: string;
 
   beforeEach(() => {
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hook-'));
-  });
-
-  afterEach(() => {
-    fs.rmSync(dir, { recursive: true, force: true });
+    dir = tempDir();
   });
 
   it('ディレクトリが無くても作り、1 行ずつ JSON で追記する', () => {

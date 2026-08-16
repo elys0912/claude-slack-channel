@@ -1,9 +1,9 @@
 // このファイルは claude-slack-channel と claude-discord-channel で同じ内容にしている（直すときは両方を直す）。
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { compareShared, firstDifference, normalize, parseList } from '../scripts/shared-check.js';
+import { useTempDir } from './helpers/temp-dir.js';
 
 describe('normalize', () => {
   it('両方のチャネルの名前を同じ印にする', () => {
@@ -41,17 +41,14 @@ describe('firstDifference', () => {
 });
 
 describe('compareShared', () => {
+  const oursDir = useTempDir('shared-ours-');
   let ours: string;
+  const theirsDir = useTempDir('shared-theirs-');
   let theirs: string;
 
   beforeEach(() => {
-    ours = fs.mkdtempSync(path.join(os.tmpdir(), 'shared-ours-'));
-    theirs = fs.mkdtempSync(path.join(os.tmpdir(), 'shared-theirs-'));
-  });
-
-  afterEach(() => {
-    fs.rmSync(ours, { recursive: true, force: true });
-    fs.rmSync(theirs, { recursive: true, force: true });
+    ours = oursDir();
+    theirs = theirsDir();
   });
 
   it('違うファイルと、相手に無いファイルを返す', () => {

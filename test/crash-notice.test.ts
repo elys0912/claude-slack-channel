@@ -1,20 +1,15 @@
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { CRASH_FILE, takeCrashNotice } from '../src/crash-notice.js';
+import { useTempDir } from './helpers/temp-dir.js';
 
 describe('takeCrashNotice', () => {
-  let dir: string;
+  const tempDir = useTempDir('crash-notice-test-');
   let file: string;
 
   beforeEach(() => {
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'crash-notice-test-'));
-    file = path.join(dir, CRASH_FILE);
-  });
-
-  afterEach(() => {
-    fs.rmSync(dir, { recursive: true, force: true });
+    file = path.join(tempDir(), CRASH_FILE);
   });
 
   it('crash.json を読んで知らせの文にし、消す（BOM 付きも読む）', () => {
@@ -32,11 +27,17 @@ describe('takeCrashNotice', () => {
     expect(takeCrashNotice(file)).toContain('新しい会話で起動した');
   });
 
-  it('無ければ undefined。壊れていれば undefined にして消す', () => {
+  it('crash.json が無ければ undefined', () => {
     expect(takeCrashNotice(file)).toBeUndefined();
+  });
+
+  it('JSON として壊れていれば undefined にして消す', () => {
     fs.writeFileSync(file, '{ broken');
     expect(takeCrashNotice(file)).toBeUndefined();
     expect(fs.existsSync(file)).toBe(false);
+  });
+
+  it('キーが欠けた記録は undefined', () => {
     fs.writeFileSync(file, JSON.stringify({ at: 1000 }));
     expect(takeCrashNotice(file)).toBeUndefined();
   });
