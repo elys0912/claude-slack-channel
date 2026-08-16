@@ -4,11 +4,11 @@
 // stdout に書いた 1 行が Claude Code の画面の statusline になる。失敗しても exit 0（statusline の失敗でセッションを止めない）。
 import fs from 'node:fs';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { stateDir } from './config.js';
 import { SESSION_TAG_ENV } from './hook-event.js';
 import { errMessage } from './errors.js';
 import { isObject } from './state-file.js';
+import { isMainModule } from './main-module.js';
 
 /** 状態ディレクトリに置く使用量の記録 */
 export const USAGE_FILE = 'usage.json';
@@ -136,6 +136,6 @@ function main(): void {
 }
 
 // statusline として直接起動されたときだけ動く（テストや他モジュールからの import では動かない）
-if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMainModule(import.meta.url)) {
   main();
 }

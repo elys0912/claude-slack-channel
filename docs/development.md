@@ -85,6 +85,7 @@ GitHub Actions（`.github/workflows/ci.yml`）は、main への push と pull re
 | `src/state-file.ts` | 状態ディレクトリの JSON ファイルの読み込みと、一時ファイルからの置き換えによる書き込み |
 | `src/log.ts` | ログの出力（トークンの伏せ字を含む） |
 | `src/errors.ts` | エラーの値を文字列にする helper |
+| `src/main-module.ts` | コマンドとして直接起動されたかの判定（hook・statusline などの入口のファイルが使う） |
 | `src/stdio-guard.ts` | stdout を MCP 専用に保つガード |
 | `src/text.ts` | 文字列の小さな整形（BOM の除去・切り詰め・ID の生成） |
 | `src/types.ts` | 共有の型 |

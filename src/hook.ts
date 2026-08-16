@@ -5,12 +5,12 @@
 import './stdio-guard.js';
 import fs from 'node:fs';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { stateDir } from './config.js';
 import { HOOK_LOG_FILE, HOOK_STRING_FIELDS, SESSION_TAG_ENV } from './hook-event.js';
 import type { HookEvent } from './hook-event.js';
 import { errMessage } from './errors.js';
 import { rotateIfLarger } from './log.js';
+import { isMainModule } from './main-module.js';
 import { isObject, parseJson } from './state-file.js';
 
 /** hooks.jsonl がこれを超えたら hooks.jsonl.1 に回す（log.ts と同じ 1 世代） */
@@ -61,6 +61,6 @@ function main(): void {
 }
 
 // hook として直接起動されたときだけ動く（テストや他モジュールからの import では動かない）
-if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMainModule(import.meta.url)) {
   main();
 }

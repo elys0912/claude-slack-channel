@@ -27,6 +27,7 @@ src/hook.ts
 src/keepalive.ts
 src/lock.ts
 src/log.ts
+src/main-module.ts
 src/parent-process.ts
 src/permission-core.ts
 src/placeholder.ts

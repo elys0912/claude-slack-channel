@@ -5,10 +5,10 @@
 // - 読めない・JSON でない: {"error": "<理由>"} で exit 1
 // Windows PowerShell 5.1 は外部コマンドの出力をコンソールの文字コードで読むので、ASCII 以外の文字は \uXXXX にして書く。
 // このファイルは claude-slack-channel と claude-discord-channel で同じ内容にしている（直すときは両方を直す）。
-import { pathToFileURL } from 'node:url';
 import { partitionStoredRules } from './allow-rules.js';
 import { AllowRuleStore } from './allow-rule-store.js';
 import { errMessage } from './errors.js';
+import { isMainModule } from './main-module.js';
 
 /** ASCII の外の文字（制御文字の DEL を含む） */
 const NON_ASCII_RE = /[\u007f-￿]/g;
@@ -38,6 +38,6 @@ function main(): void {
 }
 
 // コマンドとして直接起動されたときだけ動く（テストや他モジュールからの import では動かない）
-if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMainModule(import.meta.url)) {
   main();
 }
