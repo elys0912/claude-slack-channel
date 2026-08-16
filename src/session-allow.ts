@@ -204,7 +204,7 @@ export class SessionAllowAll {
   }
 
   /**
-   * 全部許可のボタンを出してよいか。ask を読めない（設定ファイルが読めない・JSON でない）なら、
+   * ask のルールを読めるか。読めない（設定ファイルが読めない・JSON でない）なら、
    * 何を自動許可から外すべきか判断できないので false
    */
   available(): boolean {
