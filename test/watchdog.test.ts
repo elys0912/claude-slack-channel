@@ -54,9 +54,10 @@ describe('ResponseWatchdog', () => {
   it.each([
     ['有効', TIMEOUT_MS],
     ['無効（0）', 0],
-  ])('見張りが%sでも、activity があれば待っていない状態に戻る', (_label, timeoutMs) => {
+  ])('見張りが%sでも、待ち時間を過ぎた後に activity があれば待っていない状態に戻る', async (_label, timeoutMs) => {
     const w = make(timeoutMs);
     w.delivered({ channel: 'C1', threadTs: '1.0' });
+    await vi.advanceTimersByTimeAsync(TIMEOUT_MS);
     w.activity();
     expect(w.isWaiting()).toBe(false);
     expect(w.waitingSince()).toBeUndefined();
