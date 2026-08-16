@@ -24,11 +24,13 @@ describe('hasEmptyPrompt', () => {
     expect(hasEmptyPrompt('> Try it')).toBe(false);
   });
 
-  it('打ちかけ・応答中・選択画面なら false', () => {
-    expect(hasEmptyPrompt('❯ git sta')).toBe(false);
-    expect(hasEmptyPrompt('⠋ Thinking…')).toBe(false);
-    expect(hasEmptyPrompt(' Choose\n  > One\n    Two\n')).toBe(false);
-    expect(hasEmptyPrompt('')).toBe(false);
+  it.each([
+    ['打ちかけ', '❯ git sta'],
+    ['応答中', '⠋ Thinking…'],
+    ['選択画面', ' Choose\n  > One\n    Two\n'],
+    ['空の画面', ''],
+  ])('%sなら false', (_label, screen) => {
+    expect(hasEmptyPrompt(screen)).toBe(false);
   });
 
   it('入力欄がずっと上（末尾 8 行より前）にあれば false', () => {

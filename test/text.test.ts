@@ -4,9 +4,9 @@ import { TOKEN_ID_RE } from '../src/permission.js';
 
 describe('stripBom', () => {
   it('先頭の BOM だけを取り除く', () => {
-    expect(stripBom('﻿{}')).toBe('{}');
+    expect(stripBom('\uFEFF{}')).toBe('{}');
     expect(stripBom('{}')).toBe('{}');
-    expect(stripBom('a﻿b')).toBe('a﻿b');
+    expect(stripBom('a\uFEFFb')).toBe('a\uFEFFb');
   });
 });
 
