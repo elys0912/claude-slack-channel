@@ -16,6 +16,14 @@ import {
 import type { FakeWeb, MadeBridge } from './helpers/fake-slack.js';
 
 /** ゼロ幅スペース。一斉メンションを無効化するとき @ の直後に入る */
+/** markdown_text で送る 1 通の上限（src/slack.ts の MARKDOWN_LIMIT と同じ値） */
+const MARKDOWN_TEXT_MAX = 11000;
+/** text で送り直すときの 1 通の上限（src/slack.ts の TEXT_LIMIT と同じ値） */
+const TEXT_MAX = 3900;
+/** 再接続のバックオフの初期値。失敗するたびに 2 倍にする（src/slack.ts の RECONNECT_BASE_MS・RECONNECT_BACKOFF_FACTOR と同じ値） */
+const BACKOFF_INITIAL_MS = 1000;
+/** バックオフの上限（60 秒）を十分に超える待ち。この間に再接続が起きないことを確かめる */
+const PAST_BACKOFF_MAX_MS = 120000;
 const ZWSP = '\u200b';
 
 /** init 済みの SlackBridge。init が呼んだ API は calls から除く */
@@ -115,14 +123,14 @@ describe('SlackBridge.postText', () => {
     expect(res.ts.length).toBe(posts.length);
     for (const p of posts) {
       expect(typeof p.args.markdown_text).toBe('string');
-      expect(String(p.args.markdown_text).length).toBeLessThanOrEqual(11000);
+      expect(String(p.args.markdown_text).length).toBeLessThanOrEqual(MARKDOWN_TEXT_MAX);
       expect(p.args.channel).toBe(DM1);
     }
   });
 
   it('分けた結果が空白だけになるチャンクは送らない', async () => {
-    // 10998 字 + 改行 5 個は、11000 字目（改行 2 個まで）で切れて、残りが改行 3 個だけになる
-    const res = await bridge.postText(DM1, 'a'.repeat(10998) + '\n'.repeat(5));
+    // 上限より 2 字少ない本文 + 改行 5 個は、上限の字（改行 2 個まで）で切れて、残りが改行 3 個だけになる
+    const res = await bridge.postText(DM1, 'a'.repeat(MARKDOWN_TEXT_MAX - 2) + '\n'.repeat(5));
     expect(res.ts).toHaveLength(1);
     expect(web.calls.filter((c) => c.method === 'chat.postMessage')).toHaveLength(1);
   });
@@ -152,7 +160,7 @@ describe('SlackBridge.postText', () => {
     expect(res.ts.length).toBe(sent.length);
     for (const p of sent) {
       expect(p.args.markdown_text).toBeUndefined();
-      expect(String(p.args.text).length).toBeLessThanOrEqual(3900);
+      expect(String(p.args.text).length).toBeLessThanOrEqual(TEXT_MAX);
     }
     // escapeMrkdwn が効いている
     expect(sent.map((p) => String(p.args.text)).join('')).toContain('&lt;tag&gt;');
@@ -455,7 +463,7 @@ describe('SlackBridge の受信', () => {
       expect(socket.started).toBe(1);
 
       socket.drop();
-      await vi.advanceTimersByTimeAsync(999);
+      await vi.advanceTimersByTimeAsync(BACKOFF_INITIAL_MS - 1);
       expect(socket.started).toBe(1);
       await vi.advanceTimersByTimeAsync(1);
       expect(socket.disconnected).toBe(1);
@@ -464,12 +472,12 @@ describe('SlackBridge の受信', () => {
       expect(socket.open).toBe(1);
 
       // 張り直しの disconnect() が出す disconnected で、さらに再接続を予約しない
-      await vi.advanceTimersByTimeAsync(120000);
+      await vi.advanceTimersByTimeAsync(PAST_BACKOFF_MAX_MS);
       expect(socket.started).toBe(2);
 
       // 繋がったのでバックオフは初期値に戻っている
       socket.drop();
-      await vi.advanceTimersByTimeAsync(1000);
+      await vi.advanceTimersByTimeAsync(BACKOFF_INITIAL_MS);
       expect(socket.started).toBe(3);
       expect(socket.leaked).toBe(0);
       await bridge.stop();
@@ -481,13 +489,13 @@ describe('SlackBridge の受信', () => {
 
       socket.failStart = ['auth', 'closed'];
       socket.drop();
-      await vi.advanceTimersByTimeAsync(1000);
+      await vi.advanceTimersByTimeAsync(BACKOFF_INITIAL_MS);
       expect(socket.started).toBe(2); // 1 回目: apps.connections.open の失敗
-      await vi.advanceTimersByTimeAsync(1999);
+      await vi.advanceTimersByTimeAsync(BACKOFF_INITIAL_MS * 2 - 1);
       expect(socket.started).toBe(2);
       await vi.advanceTimersByTimeAsync(1);
       expect(socket.started).toBe(3); // 2 回目: hello 前に切断
-      await vi.advanceTimersByTimeAsync(3999);
+      await vi.advanceTimersByTimeAsync(BACKOFF_INITIAL_MS * 4 - 1);
       expect(socket.started).toBe(3);
       await vi.advanceTimersByTimeAsync(1);
       expect(socket.started).toBe(4); // 3 回目で成功
@@ -496,7 +504,7 @@ describe('SlackBridge の受信', () => {
       expect(errorSpy.mock.calls.filter((c) => String(c[0]).includes('再接続に失敗'))).toHaveLength(2);
 
       socket.drop();
-      await vi.advanceTimersByTimeAsync(1000);
+      await vi.advanceTimersByTimeAsync(BACKOFF_INITIAL_MS);
       expect(socket.started).toBe(5);
       await bridge.stop();
     });
@@ -507,7 +515,7 @@ describe('SlackBridge の受信', () => {
       socket.drop();
       await bridge.stop();
       socket.drop();
-      await vi.advanceTimersByTimeAsync(120000);
+      await vi.advanceTimersByTimeAsync(PAST_BACKOFF_MAX_MS);
       expect(socket.started).toBe(1);
     });
 
@@ -515,7 +523,7 @@ describe('SlackBridge の受信', () => {
       const { bridge, socket } = await initBridge();
       socket.failStart = ['closed'];
       await expect(bridge.start({ onMessage: () => undefined, onAction: () => undefined })).rejects.toThrow();
-      await vi.advanceTimersByTimeAsync(120000);
+      await vi.advanceTimersByTimeAsync(PAST_BACKOFF_MAX_MS);
       expect(socket.started).toBe(1);
     });
   });
