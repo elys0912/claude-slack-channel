@@ -11,7 +11,7 @@ import { SlackBridge } from './slack.js';
 import { DEGRADED_RELOCK_MS, startBridgeApp, startDegradedApp, writeStderr } from './app.js';
 import type { BridgeAppOptions } from './app.js';
 import { replyTimeoutMs } from './watchdog.js';
-import { MS_PER_MINUTE } from './text.js';
+import { MS_PER_MINUTE, MS_PER_SECOND } from './text.js';
 import { PowerShellConsole, findConsoleScript } from './console.js';
 import { HOOK_LOG_FILE, SESSION_TAG_ENV } from './hook-event.js';
 import { RESTART_FLAG_FILE } from './session-control.js';
@@ -32,8 +32,6 @@ const STDIN_POLL_MS = 5000;
 /** ロックが取れないとき、縮退モードに入る前に取り直しを試す時間（旧ブリッジの終了処理は SHUTDOWN_GRACE_MS で終わる） */
 const LOCK_RETRY_MS = 10000;
 const LOCK_RETRY_INTERVAL_MS = 500;
-
-const MS_PER_SECOND = 1000;
 
 /** 状態ディレクトリのファイル名 */
 const LOCK_FILE = 'instance.lock';

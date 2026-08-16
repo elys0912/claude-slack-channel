@@ -9,6 +9,7 @@ import type { ConsoleAccess, ConsoleCommand } from './console.js';
 import type { Logger } from './log.js';
 import { errMessage } from './errors.js';
 import { hasEmptyPrompt } from './screen.js';
+import { MS_PER_SECOND } from './text.js';
 import type { ThreadRef } from './types.js';
 import type { SlackBridge } from './slack.js';
 import { defaultKillParent } from './parent-process.js';
@@ -20,7 +21,6 @@ export const EXIT_CONFIRM_MS = 20000;
  * 会話の保存や子プロセスの終了で、終わるまでに EXIT_CONFIRM_MS より長くかかることがあるので、知らせた後もしばらく印を残す
  */
 export const EXIT_GIVE_UP_MS = 60000;
-const MS_PER_SECOND = 1000;
 
 /** 状態ディレクトリに置く再起動の印（scripts/start.ps1 の $RestartFlagName と同じ名前にすること） */
 export const RESTART_FLAG_FILE = 'restart.flag';

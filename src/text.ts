@@ -37,6 +37,8 @@ export function newToken(): string {
     .padEnd(TOKEN_ID_LENGTH, '0');
 }
 
+/** 1 秒のミリ秒（秒単位の時刻・秒数とミリ秒の換算に使う） */
+export const MS_PER_SECOND = 1000;
 /** 1 分のミリ秒（待ち時間・経過時間の分への換算に使う） */
 export const MS_PER_MINUTE = 60000;
 

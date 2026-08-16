@@ -2,7 +2,7 @@
 // 使用量（5 時間枠・7 日枠）とコンテキストの使用率がしきい値を越えたら知らせる。使用量の上限に当たった後、
 // 枠のリセット時刻を過ぎたら「上限が戻った」を知らせる（Claude に作業の再開は送らない。続けるかは人が決める）。
 import type { Logger } from './log.js';
-import { formatTime } from './text.js';
+import { MS_PER_SECOND, formatTime } from './text.js';
 import { isObject, readJsonFile } from './state-file.js';
 import type { UsageSnapshot, UsageWindow } from './statusline.js';
 
@@ -15,9 +15,6 @@ const WINDOWS = [
   { key: 'five_hour', label: '5 時間枠' },
   { key: 'seven_day', label: '7 日枠' },
 ] as const;
-/** usage.json の resets_at は秒（Unix 時刻）なので、ミリ秒の時刻と比べるときに掛ける */
-const MS_PER_SECOND = 1000;
-
 /** リセット時刻を過ぎていない枠と、その名前・表示 */
 interface ActiveWindow {
   key: string;
@@ -25,7 +22,7 @@ interface ActiveWindow {
   window: UsageWindow;
 }
 
-/** 枠のリセット時刻（ミリ秒の Unix 時刻） */
+/** 枠のリセット時刻（ミリ秒の Unix 時刻）。usage.json の resets_at は秒の Unix 時刻 */
 function resetsAtMs(window: UsageWindow): number {
   return window.resets_at * MS_PER_SECOND;
 }
