@@ -2,13 +2,14 @@
 import type { ParsedAccess } from './config.js';
 import type { Verdict } from './types.js';
 import { neutralizeBroadcasts } from './format.js';
-import { TOKEN_ID_LENGTH } from './text.js';
+import { TOKEN_ID_BODY, TOKEN_ID_RE } from './text.js';
 import { button, plainContext, plainSection } from './blocks.js';
-import { isValidRequestId, DEFAULT_PREVIEW_LIMIT, truncatePlain, truncateHeadTail, PREVIEW_TRUNCATED_WARNING, orPlaceholder, TOKEN_ID_RE } from './permission-core.js';
+import { isValidRequestId, DEFAULT_PREVIEW_LIMIT, truncatePlain, truncateHeadTail, PREVIEW_TRUNCATED_WARNING, orPlaceholder } from './permission-core.js';
 import type { PermissionRequest } from './permission-core.js';
 
 // チャネルによらない部分は permission-core.ts。ほかのモジュールからは今までどおりここから使える
-export { PERMISSION_ID_BODY, PERMISSION_ID_RE, isValidRequestId, PendingPermissions, DEFAULT_PREVIEW_LIMIT, revealInvisible, truncatePlain, truncateHeadTail, PREVIEW_TRUNCATED_WARNING, orPlaceholder, TOKEN_ID_RE } from './permission-core.js';
+export { PERMISSION_ID_BODY, PERMISSION_ID_RE, isValidRequestId, PendingPermissions, DEFAULT_PREVIEW_LIMIT, revealInvisible, truncatePlain, truncateHeadTail, PREVIEW_TRUNCATED_WARNING, orPlaceholder } from './permission-core.js';
+export { TOKEN_ID_RE } from './text.js';
 export type { PermissionRequest } from './permission-core.js';
 
 /** Block Kit の plain_text（section / context）の文字数の上限 */
@@ -202,7 +203,7 @@ export type ActionParse =
   | { ok: false; reason: string };
 
 /** screen_pick の value（`<控えの ID>.<選択肢の番号 1 桁>`。screen.ts の MAX_OPTIONS が 9 なので 1 桁で足りる） */
-const SCREEN_PICK_RE = new RegExp(`^([a-z0-9]{${TOKEN_ID_LENGTH}})\\.(\\d)$`);
+const SCREEN_PICK_RE = new RegExp(`^(${TOKEN_ID_BODY})\\.(\\d)$`);
 /** 同じブロックに並ぶボタン（`screen_pick_0` / `rule_remove_3` など）。番号は 2 桁まで */
 const NUMBERED_ACTION_RE = new RegExp(`^(${ACTION.SCREEN_PICK}|${ACTION.RULE_REMOVE})_\\d{1,2}$`);
 /** rule_remove の value（ルールそのもの）の長さの上限 */

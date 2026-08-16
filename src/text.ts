@@ -18,8 +18,12 @@ export function clip(text: string, max: number): string {
   return `${truncateUnits(text, Math.max(0, max - 1))}…`;
 }
 
-/** ブリッジが発行する控え・提案の ID の長さ（permission.ts の TOKEN_ID_RE と対応） */
+/** ブリッジが発行する控え・提案の ID の長さ */
 export const TOKEN_ID_LENGTH = 8;
+/** 控え・提案の ID の正規表現の本体（英小文字と数字 TOKEN_ID_LENGTH 文字）。ほかの値と組み合わせた形の照合にも使う */
+export const TOKEN_ID_BODY = `[a-z0-9]{${TOKEN_ID_LENGTH}}`;
+/** 画面の控え・提案の ID（newToken が作る形） */
+export const TOKEN_ID_RE = new RegExp(`^${TOKEN_ID_BODY}$`);
 /** base64url で TOKEN_ID_LENGTH 文字以上になる乱数のバイト数（6 バイト → 8 文字） */
 const TOKEN_RANDOM_BYTES = 6;
 

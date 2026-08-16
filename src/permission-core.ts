@@ -1,8 +1,6 @@
 // 実行許可（permission relay）の、チャネルによらない部分（I/O なし）。
 // 保留中のリクエストの管理と、表示する前の文字の整え方（不可視文字・切り詰め）。表示の形（Slack の Block Kit・Discord のカード）は permission.ts。
 // このファイルは claude-slack-channel と claude-discord-channel で同じ内容にしている（直すときは両方を直す）。
-import { TOKEN_ID_LENGTH } from './text.js';
-
 export interface PermissionRequest {
   request_id: string;
   tool_name: string;
@@ -186,6 +184,3 @@ export const PREVIEW_TRUNCATED_WARNING =
 export function orPlaceholder(text: string, placeholder: string): string {
   return text.trim() === '' ? placeholder : text;
 }
-
-/** 画面の控え・提案の ID（ブリッジが発行する英小文字と数字 TOKEN_ID_LENGTH 文字。text.ts の newToken が作る） */
-export const TOKEN_ID_RE = new RegExp(`^[a-z0-9]{${TOKEN_ID_LENGTH}}$`);
