@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import { buildForbiddenHomeView, buildHomeView } from '../src/home.js';
-import { formatTime } from '../src/text.js';
 import type { HomeState } from '../src/home.js';
 
 const base: HomeState = {
@@ -119,11 +118,5 @@ describe('buildForbiddenHomeView', () => {
     const t = text(buildForbiddenHomeView());
     expect(t).toContain('許可されたメンバーだけ');
     expect(t).not.toContain('作業フォルダー');
-  });
-});
-
-describe('formatTime', () => {
-  it('ゼロ埋めする', () => {
-    expect(formatTime(new Date(2026, 0, 2, 3, 4))).toBe('2026-01-02 03:04');
   });
 });

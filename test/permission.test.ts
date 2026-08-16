@@ -89,6 +89,20 @@ describe('PendingPermissions', () => {
     pending.prune();
     expect(pending.get('abcde')).toBeUndefined();
   });
+
+  it('remove() は期限に関係なく取り出して消す', () => {
+    let now = 1000;
+    const pending = new PendingPermissions(1000, () => now);
+    pending.add(sampleReq);
+    now = 5000;
+    expect(pending.remove('abcde')).toEqual(sampleReq);
+    expect(pending.remove('abcde')).toBeUndefined();
+  });
+
+  it('ttl は作るときに渡した期限を返す', () => {
+    const pending = new PendingPermissions(1000, () => 1000);
+    expect(pending.ttl).toBe(1000);
+  });
 });
 
 describe('buildPermissionBlocks', () => {
@@ -287,22 +301,6 @@ describe('buildAutoDeniedBlocks', () => {
     expect(text).toContain('abcde');
     expect(text).toContain('期限切れのため自動で拒否した');
     expect(blocks).toEqual([{ type: 'section', text: { type: 'plain_text', text } }]);
-  });
-});
-
-describe('PendingPermissions.remove', () => {
-  it('期限に関係なく取り出して消す', () => {
-    let now = 1000;
-    const pending = new PendingPermissions(1000, () => now);
-    pending.add(sampleReq);
-    now = 5000;
-    expect(pending.remove('abcde')).toEqual(sampleReq);
-    expect(pending.remove('abcde')).toBeUndefined();
-  });
-
-  it('ttl は作るときに渡した期限を返す', () => {
-    const pending = new PendingPermissions(1000, () => 1000);
-    expect(pending.ttl).toBe(1000);
   });
 });
 

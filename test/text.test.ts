@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { clip, newToken, stripBom } from '../src/text.js';
+import { clip, formatTime, newToken, stripBom } from '../src/text.js';
 import { TOKEN_ID_RE } from '../src/permission.js';
 
 describe('stripBom', () => {
@@ -28,5 +28,11 @@ describe('newToken', () => {
     const tokens = new Set(Array.from({ length: 50 }, () => newToken()));
     for (const t of tokens) expect(t).toMatch(TOKEN_ID_RE);
     expect(tokens.size).toBe(50);
+  });
+});
+
+describe('formatTime', () => {
+  it('ゼロ埋めする', () => {
+    expect(formatTime(new Date(2026, 0, 2, 3, 4))).toBe('2026-01-02 03:04');
   });
 });

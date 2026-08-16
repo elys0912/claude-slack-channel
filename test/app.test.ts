@@ -424,10 +424,6 @@ describe('Slack → MCP', () => {
     expect(posts[0]?.args.markdown_text).toBe('```\nrm -rf \\u{202E}/ \\u{200B}ok\n```');
   });
 
-  it('fencePreview は中身の行頭の ``` を無効化してからコードブロックで包む', () => {
-    expect(fencePreview('a\n```js\nb\n```')).toBe('```\na\n\u200b```js\nb\n\u200b```\n```');
-  });
-
   it('期限切れの See more は定型文をスレッドに送る', async () => {
     h.socket.emit('interactive', blockAction('perm_more', 'abcde'));
     await flush();
@@ -1104,6 +1100,12 @@ describe('parseCommand', () => {
     expect(parseCommand('!restart\nそのあと *これ* を見て')).toBeUndefined();
     expect(parseCommand(`!status <@${OTHER_APP_BOT}>`)).toBeUndefined();
     expect(parseCommand(`status *a* <@${OTHER_APP_BOT}>`)).toBeUndefined();
+  });
+});
+
+describe('fencePreview', () => {
+  it('中身の行頭の ``` を無効化してからコードブロックで包む', () => {
+    expect(fencePreview('a\n```js\nb\n```')).toBe('```\na\n\u200b```js\nb\n\u200b```\n```');
   });
 });
 
