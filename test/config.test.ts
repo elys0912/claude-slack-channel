@@ -1,8 +1,9 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { loadAccess, loadHomeCustom, loadTokens, parseDotenv, stateDir } from '../src/config.js';
+import { useTempDir } from './helpers/temp-dir.js';
 
 /** 形の正しい bot / app トークンの 2 行 */
 const VALID_TOKENS = 'SLACK_BOT_TOKEN=xoxb-TEST-DUMMY\nSLACK_APP_TOKEN=xapp-TEST-DUMMY\n';
@@ -117,14 +118,11 @@ describe('parseDotenv', () => {
 });
 
 describe('loadTokens', () => {
+  const tempDir = useTempDir('config-test-');
   let dir: string;
 
   beforeEach(() => {
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'config-test-'));
-  });
-
-  afterEach(() => {
-    fs.rmSync(dir, { recursive: true, force: true });
+    dir = tempDir();
   });
 
   it('正常系: bot/app トークンを読み込める', () => {
@@ -236,14 +234,11 @@ describe('loadTokens', () => {
 });
 
 describe('loadAccess', () => {
+  const tempDir = useTempDir('config-test-');
   let dir: string;
 
   beforeEach(() => {
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'config-test-'));
-  });
-
-  afterEach(() => {
-    fs.rmSync(dir, { recursive: true, force: true });
+    dir = tempDir();
   });
 
   it('正常系', () => {
@@ -301,14 +296,11 @@ describe('loadAccess', () => {
 });
 
 describe('loadHomeCustom', () => {
+  const tempDir = useTempDir('home-custom-');
   let dir: string;
 
   beforeEach(() => {
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-custom-'));
-  });
-
-  afterEach(() => {
-    fs.rmSync(dir, { recursive: true, force: true });
+    dir = tempDir();
   });
 
   it('無ければ undefined', () => {

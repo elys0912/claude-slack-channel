@@ -1,9 +1,9 @@
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { Logger, parseLogLevel, redact } from '../src/log.js';
 import { toSlackLogger } from '../src/slack-logger.js';
+import { useTempDir } from './helpers/temp-dir.js';
 
 describe('redact', () => {
   it('xoxb トークンを伏せる', () => {
@@ -45,16 +45,13 @@ describe('redact', () => {
 });
 
 describe('Logger', () => {
+  const tempDir = useTempDir('log-test-');
   let dir: string;
   let file: string;
 
   beforeEach(() => {
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'log-test-'));
+    dir = tempDir();
     file = path.join(dir, 'sub', 'app.log');
-  });
-
-  afterEach(() => {
-    fs.rmSync(dir, { recursive: true, force: true });
   });
 
   it('ファイルに出力され、改行が入る', () => {
@@ -112,16 +109,13 @@ describe('Logger', () => {
 });
 
 describe('toSlackLogger', () => {
+  const tempDir = useTempDir('log-test-');
   let dir: string;
   let file: string;
 
   beforeEach(() => {
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'log-test-'));
+    dir = tempDir();
     file = path.join(dir, 'app.log');
-  });
-
-  afterEach(() => {
-    fs.rmSync(dir, { recursive: true, force: true });
   });
 
   it('getLevel は共有 Logger の level を返し、setLevel は共有側に透過させない', () => {

@@ -1,8 +1,8 @@
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, expect, it } from 'vitest';
+import { beforeEach, expect, it } from 'vitest';
 import { describeOnWindows, runPowerShellCommand } from './helpers/powershell.js';
+import { useTempDir } from './helpers/temp-dir.js';
 
 const common = path.join(import.meta.dirname, '..', 'scripts', 'common.ps1');
 // 会話の記録を置く ID と、記録の無い ID（どちらも UUID の形）
@@ -17,16 +17,13 @@ function ps(command: string): string {
 }
 
 describeOnWindows('scripts/common.ps1 の Read-RestartSessionId', 30000, () => {
+  const tempDir = useTempDir('restart-flag-');
   let dir: string;
   let flag: string;
 
   beforeEach(() => {
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'restart-flag-'));
+    dir = tempDir();
     flag = path.join(dir, 'restart.flag');
-  });
-
-  afterEach(() => {
-    fs.rmSync(dir, { recursive: true, force: true });
   });
 
   const read = (): string => ps(`$id = Read-RestartSessionId -Path '${flag}'; if ($null -eq $id) { '<null>' } else { $id }`);
@@ -92,18 +89,15 @@ describeOnWindows('scripts/common.ps1 の Read-RestartSessionId', 30000, () => {
 });
 
 describeOnWindows('scripts/common.ps1 の Test-PlaceholderServer', 30000, () => {
+  const tempDir = useTempDir('claude-json-');
   let dir: string;
   let config: string;
   const mainJs = 'C:\\repo\\dist\\src\\main.js';
   const entry = { type: 'stdio', command: 'node', args: [mainJs], env: { SLACK_CHANNEL_PLACEHOLDER: '1' } };
 
   beforeEach(() => {
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-json-'));
+    dir = tempDir();
     config = path.join(dir, '.claude.json');
-  });
-
-  afterEach(() => {
-    fs.rmSync(dir, { recursive: true, force: true });
   });
 
   const write = (projects: Record<string, unknown>) => fs.writeFileSync(config, JSON.stringify({ numStartups: 1, projects }));
@@ -134,6 +128,7 @@ describeOnWindows('scripts/common.ps1 の Test-PlaceholderServer', 30000, () => 
 
 // start.ps1 の New-ClaudeArgs が起動のたびに行う、merged.json の組み立て（D-SC-04 / D-DC-02）
 describeOnWindows('scripts/common.ps1 の Read-AllowExtra / Write-EffectiveSettings', 30000, () => {
+  const tempDir = useTempDir('effective-settings-');
   let dir: string;
   let allowExtra: string;
   let checker: string;
@@ -141,7 +136,7 @@ describeOnWindows('scripts/common.ps1 の Read-AllowExtra / Write-EffectiveSetti
   let merged: string;
 
   beforeEach(() => {
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'effective-settings-'));
+    dir = tempDir();
     allowExtra = path.join(dir, 'allow-extra.json');
     settings = path.join(dir, 'channel-settings.json');
     merged = path.join(dir, 'out', 'channel-settings.merged.json');
@@ -156,10 +151,6 @@ describeOnWindows('scripts/common.ps1 の Read-AllowExtra / Write-EffectiveSetti
       ].join('\n')
     );
     fs.writeFileSync(settings, JSON.stringify({ permissions: { allow: ['Read(./**)'], deny: ['Read(.env)'], ask: ['Bash(git push:*)'] } }));
-  });
-
-  afterEach(() => {
-    fs.rmSync(dir, { recursive: true, force: true });
   });
 
   /** 警告（3 番のストリーム）を捨てて Read-AllowExtra を呼ぶ PowerShell の式 */
@@ -211,14 +202,11 @@ describeOnWindows('scripts/common.ps1 の Read-AllowExtra / Write-EffectiveSetti
 });
 
 describeOnWindows('scripts/common.ps1 の想定外の終了からの起動し直し', 30000, () => {
+  const tempDir = useTempDir('auto-restart-');
   let dir: string;
 
   beforeEach(() => {
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'auto-restart-'));
-  });
-
-  afterEach(() => {
-    fs.rmSync(dir, { recursive: true, force: true });
+    dir = tempDir();
   });
 
   // .env の AUTO_RESTART が off / false / 0 のときだけ起動し直さない（無い・コメント付きも読む）

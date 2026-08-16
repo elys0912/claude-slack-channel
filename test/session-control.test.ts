@@ -1,5 +1,4 @@
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SessionControl } from '../src/session-control.js';
@@ -8,6 +7,7 @@ import { defaultKillParent, parseTasklistName } from '../src/parent-process.js';
 import type { KillParentDeps } from '../src/parent-process.js';
 import { Logger } from '../src/log.js';
 import type { ConsoleAccess, ConsoleCommand } from '../src/console.js';
+import { useTempDir } from './helpers/temp-dir.js';
 
 const AT = { channel: 'D1', threadTs: '1.0' };
 const PROMPT = 'Claude: ok\n\n❯ \n';
@@ -18,6 +18,7 @@ describe('SessionControl', () => {
   const GIVE_UP_MS = 150;
   const SESSION_ID = 'c2097ecd-29b0-4cee-9f3e-a9aeace64bc3';
 
+  const tempDir = useTempDir('session-');
   let dir: string;
   let flag: string;
   let posted: string[];
@@ -54,7 +55,7 @@ describe('SessionControl', () => {
 
   beforeEach(() => {
     vi.useFakeTimers();
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'session-'));
+    dir = tempDir();
     flag = path.join(dir, 'restart.flag');
     posted = [];
     commands = [];
@@ -64,7 +65,6 @@ describe('SessionControl', () => {
 
   afterEach(() => {
     vi.useRealTimers();
-    fs.rmSync(dir, { recursive: true, force: true });
   });
 
   it('interrupt: 画面の状態によらず Esc を送る', async () => {

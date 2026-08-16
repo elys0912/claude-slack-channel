@@ -1,9 +1,8 @@
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import zlib from 'node:zlib';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import {
   archiveKind,
   createUnique,
@@ -15,6 +14,7 @@ import {
 } from '../src/download.js';
 import type { DownloadDeps } from '../src/download.js';
 import type { SlackFile } from '../src/slack.js';
+import { useTempDir } from './helpers/temp-dir.js';
 
 /** 1 エントリだけの tar（ustar）を作る。tar.exe では作れない `..` 入りの名前を試すため */
 function tarWithEntry(name: string, content: string): Buffer {
@@ -43,14 +43,11 @@ function tarWithEntry(name: string, content: string): Buffer {
 const LIMITS = { maxDownloadBytes: 1024 * 1024, maxBytes: 1024 * 1024, maxEntries: 1000 };
 const onWindows = process.platform === 'win32';
 
+const tempDir = useTempDir('download-test-');
 let dir: string;
 
 beforeEach(() => {
-  dir = fs.mkdtempSync(path.join(os.tmpdir(), 'download-test-'));
-});
-
-afterEach(() => {
-  fs.rmSync(dir, { recursive: true, force: true });
+  dir = tempDir();
 });
 
 describe('splitName / archiveKind', () => {
