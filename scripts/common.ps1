@@ -80,6 +80,8 @@ function Write-McpConfig {
     )
 
     $path = Join-Path (Get-TempDir) $FileName
+    # FileName はセッションごとのフォルダーを含む（<フォルダー>\mcp.json）ので、その親フォルダーも作る
+    New-Item -ItemType Directory -Path (Split-Path -Parent $path) -Force | Out-Null
 
     $main = @{ command = $NodePath; args = @($ScriptPath) }
     if ($Env.Count -gt 0) { $main.env = $Env }
