@@ -104,9 +104,10 @@ export function buildNoResponseText(minutes: number): string {
  * 未設定なら既定値、0 なら無効（0 を返す）。数でない・負の値は既定値に戻す。
  */
 export function replyTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
+  const defaultMs = DEFAULT_REPLY_TIMEOUT_MIN * MS_PER_MINUTE;
   const raw = env.SLACK_CHANNEL_REPLY_TIMEOUT_MIN;
-  if (raw === undefined || raw.trim() === '') return DEFAULT_REPLY_TIMEOUT_MIN * MS_PER_MINUTE;
+  if (raw === undefined || raw.trim() === '') return defaultMs;
   const n = Number(raw);
-  if (!Number.isFinite(n) || n < 0) return DEFAULT_REPLY_TIMEOUT_MIN * MS_PER_MINUTE;
+  if (!Number.isFinite(n) || n < 0) return defaultMs;
   return n * MS_PER_MINUTE;
 }

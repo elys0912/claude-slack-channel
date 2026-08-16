@@ -29,16 +29,20 @@ export function parseList(text: string): string[] {
     .filter((line) => line !== '');
 }
 
-export interface Mismatch {
+/** 最初に違う行（1 始まり）と、その行の両方の中身 */
+interface LineDifference {
+  line: number;
+  ours: string;
+  theirs: string;
+}
+
+/** 違うファイル。相手に無いときは行の欄が無い */
+export interface Mismatch extends Partial<LineDifference> {
   file: string;
-  /** 最初に違う行（1 始まり）。相手に無いときは undefined */
-  line?: number | undefined;
-  ours?: string | undefined;
-  theirs?: string | undefined;
 }
 
 /** 名前をそろえた 2 つの内容を比べ、最初に違う行を返す。同じなら undefined */
-export function firstDifference(ours: string, theirs: string): { line: number; ours: string; theirs: string } | undefined {
+export function firstDifference(ours: string, theirs: string): LineDifference | undefined {
   const a = normalize(ours).split(/\r?\n/);
   const b = normalize(theirs).split(/\r?\n/);
   for (let i = 0; i < Math.max(a.length, b.length); i += 1) {

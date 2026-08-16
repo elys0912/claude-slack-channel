@@ -15,6 +15,20 @@ const WINDOWS = [
   { key: 'five_hour', label: '5 時間枠' },
   { key: 'seven_day', label: '7 日枠' },
 ] as const;
+/** usage.json の resets_at は秒（Unix 時刻）なので、ミリ秒の時刻と比べるときに掛ける */
+const MS_PER_SECOND = 1000;
+
+/** リセット時刻を過ぎていない枠と、その名前・表示 */
+interface ActiveWindow {
+  key: string;
+  label: string;
+  window: UsageWindow;
+}
+
+/** 枠のリセット時刻（ミリ秒の Unix 時刻） */
+function resetsAtMs(window: UsageWindow): number {
+  return window.resets_at * MS_PER_SECOND;
+}
 
 /** `80,95` を昇順の割合の並びにする。空なら空の並び（知らせない）。1〜100 の整数でなければ投げる */
 export function parsePercents(text: string): number[] {
@@ -118,7 +132,7 @@ export class UsageWatch {
     this.limited = true;
     const windows = this.activeWindows();
     const top = windows.sort((a, b) => b.window.used - a.window.used)[0];
-    this.limitedUntil = top ? top.window.resets_at * 1000 : undefined;
+    this.limitedUntil = top ? resetsAtMs(top.window) : undefined;
   }
 
   /** 応答が終わった（上限は戻っている）。戻ったとは知らせずに上限の印を消す */
@@ -144,7 +158,7 @@ export class UsageWatch {
     if (!s) return undefined;
     const parts: string[] = [];
     for (const { label, window } of this.activeWindows()) {
-      parts.push(`${label} ${Math.round(window.used)}%（リセット ${formatTime(new Date(window.resets_at * 1000))}）`);
+      parts.push(`${label} ${Math.round(window.used)}%（リセット ${formatTime(new Date(resetsAtMs(window)))}）`);
     }
     if (s.context) parts.push(`コンテキスト ${Math.round(s.context.used)}%`);
     if (parts.length === 0) return undefined;
@@ -152,11 +166,11 @@ export class UsageWatch {
   }
 
   /** リセット時刻を過ぎていない枠 */
-  private activeWindows(): { key: string; label: string; window: UsageWindow }[] {
+  private activeWindows(): ActiveWindow[] {
     const s = this.latest;
     if (!s) return [];
-    const nowSec = this.now() / 1000;
-    const result: { key: string; label: string; window: UsageWindow }[] = [];
+    const nowSec = this.now() / MS_PER_SECOND;
+    const result: ActiveWindow[] = [];
     for (const { key, label } of WINDOWS) {
       const window = s[key];
       if (window && window.resets_at > nowSec) result.push({ key, label, window });
@@ -173,7 +187,7 @@ export class UsageWatch {
       const id = `${key}:${window.resets_at}`;
       if (level === undefined || level <= (this.usageNotified.get(id) ?? 0)) continue;
       this.usageNotified.set(id, level);
-      const resets = formatTime(new Date(window.resets_at * 1000));
+      const resets = formatTime(new Date(resetsAtMs(window)));
       const used = Math.round(window.used);
       messages.push(
         isTopLevel(level, levels)

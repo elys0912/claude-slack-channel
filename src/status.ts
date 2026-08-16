@@ -19,9 +19,12 @@ export interface StatusState {
   now: Date;
 }
 
+const MINUTES_PER_HOUR = 60;
+
 function elapsed(from: Date, to: Date): string {
   const minutes = Math.max(0, Math.round((to.getTime() - from.getTime()) / MS_PER_MINUTE));
-  return minutes < 60 ? `${minutes} 分` : `${Math.floor(minutes / 60)} 時間 ${minutes % 60} 分`;
+  if (minutes < MINUTES_PER_HOUR) return `${minutes} 分`;
+  return `${Math.floor(minutes / MINUTES_PER_HOUR)} 時間 ${minutes % MINUTES_PER_HOUR} 分`;
 }
 
 function hookLine(event: HookEvent): string {

@@ -42,7 +42,10 @@ export interface ExtractLimits {
   maxEntries: number;
 }
 
-export const DEFAULT_LIMITS: ExtractLimits & { maxDownloadBytes: number } = {
+/** 展開の上限に、ダウンロードそのもののサイズの上限を足したもの */
+export type DownloadLimits = ExtractLimits & { maxDownloadBytes: number };
+
+export const DEFAULT_LIMITS: DownloadLimits = {
   maxDownloadBytes: MAX_DOWNLOAD_BYTES,
   maxBytes: MAX_EXTRACT_BYTES,
   maxEntries: MAX_EXTRACT_ENTRIES,
@@ -74,7 +77,8 @@ const UNSAFE_NAME_CHARS_RE = /[<>:"|?*\u0000-\u001f]/g;
  * 予約名（CON / NUL など）には _ を前に付け、空になったら fallback を使う
  */
 export function sanitizeFileName(name: string, fallback: string): string {
-  let safe = (name.split(/[\\/]/).pop() ?? '').replace(UNSAFE_NAME_CHARS_RE, '_').trim().replace(/[. ]+$/, '');
+  const baseName = name.split(/[\\/]/).pop() ?? '';
+  let safe = baseName.replace(UNSAFE_NAME_CHARS_RE, '_').trim().replace(/[. ]+$/, '');
   if (safe === '') safe = fallback;
   if (WINDOWS_RESERVED_RE.test(safe)) safe = `_${safe}`;
   if (safe.length > MAX_NAME_LENGTH) {
@@ -287,7 +291,7 @@ export interface DownloadDeps<Ref, F extends RemoteFile = RemoteFile> {
   fetch: (file: F, signal: AbortSignal) => Promise<Response>;
   /** 保存先（.env の DOWNLOAD_DIR） */
   dir: string;
-  limits?: (ExtractLimits & { maxDownloadBytes: number }) | undefined;
+  limits?: DownloadLimits | undefined;
   tarPath?: string | undefined;
 }
 
