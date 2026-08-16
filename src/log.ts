@@ -67,6 +67,27 @@ export interface LoggerOptions {
 
 const DEFAULT_MAX_BYTES = 5 * 1024 * 1024;
 
+/**
+ * file が maxBytes を超えていたら `<file>.1` へ移す（1 世代だけ残す）。無い・回せないときは何もしない（書き込みは続ける）。
+ * hook.ts の hooks.jsonl も同じ回し方にするため export する
+ */
+export function rotateIfLarger(file: string, maxBytes: number): void {
+  let size: number;
+  try {
+    size = fs.statSync(file).size;
+  } catch {
+    // ファイルがまだ無いだけなら何もしない
+    return;
+  }
+  if (size <= maxBytes) return;
+
+  try {
+    fs.renameSync(file, `${file}.1`);
+  } catch {
+    // ローテーション失敗は無視して書き込みを続ける
+  }
+}
+
 export class Logger {
   private file: string | undefined;
   private level: LogLevel;
@@ -136,28 +157,10 @@ export class Logger {
         fs.mkdirSync(dir, { recursive: true });
       }
 
-      this.rotateIfNeeded(file);
+      rotateIfLarger(file, this.maxBytes);
       fs.appendFileSync(file, line);
     } catch {
       // ファイル書き込みの失敗も呼び出し元へは伝えない
-    }
-  }
-
-  /** maxBytes を超えていたら `<file>.1` へ移す。失敗しても投げない（書き込みは続ける） */
-  private rotateIfNeeded(file: string): void {
-    let size: number;
-    try {
-      size = fs.statSync(file).size;
-    } catch {
-      // ファイルがまだ無いだけなら何もしない
-      return;
-    }
-    if (size <= this.maxBytes) return;
-
-    try {
-      fs.renameSync(file, `${file}.1`);
-    } catch {
-      // ローテーション失敗は無視して書き込みを続ける
     }
   }
 }

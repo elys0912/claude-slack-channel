@@ -7,6 +7,7 @@ import { EventDedupe } from './gate.js';
 import { HookEventSchema } from './hook-event.js';
 import type { HookEvent } from './hook-event.js';
 import { errMessage } from './errors.js';
+import { isObject, parseJson } from './state-file.js';
 
 /** 読みに行く間隔 */
 export const DEFAULT_POLL_MS = 1500;
@@ -218,7 +219,7 @@ export class HookInbox {
 
   /** 1 行を読む。読めない行（警告を出す）と、別のセッションの行（session_tag が違う）は undefined */
   private parseLine(line: string): HookEvent | undefined {
-    const parsed = HookEventSchema.safeParse(safeJson(line));
+    const parsed = HookEventSchema.safeParse(parseJson(line, isObject));
     if (!parsed.success) {
       this.logger.warn(`hooks.jsonl に読めない行がある: ${line.slice(0, 120)}`);
       return undefined;
@@ -254,12 +255,4 @@ export function fromLastSessionStart(events: HookEvent[]): HookEvent[] {
     if (e?.hook_event_name === 'SessionStart' && e.source !== 'compact' && e.source !== 'clear') return events.slice(i);
   }
   return events;
-}
-
-function safeJson(text: string): unknown {
-  try {
-    return JSON.parse(text);
-  } catch {
-    return undefined;
-  }
 }

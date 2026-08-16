@@ -10,6 +10,8 @@ import { stateDir } from './config.js';
 import { HOOK_LOG_FILE, HOOK_STRING_FIELDS, SESSION_TAG_ENV } from './hook-event.js';
 import type { HookEvent } from './hook-event.js';
 import { errMessage } from './errors.js';
+import { rotateIfLarger } from './log.js';
+import { isObject, parseJson } from './state-file.js';
 
 /** hooks.jsonl がこれを超えたら hooks.jsonl.1 に回す（log.ts と同じ 1 世代） */
 export const HOOK_LOG_MAX_BYTES = 1024 * 1024;
@@ -18,14 +20,8 @@ const FIELD_MAX = 500;
 
 /** stdin の JSON を HookEvent にする。JSON でない・hook_event_name が無ければ undefined。tag があれば session_tag に記録する */
 export function toHookEvent(stdinText: string, now: number = Date.now(), tag?: string): HookEvent | undefined {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(stdinText);
-  } catch {
-    return undefined;
-  }
-  if (typeof parsed !== 'object' || parsed === null) return undefined;
-  const raw = parsed as Record<string, unknown>;
+  const raw = parseJson(stdinText, isObject);
+  if (!raw) return undefined;
   if (typeof raw.hook_event_name !== 'string' || raw.hook_event_name === '') return undefined;
 
   const event: HookEvent = { at: now, hook_event_name: raw.hook_event_name };
@@ -35,8 +31,8 @@ export function toHookEvent(stdinText: string, now: number = Date.now(), tag?: s
   }
   // error_details は版によってオブジェクト（{"status":429,"message":"..."} など）の例がある。message か JSON にして写す
   const details = raw.error_details;
-  if (typeof details === 'object' && details !== null) {
-    const message = (details as Record<string, unknown>).message;
+  if (isObject(details)) {
+    const message = details.message;
     event.error_details = (typeof message === 'string' ? message : JSON.stringify(details)).slice(0, FIELD_MAX);
   }
   if (tag) event.session_tag = tag.slice(0, FIELD_MAX);
@@ -49,24 +45,9 @@ export function appendHookLine(dir: string, stdinText: string, now: number = Dat
   if (!event) return undefined;
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, HOOK_LOG_FILE);
-  rotateIfLarge(file);
+  rotateIfLarger(file, HOOK_LOG_MAX_BYTES);
   fs.appendFileSync(file, JSON.stringify(event) + '\n');
   return event;
-}
-
-function rotateIfLarge(file: string): void {
-  let size: number;
-  try {
-    size = fs.statSync(file).size;
-  } catch {
-    return;
-  }
-  if (size <= HOOK_LOG_MAX_BYTES) return;
-  try {
-    fs.renameSync(file, `${file}.1`);
-  } catch {
-    // 回せなくても追記は続ける
-  }
 }
 
 function main(): void {
