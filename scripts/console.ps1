@@ -23,15 +23,6 @@ param(
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 
-# 送ってよいキー。1 つでも違えば何も送らずに終わる（途中まで送ると TUI の状態が中途半端になるため）
-$AllowedKeys = @('Up', 'Down', 'Enter', 'Digit1', 'Esc')
-$keyList = @($Keys -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
-$unknown = @($keyList | Where-Object { $AllowedKeys -notcontains $_ })
-if ($unknown.Count -gt 0) {
-    [Console]::Error.WriteLine("送れないキー: $($unknown -join ', ')（使えるのは $($AllowedKeys -join ' / ')）")
-    exit 2
-}
-
 # 仮想キーコード（VK_UP / VK_DOWN / VK_RETURN / VK_1 / VK_ESCAPE）と、Enter・Esc の文字
 $VK_UP = 0x26
 $VK_DOWN = 0x28
@@ -41,6 +32,22 @@ $VK_ESCAPE = 0x1B
 $CHAR_ESC = [char]27
 $CHAR_NONE = [char]0
 $CHAR_CR = [char]13
+
+# 送ってよいキーと、送る文字・仮想キーコード。許可の判定と送信の両方をこの表から引く（キーを足すときはここだけ直す）。
+# 1 つでも違えば何も送らずに終わる（途中まで送ると TUI の状態が中途半端になるため）
+$KeyMap = [ordered]@{
+    Up = @($CHAR_NONE, $VK_UP)
+    Down = @($CHAR_NONE, $VK_DOWN)
+    Enter = @($CHAR_CR, $VK_RETURN)
+    Digit1 = @([char]'1', $VK_1)
+    Esc = @($CHAR_ESC, $VK_ESCAPE)
+}
+$keyList = @($Keys -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+$unknown = @($keyList | Where-Object { -not $KeyMap.Contains($_) })
+if ($unknown.Count -gt 0) {
+    [Console]::Error.WriteLine("送れないキー: $($unknown -join ', ')（使えるのは $($KeyMap.Keys -join ' / ')）")
+    exit 2
+}
 # TUI が 1 キーずつ描き直す間を空ける
 $KEY_INTERVAL_MS = 80
 # 文字を打つときの間隔（入力欄が 1 文字ずつ受け取れるように）
@@ -121,20 +128,23 @@ public static class SlackChannelConsole {
         } finally { CloseHandle(h); }
     }
 
+    const ushort KEY_EVENT = 1;
+
     // キーを 1 つ送る（押して離す）
     public static void SendKey(char c, ushort vk) {
         IntPtr h = Open("CONIN$");
         try {
+            // 押す・離すの 2 件
             var recs = new INPUT_RECORD[2];
-            for (int i = 0; i < 2; i++) {
-                recs[i].EventType = 1; // KEY_EVENT
+            for (int i = 0; i < recs.Length; i++) {
+                recs[i].EventType = KEY_EVENT;
                 recs[i].Key.bKeyDown = i == 0 ? 1 : 0;
                 recs[i].Key.wRepeatCount = 1;
                 recs[i].Key.wVirtualKeyCode = vk;
                 recs[i].Key.UnicodeChar = c;
             }
             uint written;
-            if (!WriteConsoleInput(h, recs, 2, out written) || written != 2) throw new InvalidOperationException("キーを送れない");
+            if (!WriteConsoleInput(h, recs, (uint)recs.Length, out written) || written != (uint)recs.Length) throw new InvalidOperationException("キーを送れない");
         } finally { CloseHandle(h); }
     }
 }
@@ -166,13 +176,8 @@ if ($Mode -eq 'command') {
 }
 
 foreach ($key in $keyList) {
-    switch ($key) {
-        'Up' { [SlackChannelConsole]::SendKey($CHAR_NONE, $VK_UP) }
-        'Down' { [SlackChannelConsole]::SendKey($CHAR_NONE, $VK_DOWN) }
-        'Enter' { [SlackChannelConsole]::SendKey($CHAR_CR, $VK_RETURN) }
-        'Digit1' { [SlackChannelConsole]::SendKey([char]'1', $VK_1) }
-        'Esc' { [SlackChannelConsole]::SendKey($CHAR_ESC, $VK_ESCAPE) }
-    }
+    $char, $vk = $KeyMap[$key]
+    [SlackChannelConsole]::SendKey($char, $vk)
     Start-Sleep -Milliseconds $KEY_INTERVAL_MS
 }
 exit 0

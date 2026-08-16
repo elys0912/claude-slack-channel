@@ -1,5 +1,15 @@
 ﻿# start.ps1 から dot-source して使う共通関数。
 
+# 会話の session_id（UUID）の形。restart.flag と hooks.jsonl から読んだ値を、--resume に渡す前に確かめる
+$SessionIdPattern = '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+
+# Text を Path に BOM なし UTF-8 で書く（claude.exe・node が読むファイルに BOM を付けない）
+function Write-Utf8NoBom {
+    param([Parameter(Mandatory)][string]$Path, [string]$Text)
+
+    [System.IO.File]::WriteAllText($Path, $Text, [System.Text.UTF8Encoding]::new($false))
+}
+
 # 起動のたびに生成するファイル（--mcp-config / --settings）の置き場所。無ければ作る
 function Get-TempDir {
     $dir = Join-Path $env:TEMP 'claude-slack-channel'
@@ -70,7 +80,6 @@ function Write-McpConfig {
     )
 
     $path = Join-Path (Get-TempDir) $FileName
-    New-Item -ItemType Directory -Path (Split-Path -Parent $path) -Force | Out-Null
 
     $main = @{ command = $NodePath; args = @($ScriptPath) }
     if ($Env.Count -gt 0) { $main.env = $Env }
@@ -79,7 +88,7 @@ function Write-McpConfig {
         if ($name -ne $ServerName) { $servers[$name] = $ExtraServers[$name] }
     }
     $json = @{ mcpServers = $servers } | ConvertTo-Json -Depth 10
-    [System.IO.File]::WriteAllText($path, $json, [System.Text.UTF8Encoding]::new($false))
+    Write-Utf8NoBom -Path $path -Text $json
 
     return $path
 }
@@ -105,7 +114,7 @@ function Read-RestartSessionId {
         return $null
     }
     $id = [string]$flag.sessionId
-    if ($id -match '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') { return $id }
+    if ($id -match $SessionIdPattern) { return $id }
     return $null
 }
 
@@ -156,7 +165,7 @@ function Test-AutoRestartEnabled {
     param([string]$EnvFile)
 
     $value = Read-DotEnvValue -Path $EnvFile -Key 'AUTO_RESTART'
-    return -not ($value -match '^(off|false|0)$')
+    return $value -notmatch '^(off|false|0)$'
 }
 
 # Times のうち、Now から WindowMin 分以内のものだけを返す（想定外の終了で起動し直した時刻の履歴を窓で切る）。
@@ -183,7 +192,7 @@ function Get-LastHookSessionId {
         }
         if ($SessionTag -and [string]$hookLine.session_tag -ne $SessionTag) { continue }
         $id = [string]$hookLine.session_id
-        if ($id -match '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') { return $id }
+        if ($id -match $SessionIdPattern) { return $id }
     }
     return $null
 }
@@ -207,7 +216,7 @@ function Write-CrashRecord {
         window_min = $WindowMin
         resumed = $Resumed
     }
-    [System.IO.File]::WriteAllText($Path, ($record | ConvertTo-Json -Compress), [System.Text.UTF8Encoding]::new($false))
+    Write-Utf8NoBom -Path $Path -Text ($record | ConvertTo-Json -Compress)
 }
 
 # claude.exe に渡す引数。ResumeArgs を先頭に置き、ClaudeArgs（最後が --dangerously-load-development-channels）はその後ろに続ける。
@@ -287,7 +296,6 @@ function Read-AllowExtra {
     if (-not (Test-Path -LiteralPath $Path)) { return @() }
     # 結果は stdout の JSON で受け取る。node の stderr やコマンドが無いときのエラーで止まらないようにする
     $ErrorActionPreference = 'Continue'
-    $result = $null
     try {
         $result = (& node $CheckerScript $Path 2>$null | Out-String) | ConvertFrom-Json
     } catch {
@@ -329,5 +337,5 @@ function Write-EffectiveSettings {
     }
     New-Item -ItemType Directory -Path (Split-Path -Parent $OutFile) -Force | Out-Null
     $json = $settings | ConvertTo-Json -Depth 10
-    [System.IO.File]::WriteAllText($OutFile, $json, [System.Text.UTF8Encoding]::new($false))
+    Write-Utf8NoBom -Path $OutFile -Text $json
 }

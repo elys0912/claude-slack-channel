@@ -26,6 +26,8 @@ $consoleScript = Join-Path $PSScriptRoot 'console.ps1'
 # このコンソールの出力コードページは console.ps1 も同じ値にするので、claude.exe の表示への影響は増えない。
 # 1 周は console.ps1 の起動込みで約 0.4 秒 + IntervalMs（2026-10-03 計測）。ダイアログを待つには十分なので、毎周起動のままにする
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+# ダイアログが見えてから答えるまでに、TUI が描き終わるのを待つ時間（IntervalMs の既定と同じ値なのは偶然で、意味は別）
+$SettleMs = 500
 
 function Invoke-Console {
     param([string[]]$Arguments)
@@ -56,7 +58,7 @@ while ((Get-Date) -lt $deadline) {
     }
     if ($screen -match $Pattern -and ($ChoicePattern -eq '' -or $screen -match $ChoicePattern)) {
         # TUI が描き終わるのを少し待ってから答える
-        Start-Sleep -Milliseconds 500
+        Start-Sleep -Milliseconds $SettleMs
         $output = Invoke-Console @('-Mode', 'keys', '-Keys', 'Digit1,Enter') 2>&1
         if ($LASTEXITCODE -eq 0) {
             Write-Log "警告ダイアログに答えた（Digit1, Enter）"
