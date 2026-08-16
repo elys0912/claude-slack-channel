@@ -860,13 +860,18 @@ describe('縮退モード', () => {
     });
   });
 
-  it('createDegradedDeps は logger をそのまま含む', async () => {
+  it('createDegradedDeps は logger をそのまま含む', () => {
     const logger = new Logger({ stderr: false });
-    const deps = createDegradedDeps(logger);
-    expect(deps.logger).toBe(logger);
+    expect(createDegradedDeps(logger).logger).toBe(logger);
+  });
+
+  it('createDegradedDeps の onReply は送らずに error を返す', async () => {
+    const deps = createDegradedDeps(new Logger({ stderr: false }));
     expect(await deps.onReply({ chat_id: DM1, text: 'x' })).toMatch(/^error: /);
-    // ChannelServer にそのまま渡せる
-    expect(() => new ChannelServer(deps)).not.toThrow();
+  });
+
+  it('createDegradedDeps の戻り値は ChannelServer にそのまま渡せる', () => {
+    expect(() => new ChannelServer(createDegradedDeps(new Logger({ stderr: false })))).not.toThrow();
   });
 });
 
@@ -1102,7 +1107,7 @@ describe('parseCommand', () => {
   });
 });
 
-describe('起動時の、今の方式では作れない保存済みのルールの知らせ（D-SD-03）', () => {
+describe('起動時の、今の方式では作れない保存済みのルールの知らせ', () => {
   const harness = useHarnessSlot('app-rejected-');
   let file: string;
 

@@ -245,7 +245,7 @@ describe('空の項目', () => {
 });
 
 describe('buildResolvedBlocks', () => {
-  it('reflects allow', () => {
+  it('allow なら通知欄の文に Allowed を書く', () => {
     const { text } = buildResolvedBlocks(sampleReq, 'allow', 'U123');
     expect(text).toContain('Allowed');
   });
@@ -267,7 +267,7 @@ describe('buildResolvedBlocks', () => {
     expect(context.elements.map((e) => e.text)).toEqual(['ID: *x* <!here> ・ by', '<!channel>']);
   });
 
-  it('reflects deny', () => {
+  it('deny なら通知欄の文に Denied を書く', () => {
     const { text } = buildResolvedBlocks(sampleReq, 'deny', 'U123');
     expect(text).toContain('Denied');
   });

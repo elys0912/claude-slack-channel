@@ -125,7 +125,7 @@ describe('loadTokens', () => {
     dir = tempDir();
   });
 
-  it('正常系: bot/app トークンを読み込める', () => {
+  it('bot/app トークンを読み込める', () => {
     writeEnv(dir);
     const tokens = loadTokens(dir);
     expect(tokens).toEqual({
@@ -241,7 +241,7 @@ describe('loadAccess', () => {
     dir = tempDir();
   });
 
-  it('正常系', () => {
+  it('teamId と allowFrom だけの access.json を読み込める', () => {
     writeAccess(dir, { teamId: 'T12345', allowFrom: ['U12345', 'U67890'] });
     expect(loadAccess(dir)).toEqual({ teamId: 'T12345', allowFrom: ['U12345', 'U67890'] });
   });

@@ -277,7 +277,7 @@ describe('parsePermissionReply', () => {
     expect(parsePermissionReply('n abcde')).toEqual({ requestId: 'abcde', behavior: 'deny' });
   });
 
-  it('rejects ids with uppercase-required-lowercase mismatch length', () => {
+  it('ID が 5 文字でなければ（4 文字・6 文字）null を返す', () => {
     expect(parsePermissionReply('yes abcd')).toBeNull();
     expect(parsePermissionReply('yes abcdef')).toBeNull();
   });
