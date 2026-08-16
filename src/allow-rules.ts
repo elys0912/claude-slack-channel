@@ -109,6 +109,8 @@ const MCP_WRITE_WORDS = new Set([
 ]);
 /** MCP の個別のツール名。1 つ目がサーバー名、2 つ目がツール名 */
 const MCP_TOOL_RE = /^mcp__([A-Za-z0-9-]+(?:_[A-Za-z0-9-]+)*)__([A-Za-z0-9_-]+)$/;
+/** URL で照合するツール。ルールの種別の対応箇所 */
+const WEB_FETCH_TOOL = 'WebFetch';
 /** WebFetch のルールにする URL のスキーム */
 const WEB_FETCH_PROTOCOLS = new Set(['http:', 'https:']);
 /** WebFetch のルールにするホスト名の形（`*` を含むもの・IPv6 の `[::1]` などは作らない） */
@@ -171,10 +173,14 @@ function ruleDirProblem(dir: string, windowsDrive: boolean, home: string): strin
   return undefined;
 }
 
+/** ファイルの親フォルダー。ドライブ名で始まれば Windows の区切り、それ以外は POSIX の区切りで見る */
+function parentDirOf(raw: string): string {
+  return WINDOWS_DRIVE_RE.test(raw) ? path.win32.dirname(raw) : path.posix.dirname(raw);
+}
+
 /** ルールの対象にするフォルダー。フォルダーそのもの（isDir）ならそのまま、ファイルなら親フォルダー */
 function targetDirOf(raw: string, isDir: boolean): string {
-  if (isDir) return raw;
-  return WINDOWS_DRIVE_RE.test(raw) ? path.win32.dirname(raw) : path.posix.dirname(raw);
+  return isDir ? raw : parentDirOf(raw);
 }
 
 /** パスを取るツールのリクエストから、対象のフォルダー以下に絞ったルールを作る */
@@ -211,10 +217,18 @@ export function normalizeCommandName(word: string): string {
   return POWERSHELL_ALIASES.get(name) ?? name;
 }
 
+/**
+ * シェルのプレフィックス（`rm -r`）を小文字の語に分け、先頭の語を normalizeCommandName で直したもの（`['remove-item', '-r']`）。
+ * deny との照合（このファイル）と ask との照合（session-allow.ts）で正規化をそろえるため、両方からこれを使う
+ */
+export function normalizeShellWords(prefix: string): string[] {
+  const [first = '', ...rest] = prefix.toLowerCase().split(/\s+/);
+  return [normalizeCommandName(first), ...rest];
+}
+
 /** シェルのプレフィックス（`rm -r`）の先頭の語を normalizeCommandName で直したもの（`remove-item -r`） */
 function normalizeShellPrefix(prefix: string): string {
-  const [first = '', ...rest] = prefix.toLowerCase().split(/\s+/);
-  return [normalizeCommandName(first), ...rest].join(' ');
+  return normalizeShellWords(prefix).join(' ');
 }
 
 /** 2 つのプレフィックスの一方が他方の先頭に一致するか（大文字小文字は区別しない） */
@@ -265,7 +279,7 @@ function deriveWebFetchRule(req: PermissionRequest): RuleResult {
     return { ok: false, reason: `URL のホストが想定外の形: ${raw ?? ''}` };
   }
   const prefix = `${WEB_FETCH_DOMAIN_PREFIX}${host}`;
-  return { ok: true, rule: `WebFetch(${prefix})`, tool: 'WebFetch', prefix };
+  return { ok: true, rule: `${WEB_FETCH_TOOL}(${prefix})`, tool: WEB_FETCH_TOOL, prefix };
 }
 
 /** Bash / PowerShell のリクエストから、許可リスト（SHELL_RULE_ALLOWLIST）のコマンドと引数なしで一致するものだけルールを作る */
@@ -299,7 +313,7 @@ export function deriveRule(req: PermissionRequest, home: string = os.homedir()):
   const pathSpec = PATH_TOOLS.get(tool);
   if (pathSpec) return derivePathRule(req, pathSpec, home);
   if (SHELL_TOOLS.has(tool)) return deriveShellRule(req, tool);
-  if (tool === 'WebFetch') return deriveWebFetchRule(req);
+  if (tool === WEB_FETCH_TOOL) return deriveWebFetchRule(req);
   if (isReadOnlyMcpTool(tool)) return { ok: true, rule: tool, tool, prefix: undefined };
   return { ok: false, reason: `ツール全体を許すルールは、読み取り専用と分かる MCP のツールにだけ作る: ${tool}` };
 }
@@ -317,12 +331,12 @@ export function isDerivableRule(rule: string, home: string = os.homedir()): bool
   if (SHELL_TOOLS.has(tool)) return body !== undefined && SHELL_RULE_ALLOWLIST.includes(body);
   if (tool === 'Read' || tool === 'Edit') {
     if (body === undefined || !body.startsWith('//') || !body.endsWith(PATH_RULE_SUFFIX)) return false;
-    const dir = body.slice(0, -PATH_RULE_SUFFIX.length);
+    const dir = stripPathRuleSuffix(body);
     // toRulePath が作る形（区切りの重なりや末尾の区切りが無い）だけを受け付ける
     if (`//${segmentsOf(dir).join('/')}` !== dir) return false;
     return ruleDirProblem(dir, /^[a-z]$/.test(segmentsOf(dir)[0] ?? ''), home) === undefined;
   }
-  if (tool === 'WebFetch') {
+  if (tool === WEB_FETCH_TOOL) {
     return body !== undefined && body.startsWith(WEB_FETCH_DOMAIN_PREFIX) && WEB_FETCH_HOST_RE.test(body.slice(WEB_FETCH_DOMAIN_PREFIX.length));
   }
   return body === undefined && isReadOnlyMcpTool(tool);
@@ -363,6 +377,16 @@ interface ParsedRule {
   raw: string | undefined;
 }
 
+/** パスで照合されるルール（Read / Edit で、中身が `//` 始まり）か。ルールの種別の対応箇所 */
+function isPathRule(tool: string, body: string | undefined): body is string {
+  return PATH_RULE_TOOLS.has(tool.toLowerCase()) && body?.startsWith('//') === true;
+}
+
+/** パスのルールの中身（`//c/dev/foo/**`）から、末尾の PATH_RULE_SUFFIX を外したフォルダー（`//c/dev/foo`） */
+function stripPathRuleSuffix(body: string): string {
+  return body.endsWith(PATH_RULE_SUFFIX) ? body.slice(0, -PATH_RULE_SUFFIX.length) : body;
+}
+
 function parseRule(rule: string): ParsedRule | undefined {
   const m = RULE_RE.exec(rule.trim());
   if (!m) return undefined;
@@ -379,7 +403,7 @@ export function parseRuleForCheck(rule: string): { tool: string; prefix: string 
   const parsed = parseRule(rule);
   if (!parsed) return undefined;
   // パスのルール（Read(//c/dev/foo/**) など）は、末尾の ** を削らずにそのまま渡す
-  if (PATH_RULE_TOOLS.has(parsed.tool.toLowerCase()) && parsed.raw?.startsWith('//')) return { tool: parsed.tool, prefix: parsed.raw };
+  if (isPathRule(parsed.tool, parsed.raw)) return { tool: parsed.tool, prefix: parsed.raw };
   return { tool: parsed.tool, prefix: parsed.body };
 }
 
@@ -390,7 +414,8 @@ export interface DenyContext {
   home: string;
 }
 
-function defaultContext(): DenyContext {
+/** 照合の基準の既定値（今の作業フォルダーとホーム）。session-allow.ts の既定値もこれを使う */
+export function defaultContext(): DenyContext {
   return { workDir: process.cwd(), home: os.homedir() };
 }
 
@@ -429,10 +454,7 @@ export function denyOverlaps(
   deny: readonly string[],
   ctx: DenyContext = defaultContext()
 ): string[] {
-  const candidateDir =
-    PATH_RULE_TOOLS.has(candidate.tool.toLowerCase()) && candidate.prefix?.startsWith('//')
-      ? candidate.prefix.replace(/\/\*\*$/, '')
-      : undefined;
+  const candidateDir = isPathRule(candidate.tool, candidate.prefix) ? stripPathRuleSuffix(candidate.prefix) : undefined;
   return deny.filter((d) => {
     const parsed = parseRule(d);
     if (!parsed || parsed.tool.toLowerCase() !== candidate.tool.toLowerCase()) return false;

@@ -5,10 +5,9 @@
 // ask との照合は、判断できないものを当たり（自動許可しない）に倒す。
 // このファイルは claude-slack-channel と claude-discord-channel で同じ内容にしている（直すときは両方を直す）。
 import path from 'node:path';
-import os from 'node:os';
 import { inputField } from './permission-core.js';
 import type { PermissionRequest } from './permission-core.js';
-import { COMMAND_SEPARATOR_RE, RULE_RE, denyDirOf, isSameOrAncestor, normalizeCommandName, toRulePath } from './allow-rules.js';
+import { COMMAND_SEPARATOR_RE, RULE_RE, defaultContext, denyDirOf, isSameOrAncestor, normalizeCommandName, normalizeShellWords, toRulePath } from './allow-rules.js';
 import type { DenyContext } from './allow-rules.js';
 
 /** シェルのツール（小文字）。ルールの種別の対応箇所（allow-rules.ts の SHELL_TOOLS） */
@@ -84,10 +83,6 @@ function pathRuleMatches(body: string, req: PermissionRequest, ctx: DenyContext)
   return isSameOrAncestor(dir, target);
 }
 
-function defaultContext(): DenyContext {
-  return { workDir: process.cwd(), home: os.homedir() };
-}
-
 /**
  * コマンドの 1 つの部分（小文字にしたもの）が、ask のルールの語の並び（先頭の語は正規化済み）に当たるか。
  * - 先頭が環境変数の代入・照合できない形の語・ラッパー（WRAPPER_COMMANDS）なら当たり
@@ -127,8 +122,7 @@ function shellCommandMatches(command: string, prefix: string): boolean {
     .map((part) => part.trim())
     .filter((part) => part !== '');
   if (parts.some((part) => part.split(/\s+/).some((word) => CONTROL_WORDS.has(word)))) return true;
-  const [prefixFirst = '', ...prefixRest] = prefix.toLowerCase().split(/\s+/);
-  const ruleWords = [normalizeCommandName(prefixFirst), ...prefixRest];
+  const ruleWords = normalizeShellWords(prefix);
   return parts.some((part) => shellPartMatches(part, ruleWords));
 }
 
