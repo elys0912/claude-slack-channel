@@ -1,9 +1,9 @@
 // 設定・トークン・アクセス許可リストのロード。
-// 注意: types.ts の AccessConfig には依存しない（別エージェントと並行編集中のため循環を避ける）。
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
+import { errMessage } from './errors.js';
 
 export function stateDir(env: NodeJS.ProcessEnv = process.env): string {
   const dir = env.SLACK_CHANNEL_STATE_DIR;
@@ -107,7 +107,7 @@ export function loadAccess(dir: string): ParsedAccess {
   try {
     json = JSON.parse(text);
   } catch (e) {
-    throw new Error(`access.json の JSON 構文が不正: ${(e as Error).message}`);
+    throw new Error(`access.json の JSON 構文が不正: ${errMessage(e)}`);
   }
 
   const result = AccessSchema.safeParse(json);

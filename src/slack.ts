@@ -12,6 +12,7 @@ import { parseBlockAction } from './permission.js';
 import type { ActionParse } from './permission.js';
 import { chunkText } from './chunk.js';
 import { escapeMrkdwn, neutralizeBroadcasts } from './format.js';
+import { slackErrorCode } from './errors.js';
 
 // markdown_text は Slack 側の上限が 12000。余裕をみて 11000 で切る。
 const MARKDOWN_LIMIT = 11000;
@@ -20,6 +21,14 @@ const TEXT_LIMIT = 3900;
 
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 60000;
+
+// 長時間ブロックしないよう、リトライは控えめにする（Web API / Socket Mode 共通）
+const RETRY_CONFIG = { retries: 2, factor: 2, minTimeout: 500, maxTimeout: 5000 };
+
+/** threadTs があるときだけ chat.* に渡す thread_ts を作る */
+function threadParam(threadTs: string | undefined): { thread_ts?: string } {
+  return threadTs ? { thread_ts: threadTs } : {};
+}
 
 /** テストで差し替えられるよう、実際に使う Web API のメソッドだけを型にする */
 export interface SlackWebApiLike {
@@ -79,19 +88,6 @@ export interface SlackInitResult {
   dmChannels: Map<string, string>;
 }
 
-// --- Slack API エラーの判定 ------------------------------------------------
-
-function errorCodeOf(err: unknown): string {
-  if (typeof err !== 'object' || err === null) return '';
-  const e = err as { data?: unknown; message?: unknown };
-  if (typeof e.data === 'object' && e.data !== null) {
-    const code = (e.data as { error?: unknown }).error;
-    if (typeof code === 'string') return code;
-  }
-  if (typeof e.message === 'string') return e.message;
-  return '';
-}
-
 /**
  * Slack SDK に渡すロガー。setName を無視して、代わりに行頭へ範囲名を付ける。
  * （Logger はプロセスで 1 つを共有しているので、SDK に名前を書き換えさせない）
@@ -112,9 +108,11 @@ function sdkLogger(logger: Logger, scope: string): SlackSdkLogger {
 const MARKDOWN_REJECT_RE =
   /invalid_arguments?|unknown_argument|msg_too_long|invalid_form_data|invalid_markdown|invalid_blocks/i;
 
-/** markdown_text が受け付けられなかった種類のエラーか */
+/** markdown_text が受け付けられなかった種類のエラーか（コードが無ければメッセージで判定） */
 export function isMarkdownRejection(err: unknown): boolean {
-  return MARKDOWN_REJECT_RE.test(errorCodeOf(err));
+  const message = (err as { message?: unknown } | null)?.message;
+  const code = slackErrorCode(err) ?? (typeof message === 'string' ? message : '');
+  return MARKDOWN_REJECT_RE.test(code);
 }
 
 // --- 受信イベントの詰め替え -------------------------------------------------
@@ -188,8 +186,7 @@ export class SlackBridge {
       deps.web ??
       (new WebClient(deps.botToken, {
         logger: sdkLogger(deps.logger, 'slack-web'),
-        // 長時間ブロックしないよう、リトライは控えめにする
-        retryConfig: { retries: 2, factor: 2, minTimeout: 500, maxTimeout: 5000 },
+        retryConfig: RETRY_CONFIG,
         timeout: 15000,
       }) as unknown as SlackWebApiLike);
   }
@@ -202,9 +199,7 @@ export class SlackBridge {
           appToken: this.appToken,
           logger: sdkLogger(this.logger, 'slack-socket'),
           autoReconnectEnabled: true,
-          clientOptions: {
-            retryConfig: { retries: 2, factor: 2, minTimeout: 500, maxTimeout: 5000 },
-          },
+          clientOptions: { retryConfig: RETRY_CONFIG },
         }) as unknown as SocketClientLike);
     }
     return this.socketClient;
@@ -412,7 +407,7 @@ export class SlackBridge {
           const res = await this.web.chat.postMessage({
             channel,
             markdown_text: piece,
-            ...(threadTs ? { thread_ts: threadTs } : {}),
+            ...threadParam(threadTs),
           });
           if (res.ts) tsList.push(res.ts);
           continue;
@@ -428,7 +423,7 @@ export class SlackBridge {
         const res = await this.web.chat.postMessage({
           channel,
           text: escapeMrkdwn(sub),
-          ...(threadTs ? { thread_ts: threadTs } : {}),
+          ...threadParam(threadTs),
         });
         if (res.ts) tsList.push(res.ts);
       }
@@ -443,7 +438,7 @@ export class SlackBridge {
       channel,
       text: neutralizeBroadcasts(text),
       blocks,
-      ...(threadTs ? { thread_ts: threadTs } : {}),
+      ...threadParam(threadTs),
     });
     return { ts: res.ts ?? '' };
   }

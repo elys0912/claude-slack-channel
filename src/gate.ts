@@ -2,6 +2,13 @@
 import type { AccessConfig, Verdict } from './types.js';
 import { sanitizeMeta } from './format.js';
 
+/** 添付ファイルのうち、Claude に要約して渡す情報だけ */
+export interface FileInfo {
+  name?: string;
+  mimetype?: string;
+  size?: number;
+}
+
 export interface InboundMessage {
   teamId: string | undefined;
   eventId: string | undefined;
@@ -14,7 +21,7 @@ export interface InboundMessage {
   text: string | undefined;
   ts: string | undefined;
   threadTs: string | undefined;
-  files: { name?: string; mimetype?: string; size?: number }[] | undefined;
+  files: FileInfo[] | undefined;
 }
 
 export type GateResult =
@@ -64,7 +71,7 @@ function sanitizeAttachmentName(name: string): string {
   return name.replace(DANGEROUS_NAME_CHARS_RE, '_');
 }
 
-function buildAttachmentsSummary(files: { name?: string; mimetype?: string; size?: number }[]): string {
+function buildAttachmentsSummary(files: FileInfo[]): string {
   return files
     .map((f) => {
       const name = sanitizeAttachmentName(f.name ?? '');
@@ -75,7 +82,7 @@ function buildAttachmentsSummary(files: { name?: string; mimetype?: string; size
     .join('; ');
 }
 
-function attachmentPlaceholder(files: { name?: string; mimetype?: string; size?: number }[] | undefined): string {
+function attachmentPlaceholder(files: FileInfo[] | undefined): string {
   const count = files?.length ?? 0;
   if (count > 1) return `(${count} attachments)`;
   return '(attachment)';

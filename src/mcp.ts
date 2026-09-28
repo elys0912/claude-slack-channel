@@ -8,6 +8,7 @@ import type { Logger } from './log.js';
 import type { Verdict } from './types.js';
 import type { PermissionRequest } from './permission.js';
 import { sanitizeMeta } from './format.js';
+import { errMessage } from './errors.js';
 
 export const SERVER_NAME = 'slackbridge';
 export const SERVER_VERSION = '0.1.0';
@@ -70,6 +71,59 @@ function toInputSchema(schema: z.ZodType): JsonObjectSchema {
   };
 }
 
+// --- ツール定義（名前・説明・スキーマ・呼び出し先を1か所にまとめる） ----------
+
+interface ToolDefinition {
+  name: string;
+  description: string;
+  inputSchema: JsonObjectSchema;
+  /** 引数を検証してからハンドラを呼ぶ。検証に失敗したら投げる */
+  call: (deps: McpDeps, rawArgs: unknown) => Promise<string>;
+}
+
+function defineTool<S extends z.ZodType>(
+  name: string,
+  description: string,
+  schema: S,
+  handler: (deps: McpDeps, args: z.output<S>) => Promise<string>
+): ToolDefinition {
+  return {
+    name,
+    description,
+    inputSchema: toInputSchema(schema),
+    call: (deps, rawArgs) => handler(deps, schema.parse(rawArgs)),
+  };
+}
+
+const TOOLS: ToolDefinition[] = [
+  defineTool(
+    'reply',
+    'Slack の DM にメッセージを返信する（長文は自動で分割される）',
+    ReplySchema,
+    (deps, args) => deps.onReply(args)
+  ),
+  defineTool(
+    'react',
+    'Slack のメッセージに絵文字リアクションを付ける',
+    ReactSchema,
+    (deps, args) => deps.onReact(args)
+  ),
+  defineTool(
+    'edit_message',
+    'このボットが送った Slack メッセージの本文を書き換える',
+    EditSchema,
+    (deps, args) => deps.onEdit(args)
+  ),
+];
+
+function textResult(text: string) {
+  return { content: [{ type: 'text' as const, text }] };
+}
+
+function errorResult(text: string) {
+  return { isError: true, ...textResult(text) };
+}
+
 // --- permission_request の通知スキーマ ---------------------------------------
 
 const PermissionRequestNotificationSchema = z.object({
@@ -120,66 +174,26 @@ export class ChannelServer {
 
   private registerHandlers(): void {
     this.server.setRequestHandler(ListToolsRequestSchema, () => ({
-      tools: [
-        {
-          name: 'reply',
-          description: 'Slack の DM にメッセージを返信する（長文は自動で分割される）',
-          inputSchema: toInputSchema(ReplySchema),
-        },
-        {
-          name: 'react',
-          description: 'Slack のメッセージに絵文字リアクションを付ける',
-          inputSchema: toInputSchema(ReactSchema),
-        },
-        {
-          name: 'edit_message',
-          description: 'このボットが送った Slack メッセージの本文を書き換える',
-          inputSchema: toInputSchema(EditSchema),
-        },
-      ],
+      tools: TOOLS.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })),
     }));
 
     this.server.setRequestHandler(CallToolRequestSchema, async (req) => {
       const name = req.params.name;
-      const rawArgs: unknown = req.params.arguments ?? {};
+      const tool = TOOLS.find((t) => t.name === name);
+      if (!tool) return errorResult(`unknown tool: ${name}`);
+
       try {
-        switch (name) {
-          case 'reply': {
-            const a = ReplySchema.parse(rawArgs);
-            const text = await this.deps.onReply(a);
-            return { content: [{ type: 'text' as const, text }] };
-          }
-          case 'react': {
-            const a = ReactSchema.parse(rawArgs);
-            const text = await this.deps.onReact(a);
-            return { content: [{ type: 'text' as const, text }] };
-          }
-          case 'edit_message': {
-            const a = EditSchema.parse(rawArgs);
-            const text = await this.deps.onEdit(a);
-            return { content: [{ type: 'text' as const, text }] };
-          }
-          default:
-            return {
-              isError: true,
-              content: [{ type: 'text' as const, text: `unknown tool: ${name}` }],
-            };
-        }
+        return textResult(await tool.call(this.deps, req.params.arguments ?? {}));
       } catch (e) {
-        const message = e instanceof Error ? e.message : String(e);
         this.logger.error(`ツール呼び出しで例外 tool=${name}`, e);
-        return { isError: true, content: [{ type: 'text' as const, text: message }] };
+        return errorResult(errMessage(e));
       }
     });
 
     this.server.setNotificationHandler(PermissionRequestNotificationSchema, async ({ params }) => {
       try {
-        await this.deps.onPermissionRequest({
-          request_id: params.request_id,
-          tool_name: params.tool_name,
-          description: params.description,
-          input_preview: params.input_preview,
-        });
+        // params は zod で4フィールドだけに絞られているので、そのまま PermissionRequest になる
+        await this.deps.onPermissionRequest(params);
       } catch (e) {
         this.logger.error('permission_request の処理で例外', e);
       }
