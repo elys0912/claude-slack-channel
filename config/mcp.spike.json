@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "echo": {
+      "command": "node",
+      "args": ["C:\\dev\\claude-slack-channel\\spike\\echo-channel.mjs"]
+    }
+  }
+}
