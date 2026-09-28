@@ -1,28 +1,38 @@
 # claude-slack-channel
 
-Slack の DM をローカルで動いている Claude Code のセッションへ中継する MCP channel サーバー。
-Slack から話しかけると、手元の `claude.exe` セッションが応答する。
-返信・リアクション・実行許可の確認まで、Slack 側だけで完結する。
+Slack の DM を、手元で動いている Claude Code のセッションへ中継する MCP channel サーバー。
+Slack から話しかけると手元の `claude.exe` が応答し、返信・リアクション・実行許可の確認まで
+Slack 側だけで完結する。
+
+## クイックスタート
+
+初回は先に [セットアップ](#セットアップ) を済ませておくこと。
+
+```powershell
+npm install
+npm run build
+npm run check                # Slack への疎通確認
+scripts\start.cmd my-app     # config\projects.json の name か、パスを指定して起動
+```
+
+起動時に出る警告ダイアログでは **「1」（I am using this for local development）** を選ぶ。
+あとは Slack でこのボットに DM を送ればよい。
 
 ## 仕組み
 
 ```
 Slack (DM)
-   │  Socket Mode（WebSocket、外向きの穴あけ不要）
+   │  Socket Mode（サーバー側から WebSocket を張るので、ポート開放やトンネルは不要）
    ▼
-claude-slack-channel（このリポジトリ / dist/src/main.js）
-   │  MCP（標準入出力・experimental "channels" 機能）
+claude-slack-channel（dist/src/main.js）
+   │  MCP（標準入出力、experimental の channels 機能）
    ▼
 Claude Code（claude.exe、手元のセッション）
 ```
 
-- Slack 側の送受信は Socket Mode（Slack → サーバーへの Web hook 受信ではなく、サーバー側から
-  WebSocket を張りに行く方式）なので、ポート開放やトンネルは不要。
-- このサーバーは MCP の channel サーバーとして Claude Code に読み込まれ、Slack のメッセージを
-  Claude のセッションへ直接注入する。Claude からの返信・リアクション・メッセージ編集は
-  `reply` / `react` / `edit_message` の3ツールとして Claude 側から呼び出される。
-- ファイル書き込みなどの実行許可（permission）が必要な操作は、通常ならローカルの確認ダイアログに
-  出るところを、Slack のボタンまたは `yes xxxxx` / `no xxxxx` の返信でも承認・拒否できる。
+- Slack のメッセージは、Claude のセッションへ直接届く。
+- Claude からは `reply` / `react` / `edit_message` の3ツールで Slack に返信する。
+- ファイル書き込みなどの実行許可は、Slack のボタンか `yes xxxxx` / `no xxxxx` の返信でも答えられる。
 
 ## 必要なもの
 
@@ -31,60 +41,37 @@ Claude Code（claude.exe、手元のセッション）
 - Claude の Pro 以上のサブスクリプション
 - Slack ワークスペースの管理権限（アプリのインストールに必要）
 
-## セットアップ手順
+## セットアップ
 
-### 1. 依存関係のインストールとビルド
+### 1. Slack アプリを作る
 
-好きな場所に clone してから（以下、clone 先を `<repo>` と書く）:
+[api.slack.com/apps](https://api.slack.com/apps) で次の順に操作する。
 
-```
-git clone https://github.com/<owner>/claude-slack-channel.git
-cd claude-slack-channel
-npm install
-npm run build
-```
+1. **Create New App** → **From an app manifest** → ワークスペースを選び、
+   [slack-app-manifest.yaml](slack-app-manifest.yaml) の中身を貼り付けて作成する。
+   DM 専用・Socket Mode 有効・最小限のスコープを持つアプリができる。
+2. **Basic Information** → **App-Level Tokens** → **Generate Token and Scopes** で、
+   スコープ `connections:write` のトークンを発行する。
+   → `xapp-` で始まるこのトークンが **`SLACK_APP_TOKEN`**。
+3. **OAuth & Permissions** → **Install to Workspace** でインストールする。
+   → 発行される `xoxb-` で始まるトークンが **`SLACK_BOT_TOKEN`**。
+   **Scopes** に `chat:write` / `im:history` / `im:write` / `reactions:write` の4つがあるか確認する。
+4. Slack で自分のプロフィールを開き、**その他** → **メンバーIDをコピー** で自分の ID
+   （`U` で始まる）を控える。
 
-`dist/src/main.js` が作られる。以後 `scripts\start.cmd` から起動できる。
+### 2. `.env` と `access.json` を作る
 
-### 2. Slack アプリを manifest から作る
+状態ディレクトリ `%USERPROFILE%\.claude\channels\slack` に、メモ帳で次の2ファイルを作る
+（場所は環境変数 `SLACK_CHANNEL_STATE_DIR` で変えられる）。
 
-[api.slack.com/apps](https://api.slack.com/apps) → **Create New App** → **From an app manifest**
-を選び、対象のワークスペースを選択してから、このリポジトリの `slack-app-manifest.yaml` の中身を
-貼り付けて作成する。DM 専用・Socket Mode 有効・必要最小限のスコープ（`chat:write` /
-`im:history` / `im:write` / `reactions:write`）だけを持つアプリができる。
-
-### 3. App-Level Token（`connections:write`）の発行
-
-作成したアプリの **Basic Information** → **App-Level Tokens** から **Generate Token and Scopes**
-を選び、スコープに `connections:write` を追加してトークンを発行する。ここで発行される
-`xapp-` から始まるトークンが Socket Mode の接続に使う `SLACK_APP_TOKEN`。
-
-### 4. ワークスペースへのインストールとスコープの確認
-
-**OAuth & Permissions** → **Install to Workspace** でインストールする。完了すると
-`xoxb-` から始まる Bot User OAuth Token が発行される。これが `SLACK_BOT_TOKEN`。
-**Scopes** の欄に manifest 通りの4つ（`chat:write` / `im:history` / `im:write` /
-`reactions:write`）が入っているか確認する。
-
-### 5. 自分の member ID の調べ方
-
-Slack のワークスペースで自分のプロフィールを開き、**その他** メニューから
-**メンバーIDをコピー** を選ぶ（`U` から始まる ID）。この ID を `access.json` の
-`allowFrom` に入れる。ここに入っていない相手からの DM は無視される。
-
-### 6. `.env` と `access.json` をメモ帳で作る
-
-状態ディレクトリは既定で `%USERPROFILE%\.claude\channels\slack`（`SLACK_CHANNEL_STATE_DIR`
-環境変数で変更可）。ここに次の2ファイルを作る。
-
-`%USERPROFILE%\.claude\channels\slack\.env`（`config\env.example` の形式）:
+`.env`（ひな形: [config/env.example](config/env.example)）:
 
 ```
 SLACK_BOT_TOKEN=xoxb-...
 SLACK_APP_TOKEN=xapp-...
 ```
 
-`%USERPROFILE%\.claude\channels\slack\access.json`（`config\access.example.json` の形式）:
+`access.json`（ひな形: [config/access.example.json](config/access.example.json)）:
 
 ```json
 {
@@ -93,29 +80,29 @@ SLACK_APP_TOKEN=xapp-...
 }
 ```
 
-**Claude に作らせない理由**: この2ファイルはトークンと許可リストそのもので、Claude Code の
-プロジェクトディレクトリの外・状態ディレクトリに置く。Claude（このリポジトリの他のセッション
-含む）にトークンを扱わせると、ログや会話履歴に混入する経路が増える。手で作り、Claude には
-存在確認（中身は読まない）だけさせる設計にしている。
+`allowFrom` に入っていない相手からの DM は無視される。`teamId` は次の `npm run check` で確認できる。
 
-### 7. `npm run check` で確認する
+> **Claude に作らせない理由**: この2ファイルはトークンと許可リストそのもの。Claude に扱わせると、
+> ログや会話履歴に混入する経路が増える。手で作り、Claude には存在確認（中身は読まない）だけさせる。
 
-```
+### 3. 疎通を確認する
+
+```powershell
+npm install
+npm run build
 npm run check
 ```
 
-`auth.test` を呼び、ワークスペース名・team ID・ボットの user ID を表示する。`access.json` の
-`allowFrom` があれば、そこに書いた ID の表示名も引いて出す（失敗しても止まらない）。
-`access.json` の `teamId` と実際の `team_id` が食い違っていれば警告が出る。
-**トークンそのものは画面に出ない**（`xoxb-***` のように接頭辞だけ表示する）。
+`npm run check` は次を表示する。トークンそのものは画面に出ない（`xoxb-***` のように接頭辞だけ）。
 
-### 8. 起動する
+- ワークスペース名・`team_id`・ボットの user ID
+- `allowFrom` に書いた ID の表示名
+- `access.json` の `teamId` が実際の `team_id` と食い違っていれば警告
 
-**Windows Terminal から**（VS Code 拡張の中の統合ターミナルでは動かない。理由は
-[権限の設計](#権限の設計)を参照）:
+### 4. 起動するプロジェクトを登録する
 
-まず `config\projects.example.json` を `config\projects.json` にコピーして、Claude Code を
-起動したいプロジェクトを並べる（`projects.json` は各自の環境依存なので git 管理外）:
+[config/projects.example.json](config/projects.example.json) を `config\projects.json` にコピーし、
+Claude Code を起動したいプロジェクトを並べる（`projects.json` は git 管理外）。
 
 ```json
 {
@@ -125,153 +112,120 @@ npm run check
 }
 ```
 
-そのうえで起動する:
+## 起動
 
-```
-<repo>\scripts\start.cmd
-```
+**Windows Terminal から** 起動する（VS Code の統合ターミナルは動作確認していないので対象外）。
 
-`projects.json` のプロジェクトが番号付きで表示されるので、番号を入力して作業ディレクトリを
-選ぶ（空 Enter で先頭、`q` で起動せずに終了）。
+| コマンド | 動作 |
+|---|---|
+| `scripts\start.cmd` | `projects.json` の一覧から番号で選んで起動（Enter で先頭、`q` で中止） |
+| `scripts\start.cmd my-app` | `projects.json` の name で指定して起動 |
+| `scripts\start.cmd C:\path\to\app` | パスで直接指定して起動 |
+| `scripts\start.cmd my-app -PermissionMode auto` | 実行許可のモードを変える（下記） |
+| `scripts\start.cmd -DryRun` | 起動せず、実行されるコマンドラインだけ表示 |
 
-選択を飛ばして直接指定したい場合:
-
-```
-scripts\start.cmd -Project C:\path\to\project
-```
-
-起動のたびに全画面の警告ダイアログ（experimental channels の確認）が出るので、
-**「1」（I am using this for local development）を選ぶ**。
+`dist` が無ければ自動でビルドする。起動のたびに警告ダイアログ（experimental channels の確認）が
+出るので、**「1」（I am using this for local development）** を選ぶ。
 
 ## 使い方
 
-Slack のアプリ一覧からこのボットに DM を送ると、手元のセッションに届く。返信は元のメッセージの
-スレッドに返る。ファイル編集など実行許可が必要な操作は、Slack にボタン付きメッセージが届くので
-ボタンで答えるか、`yes xxxxx` / `no xxxxx`（`xxxxx` は表示された5文字の ID、`l` を除く
-`a-z` のみ）で返信する。
-
-セッションは1つで、Slack 側から複数の会話を並行して持てるわけではない。文脈は共有される。
-**Slack からは `/clear` できない**（ローカルのターミナルで操作する必要がある）。
+- このボットに DM を送ると、手元のセッションに届く。返信は元のメッセージのスレッドに返る。
+- 実行許可が必要な操作は、Slack にボタン付きメッセージが届く。ボタンで答えるか、
+  `yes xxxxx` / `no xxxxx` で返信する（`xxxxx` は表示された5文字の ID）。
+- セッションは1つだけで、Slack 側の会話はすべて同じ文脈を共有する。
+- **Slack からは `/clear` できない**（ローカルのターミナルで操作する）。
 
 ## 権限の設計
 
-起動スクリプトは Claude Code を次のフラグで起動する。MCP 設定（`slackbridge` サーバーの定義）は
-clone 先の絶対パスを含むため、起動のたびに `%TEMP%\claude-slack-channel\mcp.json` へ生成する。
+起動スクリプトは `claude.exe` を次のフラグで起動する。
 
-```
---mcp-config %TEMP%\claude-slack-channel\mcp.json
---setting-sources project,local
---settings config\channel-settings.json
---permission-mode default
---dangerously-load-development-channels server:slackbridge
-```
+| フラグ | 目的 |
+|---|---|
+| `--mcp-config %TEMP%\claude-slack-channel\mcp.json` | `slackbridge` サーバーを読み込む。clone 先の絶対パスを含むので、起動のたびに生成する |
+| `--setting-sources project,local` | ユーザー設定（`~/.claude/settings.json`）を読まない。便利さのために入れた緩い許可（`Bash(*)` など）に乗って、Slack からの指示が無確認で実行されるのを防ぐ |
+| `--settings config\channel-settings.json` | channel セッション専用の許可リストを、どの設定よりも上位に重ねる |
+| `--permission-mode default` | 許可リストに無い操作は毎回確認する。確認が多すぎるなら `-PermissionMode auto`（分類器が安全と判断した操作は無確認で通す）。どのモードでも deny ルールは効く |
+| `--dangerously-load-development-channels server:slackbridge` | experimental の channels 機能を有効にする |
 
-- **`--setting-sources project,local`**: ユーザー設定（`~/.claude/settings.json`）を
-  読み込まない。ユーザー設定には便利さのために緩い許可（`Bash(*)` や `Write` の無確認実行など）
-  が入っていることが多く、Slack 経由で届く指示がそれに乗って無確認で実行されるのを防ぐ。
-- **`--settings config\channel-settings.json`**: channel セッション専用の許可リストを、
-  ユーザー・プロジェクト・ローカルのどの設定より上位に重ねて適用する。
-- **`--permission-mode default`**: 許可リストに無い操作は毎回確認する。確認が多すぎて
-  進めにくい場合は `scripts\start.ps1 -PermissionMode auto` で auto モードにできる
-  （分類器が安全と判断した操作は無確認で通し、危険な操作だけ確認する）。
-  どのモードでも下記の deny ルールは効く。
+[config/channel-settings.json](config/channel-settings.json) の中身:
 
-`config/channel-settings.json` の内訳:
+- **allow**: `Read` / `Glob` / `Grep`、このサーバーの3ツール、`git status` / `git diff` / `git log`
+  （Windows ではどちらのシェルツールが使われるか環境依存なので、Bash・PowerShell の両方で登録）
+- **deny**: 状態ディレクトリ（`~/.claude/channels/**`）、`~/.claude.json`、`~/.ssh/**`、
+  プロジェクト内の `.env` 系、`git push --force` / `-f`、`git reset --hard`
+- **`disableBypassPermissionsMode`**: `bypassPermissions` モードへの切り替えを禁止
+- **`disableClaudeAiConnectors`**: claude.ai 側の connector を読み込まない
 
-- `allow`: `Read` / `Glob` / `Grep`（読み取り全般）、このサーバー自身の3ツール
-  （`reply` / `react` / `edit_message`）、`git status` / `git diff` / `git log`
-  （Bash・PowerShell 両方の形で登録。Windows では既定でどちらのツールが使われるか
-  環境依存のため）。
-- `deny`: 状態ディレクトリ（`~/.claude/channels/**`）そのものへの読み書き、
-  `~/.claude.json`、`~/.ssh/**`、プロジェクト内の `.env` 系ファイル、
-  `git push --force` / `-f`、`git reset --hard`。
-- `permissions.disableBypassPermissionsMode: "disable"`: `bypassPermissions`
-  モードへの切り替えを禁止する。
-- `disableClaudeAiConnectors: true`: claude.ai 側の connector を取得しない。
-
-deny ルールは allow ルールより必ず優先される（Claude Code の評価順は deny → ask → allow）ので、
-上の allow に `Read` を許可していても、deny に挙げたパスは読めない。
+deny は allow より必ず優先される（評価順は deny → ask → allow）ので、`Read` を許可していても
+deny に挙げたパスは読めない。
 
 > **制限**: `Bash(git push --force:*)` の deny は、`sh -c 'git push --force ...'` のような
-> 間接呼び出しを塞がない（Claude Code のパターンマッチの既知の制限）。channel セッションの
-> allow には `Bash(*)` が入っていないため `sh -c` 自体が確認待ちになるが、迂回が不可能なわけ
-> ではない。
-
-起動には Windows Terminal から `claude.exe` を直接叩く運用にしている。VS Code 拡張の中の
-統合ターミナルでは、`--dangerously-load-development-channels` の起動時警告ダイアログや
-channels（experimental）の動作を確認できていない（`docs/phase0.md` のスパイクは素の
-ターミナルで検証したもの）ため、対象外にしている。
+> 間接呼び出しまでは塞がない（Claude Code のパターンマッチの既知の制限）。allow に `Bash(*)` が
+> 無いので `sh -c` 自体は確認待ちになるが、迂回が不可能なわけではない。
 
 ## セキュリティ
 
-- 送信者の許可判定は Slack のユーザー ID（`access.json` の `allowFrom`）で行う。表示名や
-  メールアドレスでは判定しない。
-- トークン（`SLACK_BOT_TOKEN` / `SLACK_APP_TOKEN`）は状態ディレクトリの `.env` だけに置く。
-  環境変数にも MCP 設定ファイルにも書かない。
-- Slack から届くメッセージは信頼できない入力として扱う。届いた指示をそのまま実行するかどうかは
-  上記の権限設計（deny 優先、ユーザー設定を読まない）で制限している。
+- 送信者は Slack のユーザー ID（`allowFrom`）で判定する。表示名やメールアドレスでは判定しない。
+- トークンは状態ディレクトリの `.env` だけに置く。環境変数にも MCP 設定ファイルにも書かない。
+- Slack から届くメッセージは信頼できない入力として扱い、上記の権限設計で実行できる範囲を絞っている。
 
-### トークンが漏れたときの手順
+### トークンが漏れたとき
 
-1. [api.slack.com](https://api.slack.com/apps) でアプリを開き、**Basic Information** →
-   **App-Level Tokens** から該当トークンを **Revoke**。
-2. **OAuth & Permissions** でボットトークンを失効させる（またはアプリを一度アンインストールして
-   再インストールし、新しいトークンを発行する）。
-3. `%USERPROFILE%\.claude\channels\slack\.env` を新しいトークンで書き直す。
+1. [api.slack.com/apps](https://api.slack.com/apps) → **Basic Information** → **App-Level Tokens** で該当トークンを **Revoke**。
+2. **OAuth & Permissions** でボットトークンを失効させる（またはアプリを再インストールして新しいトークンを発行する）。
+3. `.env` を新しいトークンで書き直す。
 4. `npm run check` で疎通を確認してから、`scripts\start.cmd` で再起動する。
 
-### 許可リストから外すときの手順
+### 許可リストから外すとき
 
-`access.json` の `allowFrom` から該当の member ID を削除して保存する。サーバーは起動中の
-ファイル内容までは自動で再読み込みしないため、反映するにはセッションを再起動する。
+`access.json` の `allowFrom` から該当の ID を消して保存し、セッションを再起動する
+（起動中のサーバーは `access.json` を読み直さない）。
 
 ## トラブルシューティング
 
-- **ログ**: `%USERPROFILE%\.claude\channels\slack\logs\bridge.log`。トークンはログ内で
-  マスクされる（`xoxb-***` 等）。
-- **二重起動**: `instance.lock` により多重起動は検知される。別インスタンスが動いている場合、
-  新しいプロセスは Slack には接続せず MCP サーバーのみを縮退モードで起動する
-  （ツール呼び出しはエラーを返す）。
-- **`invalid_auth`**: `SLACK_BOT_TOKEN` が無効。`npm run check` で確認し、トークンを
-  取り直す。
-- **`missing_scope`**: OAuth スコープが不足している。**OAuth & Permissions** で
-  `slack-app-manifest.yaml` 記載の4スコープが揃っているか確認し、揃っていなければ
-  再インストールする。
-- **再接続 / スリープで切れる**: Socket Mode はスリープ復帰後に自動再接続を試みるが、
-  しばらく応答が無い場合はログを確認し、必要なら起動し直す。
-- **接続状態の確認**: セッション内で `/mcp` を実行すると `slackbridge` の接続状態が見える。
-- 実機での動作確認手順やチェックリストは [docs/phase0.md](docs/phase0.md) を参照
-  （echo channel を使ったスパイクの手順で、Slack を使わずに channels 機能自体の動作確認ができる）。
+| 症状 | 対処 |
+|---|---|
+| 何が起きたか知りたい | ログ `%USERPROFILE%\.claude\channels\slack\logs\bridge.log` を見る（トークンはマスク済み） |
+| 接続状態を知りたい | セッション内で `/mcp` を実行し、`slackbridge` の状態を見る |
+| `invalid_auth` | `SLACK_BOT_TOKEN` が無効。`npm run check` で確認し、トークンを取り直す |
+| `missing_scope` | **OAuth & Permissions** で4スコープが揃っているか確認し、足りなければ再インストール |
+| ツールが「別のインスタンスが動いている」エラーを返す | 別のセッションが Slack ブリッジを使用中（`instance.lock`）。2つ目以降は Slack に接続しない縮退モードで動く |
+| スリープ復帰後に反応しない | 自動で再接続を試みる。しばらく経っても駄目ならログを確認して起動し直す |
+
+Slack を使わずに channels 機能そのものを確かめたいときは [docs/phase0.md](docs/phase0.md) を参照。
 
 ## 開発
 
-```
-npm test         # vitest（159件）
-npm run typecheck # tsc --noEmit
+```powershell
+npm test             # vitest
+npm run typecheck    # tsc --noEmit
 ```
 
 ### ファイル構成
 
-- `src/main.ts` — エントリポイント。stateDir・ロック・トークン読み込み・Slack/MCP の配線
-- `src/config.ts` — stateDir・`.env` パーサー・`access.json` のスキーマ検証
-- `src/slack.ts` — Slack Socket Mode / Web API まわり
-- `src/mcp.ts` — MCP channel サーバー（`reply` / `react` / `edit_message` ツール）
-- `src/gate.ts` — 受信メッセージを中継すべきか判定する純関数群
-- `src/permission.ts` — 実行許可リレー（Slack のボタン・`yes/no` 返信）のロジック
-- `src/format.ts` — メッセージ整形（`@here` 等のブロードキャスト無害化など）
-- `src/chunk.ts` — 長文の分割送信
-- `src/lock.ts` — 単一インスタンス実行のファイルロック
-- `src/log.ts` — ログ出力（トークンのマスク込み）
-- `src/stdio-guard.ts` — stdout を MCP 専用に保つためのガード
-- `src/types.ts` — 共有型定義
-- `scripts/check.ts` — `npm run check` の実体。Slack への疎通確認
-- `scripts/start.ps1` / `start.cmd` — 起動スクリプト（プロジェクト選択付き）
-- `config/projects.json` — 起動時に選べるプロジェクトの一覧（各自作成・git 管理外）
-- `config/channel-settings.json` — channel セッション専用の権限設定
-- `config/projects.example.json` — `projects.json` のひな形
-- `config/access.example.json` / `config/env.example` — `access.json` / `.env` のひな形
-- `slack-app-manifest.yaml` — Slack アプリの manifest
-- `docs/phase0.md` — channels 機能そのものの実機確認手順（スパイク）
+| パス | 役割 |
+|---|---|
+| `src/main.ts` | エントリポイント。起動と、Slack・MCP・permission リレーの配線 |
+| `src/slack.ts` | Slack の Socket Mode 受信と Web API 送信 |
+| `src/mcp.ts` | MCP channel サーバー（`reply` / `react` / `edit_message` ツール） |
+| `src/permission-relay.ts` | 実行許可リレーの状態管理（配信・回答・結果表示への書き換え） |
+| `src/permission.ts` | 実行許可メッセージのブロック組み立てと、ボタン操作の検証（純関数） |
+| `src/gate.ts` | 受信メッセージを中継すべきかの判定（純関数） |
+| `src/config.ts` | 状態ディレクトリ・`.env` パーサー・`access.json` の検証 |
+| `src/format.ts` | 送信前のテキスト整形（`@here` 等の無害化など） |
+| `src/chunk.ts` | 長文の分割 |
+| `src/lock.ts` | 単一インスタンス実行のファイルロック |
+| `src/log.ts` | ログ出力（トークンのマスク込み） |
+| `src/errors.ts` | エラー値の文字列化 helper |
+| `src/stdio-guard.ts` | stdout を MCP 専用に保つガード |
+| `src/types.ts` | 共有型 |
+| `scripts/check.ts` | `npm run check` の実体（Slack への疎通確認） |
+| `scripts/start.cmd` / `start.ps1` | 起動スクリプト |
+| `scripts/spike.ps1` | [docs/phase0.md](docs/phase0.md) の echo channel スパイク用スクリプト |
+| `scripts/common.ps1` | 上記スクリプトの共通関数（claude.exe の探索、mcp.json の生成） |
+| `config/channel-settings.json` | channel セッション専用の権限設定 |
+| `config/*.example*` | `projects.json` / `access.json` / `.env` のひな形 |
+| `slack-app-manifest.yaml` | Slack アプリの manifest |
 
 ## ライセンス
 
