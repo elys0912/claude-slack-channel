@@ -1,0 +1,6 @@
+{
+  "projects": [
+    { "name": "my-app", "path": "C:\\path\\to\\my-app" },
+    { "name": "another-project", "path": "C:\\path\\to\\another-project" }
+  ]
+}

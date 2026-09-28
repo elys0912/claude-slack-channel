@@ -4,3 +4,4 @@ dist/
 .env.*
 *.log
 coverage/
+config/projects.json

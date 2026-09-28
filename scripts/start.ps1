@@ -1,16 +1,16 @@
-﻿# claude-slack-channel: portfolio セッション起動スクリプト
+﻿# claude-slack-channel: セッション起動スクリプト
 #
 # claude.exe を探し、ビルド済みか確認し、state ディレクトリ（.env / access.json）が
 # 用意されているかだけ確認したうえで（中身は読まない）、Slack channel サーバーを
 # --mcp-config で読み込みつつ、ユーザー設定を一切読まない状態で claude.exe を起動する。
 #
 # 使い方:
-#   scripts\start-portfolio.ps1                  # C:\dev\portfolio で起動
-#   scripts\start-portfolio.ps1 -Project <path>   # 別の作業ディレクトリで起動
-#   scripts\start-portfolio.ps1 -DryRun           # 実行せずコマンドラインだけ表示
+#   scripts\start.ps1                  # config\projects.json の一覧から作業ディレクトリを選んで起動
+#   scripts\start.ps1 -Project <path>  # 選択を飛ばして指定の作業ディレクトリで起動
+#   scripts\start.ps1 -DryRun          # 実行せずコマンドラインだけ表示
 
 param(
-    [string]$Project = 'C:\dev\portfolio',
+    [string]$Project,
     [switch]$DryRun
 )
 
@@ -70,7 +70,7 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 
 $mainJs = Join-Path $repoRoot 'dist\src\main.js'
 if (-not (Test-Path $mainJs)) {
-    Write-Host "[start-portfolio] dist/src/main.js が無いので npm run build を実行する"
+    Write-Host "[start] dist/src/main.js が無いので npm run build を実行する"
     $npm = Get-Command npm -ErrorAction SilentlyContinue
     if (-not $npm) {
         Write-Error "npm が見つからない。Node.js をインストールしてから再実行して。"
@@ -88,7 +88,7 @@ if (-not (Test-Path $mainJs)) {
             Pop-Location
         }
     } else {
-        Write-Host "[start-portfolio] (DryRun) npm run build をスキップ"
+        Write-Host "[start] (DryRun) npm run build をスキップ"
     }
 }
 
@@ -115,7 +115,53 @@ if (-not (Test-Path $envFile) -or -not (Test-Path $accessFile)) {
     }
 }
 
-# --- 5. 作業ディレクトリへ移動する -------------------------------------------
+# --- 5. 作業ディレクトリを決める ---------------------------------------------
+
+# -Project が無ければ config\projects.json の一覧を番号付きで表示して選ばせる。
+# 空 Enter は先頭のプロジェクト、q は起動せずに終了。
+function Select-Project {
+    param([string]$ListFile)
+
+    if (-not (Test-Path $ListFile)) {
+        Write-Error (
+            "プロジェクト一覧が無い: $ListFile。config\projects.example.json をコピーして " +
+            "自分のプロジェクトを書くか、-Project で直接指定して。"
+        )
+        exit 1
+    }
+    $projects = @((Get-Content -LiteralPath $ListFile -Raw -Encoding UTF8 | ConvertFrom-Json).projects)
+    if ($projects.Count -eq 0) {
+        Write-Error "$ListFile の projects が空。"
+        exit 1
+    }
+
+    Write-Host ""
+    Write-Host "どのプロジェクトで起動する？"
+    for ($i = 0; $i -lt $projects.Count; $i++) {
+        $p = $projects[$i]
+        $mark = if (Test-Path -LiteralPath $p.path) { '' } else { '  (見つからない)' }
+        Write-Host ("  [{0}] {1}  {2}{3}" -f ($i + 1), $p.name, $p.path, $mark)
+    }
+    Write-Host ""
+
+    while ($true) {
+        $answer = (Read-Host "番号を入力（Enter で 1、q で中止）").Trim()
+        if ($answer -eq '') { $answer = '1' }
+        if ($answer -eq 'q') {
+            Write-Host "中止した。"
+            exit 0
+        }
+        $n = 0
+        if ([int]::TryParse($answer, [ref]$n) -and $n -ge 1 -and $n -le $projects.Count) {
+            return $projects[$n - 1].path
+        }
+        Write-Host "1〜$($projects.Count) の番号か q を入力して。"
+    }
+}
+
+if (-not $Project) {
+    $Project = Select-Project -ListFile (Join-Path $repoRoot 'config\projects.json')
+}
 
 if (-not (Test-Path $Project)) {
     Write-Error "作業ディレクトリが存在しない: $Project"
@@ -129,7 +175,21 @@ $env:ENABLE_CLAUDEAI_MCP_SERVERS = 'false'
 
 # --- 7. 起動コマンドを組み立てる ---------------------------------------------
 
-$mcpConfig = Join-Path $repoRoot 'config\mcp.portfolio.json'
+# MCP 設定はリポジトリの場所に依存する（main.js の絶対パスが要る）ので、clone 先に
+# 関係なく動くよう起動のたびに生成する。claude.exe が BOM 付き JSON を読めるとは
+# 限らないため、BOM なし UTF-8 で書く。
+$mcpConfig = Join-Path $env:TEMP 'claude-slack-channel\mcp.json'
+New-Item -ItemType Directory -Path (Split-Path -Parent $mcpConfig) -Force | Out-Null
+$mcpJson = @{
+    mcpServers = @{
+        slackbridge = @{
+            command = 'node'
+            args    = @($mainJs)
+        }
+    }
+} | ConvertTo-Json -Depth 5
+[System.IO.File]::WriteAllText($mcpConfig, $mcpJson, [System.Text.UTF8Encoding]::new($false))
+
 $settingsFile = Join-Path $repoRoot 'config\channel-settings.json'
 
 $claudeArgs = @(
