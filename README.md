@@ -171,6 +171,10 @@ clone 先の絶対パスを含むため、起動のたびに `%TEMP%\claude-slac
   が入っていることが多く、Slack 経由で届く指示がそれに乗って無確認で実行されるのを防ぐ。
 - **`--settings config\channel-settings.json`**: channel セッション専用の許可リストを、
   ユーザー・プロジェクト・ローカルのどの設定より上位に重ねて適用する。
+- **`--permission-mode default`**: 許可リストに無い操作は毎回確認する。確認が多すぎて
+  進めにくい場合は `scripts\start.ps1 -PermissionMode auto` で auto モードにできる
+  （分類器が安全と判断した操作は無確認で通し、危険な操作だけ確認する）。
+  どのモードでも下記の deny ルールは効く。
 
 `config/channel-settings.json` の内訳:
 

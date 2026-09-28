@@ -8,10 +8,14 @@
 #   scripts\start.ps1                  # config\projects.json の一覧から作業ディレクトリを選んで起動
 #   scripts\start.ps1 -Project <path>  # 選択を飛ばして指定の作業ディレクトリで起動
 #   scripts\start.ps1 -DryRun          # 実行せずコマンドラインだけ表示
+#   scripts\start.ps1 -PermissionMode auto
+#                                      # 実行許可のモードを変える（既定は default = 都度確認）
 
 param(
     [string]$Project,
-    [switch]$DryRun
+    [switch]$DryRun,
+    [ValidateSet('default', 'auto', 'acceptEdits', 'plan')]
+    [string]$PermissionMode = 'default'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -196,7 +200,7 @@ $claudeArgs = @(
     '--mcp-config', $mcpConfig,
     '--setting-sources', 'project,local',
     '--settings', $settingsFile,
-    '--permission-mode', 'default',
+    '--permission-mode', $PermissionMode,
     '--dangerously-load-development-channels', 'server:slackbridge'
 )
 
