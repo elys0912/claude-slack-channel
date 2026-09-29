@@ -192,8 +192,6 @@ deny に挙げたパスは読めない。
 | ツールが「別のインスタンスが動いている」エラーを返す | 別のセッションが Slack ブリッジを使用中（`instance.lock`）。2つ目以降は Slack に接続しない縮退モードで動く |
 | スリープ復帰後に反応しない | 自動で再接続を試みる。しばらく経っても駄目ならログを確認して起動し直す |
 
-Slack を使わずに channels 機能そのものを確かめたいときは [docs/phase0.md](docs/phase0.md) を参照。
-
 ## 開発
 
 ```powershell
@@ -221,8 +219,7 @@ npm run typecheck    # tsc --noEmit
 | `src/types.ts` | 共有型 |
 | `scripts/check.ts` | `npm run check` の実体（Slack への疎通確認） |
 | `scripts/start.cmd` / `start.ps1` | 起動スクリプト |
-| `scripts/spike.ps1` | [docs/phase0.md](docs/phase0.md) の echo channel スパイク用スクリプト |
-| `scripts/common.ps1` | 上記スクリプトの共通関数（claude.exe の探索、mcp.json の生成） |
+| `scripts/common.ps1` | 起動スクリプトの共通関数（claude.exe の探索、mcp.json の生成） |
 | `config/channel-settings.json` | channel セッション専用の権限設定 |
 | `config/*.example*` | `projects.json` / `access.json` / `.env` のひな形 |
 | `slack-app-manifest.yaml` | Slack アプリの manifest |
