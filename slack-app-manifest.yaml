@@ -1,5 +1,5 @@
 display_information:
-  name: FOX3 Local Bridge
+  name: Claude Code Bridge
   description: Bridge to a local Claude Code session (DM only, allowlisted users)
   background_color: "#2c2d30"
 features:
@@ -8,7 +8,7 @@ features:
     messages_tab_enabled: true
     messages_tab_read_only_enabled: false
   bot_user:
-    display_name: fox3-local
+    display_name: claude-code
     always_online: false
 oauth_config:
   scopes:
