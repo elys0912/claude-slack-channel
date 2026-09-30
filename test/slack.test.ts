@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { SlackBridge, isMarkdownRejection, toInboundMessage } from '../src/slack.js';
+import { SlackBridge, isMarkdownRejection, toBlockActionInput, toInboundMessage } from '../src/slack.js';
 import type { ActionContext } from '../src/slack.js';
 import { Logger } from '../src/log.js';
 import type { GateResult } from '../src/gate.js';
@@ -441,6 +441,59 @@ describe('SlackBridge の受信', () => {
 });
 
 // --- 現状固定（受信 payload の詰め替えと送信エラーの扱い） ---
+describe('toBlockActionInput', () => {
+  it('block_actions の payload から parseBlockAction の入力と位置情報を取り出す', () => {
+    const { input, ctx } = toBlockActionInput({
+      type: 'block_actions',
+      team: { id: 'T123ABC' },
+      user: { id: 'U111AAA' },
+      channel: { id: DM1 },
+      container: { message_ts: '55.5' },
+      message: { ts: '77.7' },
+      actions: [{ action_id: 'perm_allow', value: 'abcde' }, { action_id: 'ignored', value: 'zzzzz' }],
+    });
+    expect(input).toEqual({
+      type: 'block_actions',
+      teamId: 'T123ABC',
+      userId: 'U111AAA',
+      channelId: DM1,
+      actionId: 'perm_allow',
+      value: 'abcde',
+    });
+    expect(ctx).toEqual({ userId: 'U111AAA', channelId: DM1, messageTs: '55.5', value: 'abcde' });
+  });
+
+  it('container.message_ts が無ければ message.ts を使う', () => {
+    const { ctx } = toBlockActionInput({ message: { ts: '77.7' } });
+    expect(ctx.messageTs).toBe('77.7');
+  });
+
+  it('actions が配列でない／要素がオブジェクトでない場合は action 無し', () => {
+    expect(toBlockActionInput({ actions: { action_id: 'perm_allow' } }).input.actionId).toBeUndefined();
+    expect(toBlockActionInput({ actions: ['perm_allow'] }).input.actionId).toBeUndefined();
+  });
+
+  it('文字列でない値は undefined になる', () => {
+    const { input, ctx } = toBlockActionInput({
+      type: 1,
+      team: { id: null },
+      user: 'U111AAA',
+      channel: { id: ['D'] },
+      container: { message_ts: 55.5 },
+      actions: [{ action_id: {}, value: 5 }],
+    });
+    expect(input).toEqual({
+      type: undefined,
+      teamId: undefined,
+      userId: undefined,
+      channelId: undefined,
+      actionId: undefined,
+      value: undefined,
+    });
+    expect(ctx).toEqual({ userId: undefined, channelId: undefined, messageTs: undefined, value: undefined });
+  });
+});
+
 describe('toInboundMessage の現状固定', () => {
   it('user_team が無ければ event.team を userTeam に使う', () => {
     const msg = toInboundMessage({ team_id: 'T123ABC', event: { team: 'TFALLBACK' } });

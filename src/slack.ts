@@ -8,7 +8,7 @@ import { toSlackLogger } from './log.js';
 import { EventDedupe, gate } from './gate.js';
 import type { GateResult, InboundMessage } from './gate.js';
 import { parseBlockAction } from './permission.js';
-import type { ActionParse } from './permission.js';
+import type { ActionParse, BlockActionInput } from './permission.js';
 import { chunkText } from './chunk.js';
 import { escapeMrkdwn, neutralizeBroadcasts } from './format.js';
 import { slackErrorCode } from './errors.js';
@@ -144,6 +144,31 @@ export function toInboundMessage(body: RawEvent): InboundMessage {
     ts: str(ev.ts),
     threadTs: str(ev.thread_ts),
     files,
+  };
+}
+
+/**
+ * block_actions の payload から、parseBlockAction の入力と、ボタンが押されたメッセージの位置情報を取り出す。
+ * actions が配列でなければ action 無しとして扱う。messageTs は container.message_ts を優先し、無ければ message.ts。
+ */
+export function toBlockActionInput(body: RawEvent): { input: BlockActionInput; ctx: ActionContext } {
+  const actions = Array.isArray(body.actions) ? body.actions : [];
+  const action = obj(actions[0]) ?? {};
+  const channelId = str(obj(body.channel)?.id);
+  const userId = str(obj(body.user)?.id);
+  const value = str(action.value);
+  const messageTs = str(obj(body.container)?.message_ts) ?? str(obj(body.message)?.ts);
+
+  return {
+    input: {
+      type: str(body.type),
+      teamId: str(obj(body.team)?.id),
+      userId,
+      channelId,
+      actionId: str(action.action_id),
+      value,
+    },
+    ctx: { userId, channelId, messageTs, value },
   };
 }
 
@@ -350,28 +375,9 @@ export class SlackBridge {
     try {
       await this.ackFirst(arg);
 
-      const body = obj(arg.body) ?? {};
-      const actions = Array.isArray(body.actions) ? body.actions : [];
-      const action = obj(actions[0]) ?? {};
-      const channelId = str(obj(body.channel)?.id);
-      const userId = str(obj(body.user)?.id);
-      const value = str(action.value);
-      const messageTs = str(obj(body.container)?.message_ts) ?? str(obj(body.message)?.ts);
-
-      const parsed = parseBlockAction(
-        {
-          type: str(body.type),
-          teamId: str(obj(body.team)?.id),
-          userId,
-          channelId,
-          actionId: str(action.action_id),
-          value,
-        },
-        this.access,
-        this.dmChannelIds
-      );
-
-      await this.handlers?.onAction(parsed, { userId, channelId, messageTs, value });
+      const { input, ctx } = toBlockActionInput(obj(arg.body) ?? {});
+      const parsed = parseBlockAction(input, this.access, this.dmChannelIds);
+      await this.handlers?.onAction(parsed, ctx);
     } catch (e) {
       this.logger.error('interactive の処理で例外', e);
     }
