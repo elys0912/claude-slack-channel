@@ -162,6 +162,34 @@ describe('gate', () => {
     }
   });
 
+  it('添付の name / mimetype の引用符・= も _ に置き換える', () => {
+    const result = gate(
+      baseMsg({
+        subtype: 'file_share',
+        text: '',
+        files: [{ name: `a" b='c'.png`, mimetype: 'image/png" x="1', size: 1 }]
+      }),
+      access,
+      selfBotUserId,
+      new EventDedupe()
+    );
+    expect(result.kind).toBe('deliver');
+    if (result.kind === 'deliver') {
+      expect(result.meta.attachments).toBe('a_ b__c_.png(image/png_ x__1, 1)');
+    }
+  });
+
+  it('大量の添付でも attachments は 2000 文字までに収まる', () => {
+    const files = Array.from({ length: 100 }, (_, i) => ({ name: `file-${i}-${'n'.repeat(50)}.txt`, mimetype: 'text/plain', size: i }));
+    const result = gate(baseMsg({ subtype: 'file_share', text: '', files }), access, selfBotUserId, new EventDedupe());
+    expect(result.kind).toBe('deliver');
+    if (result.kind === 'deliver') {
+      expect(result.meta.attachments?.length).toBe(2000);
+      expect(result.meta.attachments?.endsWith('…')).toBe(true);
+      expect(result.meta.attachment_count).toBe('100');
+    }
+  });
+
   it('does not include undefined-valued keys in meta', () => {
     const dedupe = new EventDedupe();
     const result = gate(baseMsg({ channel: undefined }), access, selfBotUserId, dedupe);
