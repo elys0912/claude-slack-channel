@@ -18,7 +18,7 @@ import {
 } from '../src/app.js';
 import { ChannelServer } from '../src/mcp.js';
 import { PermissionRelay } from '../src/permission-relay.js';
-import { ACCESS, DM1, DM2, flush, makeSocket, makeWeb, platformError } from './helpers/fake-slack.js';
+import { ACCESS, BOT, DM1, DM2, flush, makeSocket, makeWeb, platformError } from './helpers/fake-slack.js';
 import type { FakeSocket, FakeWeb } from './helpers/fake-slack.js';
 import type { ParsedAccess } from '../src/config.js';
 import type { BridgeAppOptions } from '../src/app.js';
@@ -644,9 +644,43 @@ describe('チャンネル（access.channels）', () => {
     await h.stop();
   });
 
-  function channelEnvelope(text: string, overrides: Record<string, unknown> = {}): Record<string, unknown> {
-    return dmEnvelope(text, { channel_type: 'channel', channel: CH, ...overrides });
+  /** チャンネルの投稿。既定ではボットへのメンションを付ける（mention: false で付けない） */
+  function channelEnvelope(
+    text: string,
+    overrides: Record<string, unknown> = {},
+    mention = true
+  ): Record<string, unknown> {
+    return dmEnvelope(mention ? `<@${BOT}> ${text}` : text, { channel_type: 'channel', channel: CH, ...overrides });
   }
+
+  const delivered = () =>
+    h.notifications.filter((x) => x.method === 'notifications/claude/channel').map((x) => x.params?.content);
+
+  it('メンションの無い投稿には反応しない（リアクションも付けない）', async () => {
+    h.socket.emit('slack_event', channelEnvelope('just chatting', { ts: '31.1' }, false));
+    await flush();
+    expect(delivered()).toEqual([]);
+    expect(h.web.calls).toEqual([]);
+  });
+
+  it('メンションで話しかけたスレッドの続きは、メンション無しでも届く。関係ないスレッドは届かない', async () => {
+    h.socket.emit('slack_event', channelEnvelope('start', { ts: '32.0' }));
+    h.socket.emit('slack_event', channelEnvelope('follow up', { ts: '32.1', thread_ts: '32.0' }, false));
+    h.socket.emit('slack_event', channelEnvelope('other thread', { ts: '33.1', thread_ts: '33.0' }, false));
+    await flush();
+    expect(delivered()).toEqual(['start', 'follow up']);
+  });
+
+  it('ボットが投稿したスレッドへの返信は、メンション無しでも届く', async () => {
+    const res = await h.client.callTool({ name: 'reply', arguments: { chat_id: CH, text: 'お知らせ' } });
+    expect(res.isError).toBeFalsy();
+    // 偽の Slack は投稿ごとに 100.1, 100.2, ... と ts を振る。この describe では最初の投稿
+    expect(h.web.calls.filter((c) => c.method === 'chat.postMessage')).toHaveLength(1);
+
+    h.socket.emit('slack_event', channelEnvelope('返信', { ts: '34.1', thread_ts: '100.1' }, false));
+    await flush();
+    expect(delivered()).toEqual(['返信']);
+  });
 
   it('許可チャンネルの投稿が Claude に届き、同じチャンネルに返信・リアクションできる', async () => {
     h.socket.emit('slack_event', channelEnvelope('hello', { ts: '30.1' }));

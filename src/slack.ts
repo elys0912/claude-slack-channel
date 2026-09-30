@@ -18,6 +18,9 @@ const MARKDOWN_LIMIT = 11000;
 // text は 40000 まで入るが、実用上は 4000 前後で分割されるので 3900 で切る。
 const TEXT_LIMIT = 3900;
 
+/** 覚えておくチャンネルのスレッドの上限 */
+const ACTIVE_THREAD_CAPACITY = 1000;
+
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 60000;
 
@@ -197,6 +200,8 @@ export class SlackBridge {
   private readonly dmChannelIds = new Set<string>();
   /** 送信やボタン操作を受け付けるチャンネル（許可ユーザーの DM + access.channels） */
   private readonly allowedChannelIds = new Set<string>();
+  /** access.channels のチャンネルで、ボットが関わっているスレッド（`channel:threadTs`）。古いものから忘れる */
+  private readonly activeThreads = new Map<string, true>();
 
   private botUserId: string | undefined;
   private handlers: SlackBridgeEvents | undefined;
@@ -413,8 +418,15 @@ export class SlackBridge {
       if (str(ev.type) !== 'message') return;
 
       const msg = toInboundMessage(body);
-      const result = gate(msg, this.access, this.botUserId, this.dedupe, this.handlers?.isKnownRequest);
+      const result = gate(msg, this.access, this.botUserId, this.dedupe, this.handlers?.isKnownRequest, (c, t) =>
+        this.isActiveThread(c, t)
+      );
       if (result.kind !== 'drop' && msg.channelType === 'im') this.learnDmChannel(msg.user, msg.channel);
+      // チャンネルでメンションされたら、そのスレッドの続きはメンション無しでも受け付ける
+      if (result.kind !== 'drop' && msg.channelType !== 'im' && msg.channel) {
+        const threadTs = msg.threadTs ?? msg.ts;
+        if (threadTs) this.markActiveThread(msg.channel, threadTs);
+      }
       await this.handlers?.onMessage(result, {
         channel: msg.channel,
         ts: msg.ts,
@@ -438,6 +450,23 @@ export class SlackBridge {
     this.dmChannelIds.add(channel);
     this.allowedChannelIds.add(channel);
     this.logger.info(`受信した DM から送信先を追加 user=${user} channel=${channel}`);
+  }
+
+  /** access.channels のチャンネルのスレッドに、ボットが関わっているか */
+  isActiveThread(channel: string, threadTs: string): boolean {
+    return this.activeThreads.has(`${channel}:${threadTs}`);
+  }
+
+  /** ボットが関わったスレッドとして覚える（access.channels のチャンネルだけ。DM は常に受け付けるので覚えない） */
+  private markActiveThread(channel: string, threadTs: string): void {
+    if (!(this.access.channels ?? []).includes(channel)) return;
+    const key = `${channel}:${threadTs}`;
+    this.activeThreads.delete(key);
+    this.activeThreads.set(key, true);
+    if (this.activeThreads.size > ACTIVE_THREAD_CAPACITY) {
+      const oldest = this.activeThreads.keys().next();
+      if (!oldest.done) this.activeThreads.delete(oldest.value);
+    }
   }
 
   /** interactive の処理本体（ack は enqueue で済ませてある） */
@@ -477,6 +506,9 @@ export class SlackBridge {
     } catch (e) {
       if (tsList.length === 0) throw e;
       throw new Error(`${errMessage(e)} (sent=${tsList.length})`, { cause: e });
+    } finally {
+      const root = threadTs ?? tsList[0];
+      if (root) this.markActiveThread(channel, root);
     }
     return { ts: tsList };
   }
@@ -526,6 +558,8 @@ export class SlackBridge {
       ...threadParam(threadTs),
       ...NO_UNFURL,
     });
+    const root = threadTs ?? res.ts;
+    if (root) this.markActiveThread(channel, root);
     return { ts: res.ts ?? '' };
   }
 

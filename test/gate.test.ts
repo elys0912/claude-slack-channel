@@ -72,16 +72,69 @@ describe('gate', () => {
     const dedupe = new EventDedupe();
     const withChannels = { ...access, channels: ['C1'] };
     const result = gate(
-      baseMsg({ channelType, channel: 'C1', ts: '200.1', threadTs: '150.0' }),
+      baseMsg({ channelType, channel: 'C1', ts: '200.1', threadTs: '150.0', text: `<@${selfBotUserId}> hello` }),
       withChannels,
       selfBotUserId,
       dedupe
     );
     expect(result.kind).toBe('deliver');
     if (result.kind === 'deliver') {
+      expect(result.content).toBe('hello');
       expect(result.meta.chat_id).toBe('C1');
       expect(result.meta.thread_ts).toBe('150.0');
     }
+  });
+
+  describe('チャンネルではメンションか、ボットが関わるスレッドへの返信だけ受け付ける', () => {
+    const withChannels = { ...access, channels: ['C1'] };
+    const inChannel = (overrides: Partial<InboundMessage> = {}) =>
+      baseMsg({ channelType: 'channel', channel: 'C1', ts: '200.1', ...overrides });
+
+    it('メンションもスレッドも無ければ not_addressed', () => {
+      expect(gate(inChannel(), withChannels, selfBotUserId, new EventDedupe())).toEqual({
+        kind: 'drop',
+        reason: 'not_addressed',
+      });
+    });
+
+    it('関わっていないスレッドへの返信も not_addressed', () => {
+      const result = gate(inChannel({ threadTs: '150.0' }), withChannels, selfBotUserId, new EventDedupe(), undefined, () => false);
+      expect(result).toEqual({ kind: 'drop', reason: 'not_addressed' });
+    });
+
+    it('関わっているスレッドへの返信はメンション無しでも受け付ける', () => {
+      const seen: string[] = [];
+      const result = gate(inChannel({ threadTs: '150.0' }), withChannels, selfBotUserId, new EventDedupe(), undefined, (c, t) => {
+        seen.push(`${c}:${t}`);
+        return true;
+      });
+      expect(result.kind).toBe('deliver');
+      expect(seen).toEqual(['C1:150.0']);
+    });
+
+    it('`<@U|name>` の形のメンションも認識して取り除く', () => {
+      const result = gate(inChannel({ text: `<@${selfBotUserId}|fox3> do it` }), withChannels, selfBotUserId, new EventDedupe());
+      expect(result).toMatchObject({ kind: 'deliver', content: 'do it' });
+    });
+
+    it('他の人へのメンションだけでは受け付けない', () => {
+      const result = gate(inChannel({ text: '<@U999> hello' }), withChannels, selfBotUserId, new EventDedupe());
+      expect(result).toEqual({ kind: 'drop', reason: 'not_addressed' });
+    });
+
+    it('メンションだけの投稿は (本文なし) として渡す', () => {
+      const result = gate(inChannel({ text: `<@${selfBotUserId}>` }), withChannels, selfBotUserId, new EventDedupe());
+      expect(result).toMatchObject({ kind: 'deliver', content: '(本文なし)' });
+    });
+
+    it('メンション付きの "yes ID" も回答として扱う', () => {
+      const result = gate(inChannel({ text: `<@${selfBotUserId}> yes abcde` }), withChannels, selfBotUserId, new EventDedupe());
+      expect(result).toEqual({ kind: 'verdict', verdict: { requestId: 'abcde', behavior: 'allow' } });
+    });
+
+    it('DM はメンションが無くても受け付ける（従来どおり）', () => {
+      expect(gate(baseMsg(), withChannels, selfBotUserId, new EventDedupe()).kind).toBe('deliver');
+    });
   });
 
   it('drops a channel message whose channel is not in channels', () => {
