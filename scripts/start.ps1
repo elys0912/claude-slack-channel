@@ -158,6 +158,7 @@ $mcpConfig = Write-McpConfig -FileName 'mcp.json' -ServerName 'slackbridge' -Scr
 # 各フラグの意味は README の「権限の設計」を参照
 $claudeArgs = @(
     '--mcp-config', $mcpConfig,
+    '--strict-mcp-config',
     '--setting-sources', 'project,local',
     '--settings', $settingsFile,
     '--permission-mode', $PermissionMode,
