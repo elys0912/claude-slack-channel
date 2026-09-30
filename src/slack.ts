@@ -25,6 +25,9 @@ const RECONNECT_MAX_MS = 60000;
 // （Socket Mode 側の apps.connections.open は SDK の既定に任せる）
 const RETRY_CONFIG = { retries: 2, factor: 2, minTimeout: 500, maxTimeout: 5000 };
 
+// 送信内容の URL を Slack にプレビュー展開させない（展開のための外部アクセスと、中身の意図しない表示を防ぐ）
+const NO_UNFURL = { unfurl_links: false, unfurl_media: false } as const;
+
 /** threadTs があるときだけ chat.* に渡す thread_ts を作る */
 function threadParam(threadTs: string | undefined): { thread_ts?: string } {
   return threadTs ? { thread_ts: threadTs } : {};
@@ -451,6 +454,7 @@ export class SlackBridge {
             channel,
             markdown_text: piece,
             ...threadParam(threadTs),
+            ...NO_UNFURL,
           });
           if (res.ts) tsList.push(res.ts);
           continue;
@@ -467,6 +471,7 @@ export class SlackBridge {
           channel,
           text: escapeMrkdwn(sub),
           ...threadParam(threadTs),
+          ...NO_UNFURL,
         });
         if (res.ts) tsList.push(res.ts);
       }
@@ -480,6 +485,7 @@ export class SlackBridge {
       text: neutralizeBroadcasts(text),
       blocks,
       ...threadParam(threadTs),
+      ...NO_UNFURL,
     });
     return { ts: res.ts ?? '' };
   }
