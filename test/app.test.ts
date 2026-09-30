@@ -337,6 +337,17 @@ describe('Slack → MCP', () => {
     }
   });
 
+  it('See more の全文でも双方向制御文字・ゼロ幅文字を \\u{XXXX} の形で見せる', async () => {
+    await sendPermissionRequest(h.client, 'abcde', 'rm -rf \u202e/ \u200bok');
+    h.web.calls.length = 0;
+
+    h.socket.emit('interactive', blockAction('perm_more', 'abcde', { container: { message_ts: '100.1' } }));
+    await flush();
+
+    const posts = h.web.calls.filter((c) => c.method === 'chat.postMessage');
+    expect(posts[0]?.args.markdown_text).toBe('```\nrm -rf \\u{202E}/ \\u{200B}ok\n```');
+  });
+
   it('fencePreview は中身の行頭の ``` を無効化してからコードブロックで包む', () => {
     expect(fencePreview('a\n```js\nb\n```')).toBe('```\na\n\u200b```js\nb\n\u200b```\n```');
   });

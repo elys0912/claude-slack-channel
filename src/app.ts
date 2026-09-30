@@ -7,6 +7,7 @@ import type { SlackBridge, ActionContext, InboundRef } from './slack.js';
 import { ChannelServer } from './mcp.js';
 import type { McpDeps } from './mcp.js';
 import { PermissionRelay } from './permission-relay.js';
+import { revealInvisible } from './permission.js';
 import type { ActionParse } from './permission.js';
 import type { GateResult } from './gate.js';
 
@@ -160,7 +161,7 @@ async function sendFullPreview({ bridge, relay, logger }: Wiring, requestId: str
   const req = relay.lookup(requestId);
   try {
     if (req) {
-      await bridge.postText(ctx.channelId, fencePreview(req.input_preview), threadTs);
+      await bridge.postText(ctx.channelId, fencePreview(revealInvisible(req.input_preview)), threadTs);
     } else {
       await bridge.postText(ctx.channelId, `⌛ permission request ${requestId} は既に期限切れ`, threadTs);
     }
