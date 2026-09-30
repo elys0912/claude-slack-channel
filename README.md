@@ -155,10 +155,28 @@ Claude Code を起動したいプロジェクトを並べる（`projects.json` �
 | `scripts\start.cmd C:\path\to\app` | パスで直接指定して起動 |
 | `scripts\start.cmd my-app -PermissionMode auto` | 実行許可のモードを変える（[権限の設計](#権限の設計)） |
 | `scripts\start.cmd -DryRun` | 起動せず、実行されるコマンドラインだけ表示（ビルドは省き、`.env` / `access.json` が無くても警告だけ出す） |
+| `scripts\start.cmd C:\path\to\app -StateDir <dir> -SettingsFile <file>` | 別の Slack アプリ（状態ディレクトリ）と設定で、もう1つセッションを起動する（下記） |
 
 - 起動時に experimental channels の警告ダイアログが出たら、**「1」（I am using this for local development）** を選ぶ（起動スクリプトもその旨を表示する。ダイアログ自体は Claude Code 側の挙動で未確認）。
 - `dist` が無いときだけ自動でビルドする。**`git pull` で更新したあとは `npm run build` を手で実行すること**（古い `dist` のまま起動しちゃうから）。
 - 起動したら、Slack でこのボットに DM を送るか、`channels` に書いたチャンネルでボットにメンションして話しかければいいわ。
+
+### セッションを並べる
+
+プロジェクトごとに作業フォルダーや権限を分けたいときは、セッションをもう1つ並べられるわ。その場合は **Slack アプリも別に作ること**。
+同じアプリで Socket Mode の接続を2本張ると、Slack はイベントを2本に振り分けるから（両方には配らない）、メッセージがもう片方に取られて消えるのよ。
+
+1. 2つ目の Slack アプリを [slack-app-manifest.yaml](slack-app-manifest.yaml) から作る（名前とボットの表示名は変えておく）。
+2. 別の状態ディレクトリ（例: `%USERPROFILE%\.claude\channels\app2`）に、そのアプリの `.env` と `access.json` を置く。
+   `access.json` の `channels` は、そのセッションで使うチャンネルだけにする。既定の場所の外に置くなら deny も足すこと（[権限の設計](#権限の設計)）。
+3. `-StateDir` と、必要なら `-SettingsFile`（相対パスはリポジトリ基準）を付けて起動する。
+   ```powershell
+   scripts\start.cmd C:\path\to\app2 -StateDir "$env:USERPROFILE\.claude\channels\app2" -SettingsFile C:\path\to\app2-settings.json
+   ```
+
+- 状態ディレクトリ（`.env`・`access.json`・ロック・`allow-extra.json`・ログ）はセッションごとに別になる。ブリッジには `mcp.json` の環境変数で状態ディレクトリを渡す。
+- 一時ファイルは `%TEMP%\claude-slack-channel\<状態ディレクトリ名>\` に分かれる。`claude.exe` のコマンドラインにこのパスが入るから、どのセッションか見分けるのにも使える。
+- 設定ファイルを作業フォルダーの中に置くなら、Claude が自分で書き換えて権限を広げられないよう、その場所の `Edit(...)` を deny に入れておくこと。
 
 ## 使い方
 
@@ -279,11 +297,11 @@ Slack でボットのアプリを開くと、ホームタブにブリッジの�
 
 | フラグ | 目的 |
 |---|---|
-| `--mcp-config %TEMP%\claude-slack-channel\mcp.json` | `slackbridge` サーバーを読み込む。clone 先の絶対パスを含むので、起動のたびに生成する |
+| `--mcp-config %TEMP%\claude-slack-channel\<状態ディレクトリ名>\mcp.json` | `slackbridge` サーバーを読み込む。clone 先の絶対パスと状態ディレクトリを含むので、起動のたびに生成する |
 | `--strict-mcp-config` | `--mcp-config` 以外の MCP サーバー（ユーザー設定やプロジェクトの `.mcp.json`）を読み込まない。Slack セッションでも使うサーバーは `config\extra-mcp.json` に書く（上記） |
 | `--no-chrome` | Claude in Chrome 連携を無効にする。有効だと、ブラウザ操作が必要になったときに「Claude wants to use your browser」の選択画面がターミナルに出て、Slack には中継されないまま止まる |
 | `--setting-sources project,local` | ユーザー設定（`~/.claude/settings.json`）を読まない。便利さのために入れた緩い許可（`Bash(*)` など）に乗って、Slack からの指示が無確認で実行されるのを防ぐ |
-| `--settings config\channel-settings.json` | channel セッション専用の設定を重ねる。managed（組織の管理設定）を除き、どの設定よりも上位。`extra-mcp.json` のサーバーや「今後も許可」で足したルールがあるときは、それを allow に足したもの（`%TEMP%\claude-slack-channel\channel-settings.merged.json`）を渡す |
+| `--settings config\channel-settings.json` | channel セッション専用の設定を重ねる。managed（組織の管理設定）を除き、どの設定よりも上位。`extra-mcp.json` のサーバーや「今後も許可」で足したルールがあるときは、それを allow に足したもの（`%TEMP%\claude-slack-channel\<状態ディレクトリ名>\channel-settings.merged.json`）を渡す。`-SettingsFile` で別の設定ファイルに替えられる |
 | `--permission-mode default` | 許可リストに無い操作は毎回確認する（`-PermissionMode` で変更可、下記） |
 | `--dangerously-load-development-channels server:slackbridge` | experimental の channels 機能を有効にする |
 
@@ -393,8 +411,8 @@ deny は allow より必ず優先される（評価順は deny → ask → allow
 | `projects.json` | `config\`（git 管理外） | `projects`: `{ name, path }` の配列。起動時の選択肢 |
 | `extra-mcp.json` | `config\`（git 管理外） | Slack セッションで一緒に使う MCP サーバー（`.mcp.json` と同じ `mcpServers` の形。ひな形: `extra-mcp.example.json`）。登録したサーバーのツールは確認なしで実行される |
 | `channel-settings.json` | `config\` | channel セッション専用の Claude Code 設定 |
-| `mcp.json` | `%TEMP%\claude-slack-channel\` | 起動スクリプトが毎回生成する MCP 設定 |
-| `channel-settings.merged.json` | `%TEMP%\claude-slack-channel\` | 追加の allow を足した設定。足すものがあるときだけ起動スクリプトが生成する |
+| `mcp.json` | `%TEMP%\claude-slack-channel\<状態ディレクトリ名>\` | 起動スクリプトが毎回生成する MCP 設定 |
+| `channel-settings.merged.json` | `%TEMP%\claude-slack-channel\<状態ディレクトリ名>\` | 追加の allow を足した設定。足すものがあるときだけ起動スクリプトが生成する |
 
 ### 環境変数
 
