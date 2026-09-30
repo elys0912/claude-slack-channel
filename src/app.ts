@@ -11,6 +11,10 @@ import { revealInvisible } from './permission.js';
 import type { ActionParse } from './permission.js';
 import type { GateResult } from './gate.js';
 import { ResponseWatchdog, buildNoResponseText } from './watchdog.js';
+import type { ConsoleAccess } from './console.js';
+import { ScreenRelay, screenShowButton } from './screen-relay.js';
+import { RuleRelay } from './rule-relay.js';
+import { AllowRuleStore, readDeny } from './allow-rules.js';
 
 // Slack 側で「読んだ」「許可した」「拒否した」を示すリアクション
 export const REACTION = {
@@ -38,6 +42,8 @@ export type AppRelay = Pick<PermissionRelay, 'answerByText' | 'answerByButton' |
 
 /** 無応答の見張りのうち、受信処理が使う操作 */
 export type AppWatchdog = Pick<ResponseWatchdog, 'delivered'>;
+export type AppScreen = Pick<ScreenRelay, 'show' | 'pick'>;
+export type AppRules = Pick<RuleRelay, 'propose' | 'confirm' | 'list' | 'remove'>;
 
 export interface Wiring {
   bridge: AppBridge;
@@ -45,7 +51,14 @@ export interface Wiring {
   relay: AppRelay;
   logger: Logger;
   watchdog?: AppWatchdog | undefined;
+  /** ターミナル画面の確認・選択（無ければ !screen と画面のボタンは使えない） */
+  screen?: AppScreen | undefined;
+  /** 許可リストへの追加（無ければ「今後も許可」は今回の許可だけになる） */
+  rules?: AppRules | undefined;
 }
+
+/** Claude に渡さず、ブリッジ自身が処理するコマンド */
+const COMMAND_RE = /^\s*!(screen|rules)\s*$/i;
 
 // --- Claude → Slack（MCP ツールの実体） ----------------------------------------
 
@@ -108,10 +121,25 @@ export function createDegradedDeps(logger: Logger): McpDeps {
 
 /** DM か許可チャンネルで届いたメッセージ。保留中の ID への `yes xxxxx` / `no xxxxx` なら許可の回答、それ以外は Claude へ中継する */
 export async function handleMessage(
-  { bridge, server, relay, logger, watchdog }: Wiring,
+  { bridge, server, relay, logger, watchdog, screen, rules }: Wiring,
   result: GateResult,
   raw: InboundRef
 ): Promise<void> {
+  // `!screen` / `!rules` は Claude に渡さずにここで処理する（Claude が止まっていても使えるように）
+  const command = result.kind === 'deliver' ? COMMAND_RE.exec(result.content)?.[1]?.toLowerCase() : undefined;
+  if (command && raw.channel && raw.threadTs) {
+    if (raw.ts) await bridge.addReaction(raw.channel, raw.ts, REACTION.SEEN);
+    if (command === 'screen') {
+      if (screen) await screen.show(raw.channel, raw.threadTs);
+      else await bridge.postText(raw.channel, '⚠️ このブリッジでは !screen を使えない', raw.threadTs);
+    } else if (rules) {
+      await rules.list(raw.channel, raw.threadTs);
+    } else {
+      await bridge.postText(raw.channel, '⚠️ このブリッジでは !rules を使えない', raw.threadTs);
+    }
+    return;
+  }
+
   switch (result.kind) {
     case 'drop':
       logger.debug(`受信を破棄 reason=${result.reason}`);
@@ -142,13 +170,50 @@ export async function handleAction(wiring: Wiring, parsed: ActionParse, ctx: Act
     return;
   }
 
-  if (parsed.kind === 'verdict') {
-    const pressed = ctx.channelId && ctx.messageTs ? { channel: ctx.channelId, ts: ctx.messageTs } : undefined;
-    await wiring.relay.answerByButton(parsed.verdict, ctx.userId ?? '', pressed);
-    return;
-  }
+  const pressed = ctx.channelId && ctx.messageTs ? { channel: ctx.channelId, ts: ctx.messageTs } : undefined;
+  // ボタンのメッセージが属するスレッド（スレッド外ならボタンのメッセージ自身を起点にする）
+  const threadTs = ctx.threadTs ?? ctx.messageTs;
+  const byUserId = ctx.userId ?? '';
 
-  await sendFullPreview(wiring, parsed.requestId, ctx);
+  switch (parsed.kind) {
+    case 'verdict':
+      await wiring.relay.answerByButton(parsed.verdict, byUserId, pressed);
+      return;
+
+    case 'see_more':
+      await sendFullPreview(wiring, parsed.requestId, ctx);
+      return;
+
+    case 'allow_always': {
+      // 回答すると保留から消えるので、先に中身を控えておく
+      const req = wiring.relay.lookup(parsed.requestId);
+      await wiring.relay.answerByButton({ requestId: parsed.requestId, behavior: 'allow' }, byUserId, pressed);
+      if (req && ctx.channelId && threadTs && wiring.rules) await wiring.rules.propose(req, ctx.channelId, threadTs);
+      return;
+    }
+
+    case 'screen_show':
+      if (ctx.channelId && threadTs && wiring.screen) await wiring.screen.show(ctx.channelId, threadTs);
+      return;
+
+    case 'screen_pick':
+      if (ctx.channelId && threadTs && wiring.screen) {
+        await wiring.screen.pick(parsed.snapshotId, parsed.index, { channel: ctx.channelId, ts: ctx.messageTs, threadTs }, byUserId);
+      }
+      return;
+
+    case 'rule_confirm':
+      if (ctx.channelId && threadTs && wiring.rules) {
+        await wiring.rules.confirm(parsed.proposalId, parsed.accept, { channel: ctx.channelId, ts: ctx.messageTs, threadTs }, byUserId);
+      }
+      return;
+
+    case 'rule_remove':
+      if (ctx.channelId && threadTs && wiring.rules) {
+        await wiring.rules.remove(parsed.rule, { channel: ctx.channelId, ts: ctx.messageTs, threadTs }, byUserId);
+      }
+      return;
+  }
 }
 
 /**
@@ -206,6 +271,12 @@ export interface BridgeAppOptions {
    * 過ぎたらそのスレッドに無応答の警告を投稿する。0 以下なら見張らない。省略時は見張らない
    */
   replyTimeoutMs?: number | undefined;
+  /** ターミナル画面の読み取り・選択キーの送信。省略時は !screen と画面のボタンが使えない */
+  console?: ConsoleAccess | undefined;
+  /** Slack から追加した許可ルールの保存先（状態ディレクトリの allow-extra.json）。省略時は「今後も許可」で追加しない */
+  allowExtraFile?: string | undefined;
+  /** 追加の前に照合する deny を読む設定ファイル（channel-settings.json と作業フォルダーの .claude/settings*.json） */
+  denyFiles?: string[] | undefined;
 }
 
 /**
@@ -219,9 +290,23 @@ export async function startBridgeApp(opts: BridgeAppOptions): Promise<RunningApp
     timeoutMs: opts.replyTimeoutMs ?? 0,
     logger,
     notify: async ({ channel, threadTs }, minutes) => {
-      await bridge.postText(channel, buildNoResponseText(minutes), threadTs);
+      const text = buildNoResponseText(minutes);
+      const blocks = [
+        { type: 'section', text: { type: 'plain_text', text } },
+        ...(opts.console ? [{ type: 'actions', elements: [screenShowButton()] }] : []),
+      ];
+      await bridge.postBlocks(channel, text, blocks, threadTs);
     },
   });
+  const screen = new ScreenRelay({ console: opts.console, slack: bridge, logger });
+  const rules = opts.allowExtraFile
+    ? new RuleRelay({
+        store: new AllowRuleStore(opts.allowExtraFile),
+        loadDeny: () => (opts.denyFiles ?? []).flatMap((f) => readDeny(f)),
+        slack: bridge,
+        logger,
+      })
+    : undefined;
 
   // server と relay は互いを参照する。relay を使うのは接続後なので、宣言順はこれでよい
   const server: ChannelServer = new ChannelServer({
@@ -233,7 +318,7 @@ export async function startBridgeApp(opts: BridgeAppOptions): Promise<RunningApp
     },
   });
   const relay: PermissionRelay = new PermissionRelay(bridge, server, logger);
-  const wiring: Wiring = { bridge, server, relay, logger, watchdog };
+  const wiring: Wiring = { bridge, server, relay, logger, watchdog, screen, rules };
 
   let stopped: Promise<void> | undefined;
   const stop = (): Promise<void> =>

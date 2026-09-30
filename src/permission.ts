@@ -228,6 +228,7 @@ export function buildPermissionBlocks(
       type: 'actions',
       elements: [
         button('Allow', 'perm_allow', req.request_id, 'primary'),
+        button('♾ 今後も許可', 'perm_always', req.request_id),
         button('Deny', 'perm_deny', req.request_id, 'danger'),
         // 省略した部分があるときだけ、全文を出すボタンを付ける
         ...(truncated ? [button('See more', 'perm_more', req.request_id)] : [])
@@ -311,12 +312,53 @@ export interface BlockActionInput {
 export type ActionParse =
   | { ok: true; kind: 'verdict'; verdict: Verdict }
   | { ok: true; kind: 'see_more'; requestId: string }
+  /** 今回は許可し、同じ種類の操作を許可リストに足す提案を出す */
+  | { ok: true; kind: 'allow_always'; requestId: string }
+  /** ターミナルの画面を確認する */
+  | { ok: true; kind: 'screen_show' }
+  /** 画面の選択肢を選ぶ（snapshotId は画面を見せたときの控え） */
+  | { ok: true; kind: 'screen_pick'; snapshotId: string; index: number }
+  /** 許可リストへの追加の提案に答える */
+  | { ok: true; kind: 'rule_confirm'; proposalId: string; accept: boolean }
+  /** 許可リストから追加分のルールを消す */
+  | { ok: true; kind: 'rule_remove'; rule: string }
   | { ok: false; reason: string };
+
+/** 画面の控え・提案の ID（ブリッジが発行する英小文字と数字 8 文字） */
+export const TOKEN_ID_RE = /^[a-z0-9]{8}$/;
+const SCREEN_PICK_RE = /^([a-z0-9]{8})\.(\d)$/;
+/** rule_remove の value（ルールそのもの）の長さの上限 */
+const RULE_VALUE_MAX = 500;
+
+/** request_id を value に持たないボタン。該当しなければ undefined（従来の perm_* の判定に進む） */
+function parseToolAction(actionId: string | undefined, value: string | undefined): ActionParse | undefined {
+  // 同じブロックに並ぶボタンは action_id に番号が付く（screen_pick_0, rule_remove_3, ...）
+  const numbered = actionId === undefined ? undefined : /^(screen_pick|rule_remove)_\d{1,2}$/.exec(actionId);
+  const normalized = numbered ? numbered[1] : actionId;
+  switch (normalized) {
+    case 'screen_show':
+      return { ok: true, kind: 'screen_show' };
+    case 'screen_pick': {
+      const m = SCREEN_PICK_RE.exec(value ?? '');
+      if (!m) return { ok: false, reason: 'invalid_value' };
+      return { ok: true, kind: 'screen_pick', snapshotId: m[1] ?? '', index: Number(m[2]) };
+    }
+    case 'rule_add':
+    case 'rule_cancel':
+      if (!TOKEN_ID_RE.test(value ?? '')) return { ok: false, reason: 'invalid_value' };
+      return { ok: true, kind: 'rule_confirm', proposalId: value ?? '', accept: actionId === 'rule_add' };
+    case 'rule_remove':
+      if (!value || value.length > RULE_VALUE_MAX) return { ok: false, reason: 'invalid_value' };
+      return { ok: true, kind: 'rule_remove', rule: value };
+    default:
+      return undefined;
+  }
+}
 
 /**
  * block_actions のボタン操作を検証して解釈する。次の順に調べ、最初に外れた理由で ok: false を返す:
- * type が block_actions → team が access.teamId → 押した人が allowFrom → チャンネルが許可ユーザーの DM
- * → value が request_id の形 → action_id（perm_allow / perm_deny / perm_more）。
+ * type が block_actions → team が access.teamId → 押した人が allowFrom → チャンネルが許可ユーザーの DM か access.channels
+ * → （画面・許可リスト操作のボタンならその value の形）→ value が request_id の形 → action_id（perm_allow / perm_deny / perm_more / perm_always）。
  * 保留中の ID かどうかはここでは見ない（呼び出し側の PermissionRelay が判断する）。
  */
 export function parseBlockAction(
@@ -336,6 +378,8 @@ export function parseBlockAction(
   if (input.channelId === undefined || !allowedChannels.has(input.channelId)) {
     return { ok: false, reason: 'channel_not_allowed' };
   }
+  const toolAction = parseToolAction(input.actionId, input.value);
+  if (toolAction) return toolAction;
   if (input.value === undefined || !isValidRequestId(input.value)) {
     return { ok: false, reason: 'invalid_request_id' };
   }
@@ -347,6 +391,8 @@ export function parseBlockAction(
       return { ok: true, kind: 'verdict', verdict: { requestId: input.value, behavior: 'deny' } };
     case 'perm_more':
       return { ok: true, kind: 'see_more', requestId: input.value };
+    case 'perm_always':
+      return { ok: true, kind: 'allow_always', requestId: input.value };
     default:
       return { ok: false, reason: 'unknown_action' };
   }

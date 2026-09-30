@@ -10,6 +10,10 @@ import { InstanceLock } from './lock.js';
 import { SlackBridge } from './slack.js';
 import { startBridgeApp, startDegradedApp } from './app.js';
 import { replyTimeoutMs } from './watchdog.js';
+import { PowerShellConsole, findConsoleScript } from './console.js';
+
+/** リポジトリのルート（dist/src/main.js の 2 つ上） */
+const repoRoot = path.resolve(import.meta.dirname, '..', '..');
 
 function createLogger(dir: string): Logger {
   const logger = new Logger({ file: path.join(dir, 'logs', 'bridge.log') });
@@ -59,7 +63,7 @@ async function main(dir: string, logger: Logger): Promise<void> {
 
   logger.info(
     `起動 pid=${process.pid} node=${process.version} stateDir=${dir} ` +
-      `allowFrom=${access.allowFrom.length}人 degraded=${degraded}`
+      `allowFrom=${access.allowFrom.length}人 channels=${access.channels?.length ?? 0}件 degraded=${degraded}`
   );
 
   if (degraded) {
@@ -86,7 +90,26 @@ async function main(dir: string, logger: Logger): Promise<void> {
     lock,
     onCleanupReady: (stop) => installShutdown(logger, stop),
     replyTimeoutMs: replyTimeoutMs(),
+    console: consoleAccess(logger),
+    allowExtraFile: path.join(dir, 'allow-extra.json'),
+    // 起動スクリプトは作業フォルダーで claude.exe を起動し、MCP サーバーも同じ作業フォルダーで動く
+    denyFiles: [
+      path.join(repoRoot, 'config', 'channel-settings.json'),
+      path.join(process.cwd(), '.claude', 'settings.json'),
+      path.join(process.cwd(), '.claude', 'settings.local.json'),
+    ],
   });
+}
+
+/** 画面の読み取りに使う console.ps1 が見つかれば、その実装を返す。Windows 以外・見つからなければ undefined */
+function consoleAccess(logger: Logger): PowerShellConsole | undefined {
+  if (process.platform !== 'win32') return undefined;
+  const script = findConsoleScript();
+  if (!script) {
+    logger.warn('scripts/console.ps1 が見つからないので、!screen と画面のボタンは使えない');
+    return undefined;
+  }
+  return new PowerShellConsole(script);
 }
 
 // --- 終了処理 -------------------------------------------------------------------

@@ -165,13 +165,40 @@ $env:ENABLE_CLAUDEAI_MCP_SERVERS = 'false'
 
 $mcpConfig = Write-McpConfig -FileName 'mcp.json' -ServerName 'slackbridge' -ScriptPath $mainJs
 
+# Slack の「今後も許可」で足したルール（状態ディレクトリの allow-extra.json）を channel-settings.json の allow に足し、
+# %TEMP% に書き出したものを --settings に渡す。ブリッジが deny と照合してから書き込んだものだけが入っている。
+# 読めなければ足さずに警告だけ出す（起動は止めない）。
+function Get-EffectiveSettings {
+    $allowExtra = Join-Path $stateDir 'allow-extra.json'
+    if (-not (Test-Path $allowExtra)) { return $settingsFile }
+    try {
+        $extra = @((Get-Content -LiteralPath $allowExtra -Raw -Encoding UTF8 | ConvertFrom-Json).allow |
+            Where-Object { $_ -is [string] -and $_ -ne '' })
+        if ($extra.Count -eq 0) { return $settingsFile }
+
+        $settings = Get-Content -LiteralPath $settingsFile -Raw -Encoding UTF8 | ConvertFrom-Json
+        $settings.permissions.allow = @(@($settings.permissions.allow) + $extra | Select-Object -Unique)
+
+        $merged = Join-Path $env:TEMP 'claude-slack-channel\channel-settings.merged.json'
+        New-Item -ItemType Directory -Path (Split-Path -Parent $merged) -Force | Out-Null
+        $json = $settings | ConvertTo-Json -Depth 10
+        [System.IO.File]::WriteAllText($merged, $json, [System.Text.UTF8Encoding]::new($false))
+        Write-Host "Slack から追加した許可ルール: $($extra.Count) 件（$allowExtra）"
+        return $merged
+    } catch {
+        Write-Warning "allow-extra.json を読めなかったので、追加の許可ルールは使わない: $($_.Exception.Message)"
+        return $settingsFile
+    }
+}
+$effectiveSettings = Get-EffectiveSettings
+
 # 各フラグの意味は README の「権限の設計」を参照
 $claudeArgs = @(
     '--mcp-config', $mcpConfig,
     '--strict-mcp-config',
     '--no-chrome',
     '--setting-sources', 'project,local',
-    '--settings', $settingsFile,
+    '--settings', $effectiveSettings,
     '--permission-mode', $PermissionMode,
     # 他のフラグより後ろ、最後に置く
     '--dangerously-load-development-channels', 'server:slackbridge'
