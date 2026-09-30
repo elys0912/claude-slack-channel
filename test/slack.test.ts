@@ -335,6 +335,48 @@ describe('SlackBridge の受信', () => {
     expect(res.map((r) => r.channel)).toEqual([DM1, DM2]);
   });
 
+  it('受信イベントは 1 本の列で順に処理する。ack は前のイベントの処理を待たない', async () => {
+    const { bridge, socket } = makeBridge();
+    await bridge.init();
+    const order: string[] = [];
+    let release: () => void = () => undefined;
+    const gateOpen = new Promise<void>((r) => {
+      release = r;
+    });
+    await bridge.start({
+      onMessage: async (r) => {
+        const text = r.kind === 'deliver' ? r.content : r.kind;
+        order.push(`start:${text}`);
+        if (text === 'first') await gateOpen;
+        order.push(`end:${text}`);
+      },
+      onAction: () => void order.push('action'),
+    });
+
+    const env = (text: string, eventId: string): Record<string, unknown> => {
+      const e = messageEnvelope({ text });
+      return { ...e, body: { ...(e.body as object), event_id: eventId } };
+    };
+    socket.emit('slack_event', { ...env('first', 'Ev1'), ack: async () => void order.push('ack:first') });
+    socket.emit('slack_event', { ...env('second', 'Ev2'), ack: async () => void order.push('ack:second') });
+    socket.emit('interactive', { type: 'interactive', body: {}, ack: async () => void order.push('ack:action') });
+    await flush();
+    expect(order).toEqual(['ack:first', 'ack:second', 'ack:action', 'start:first']);
+
+    release();
+    await flush();
+    expect(order).toEqual([
+      'ack:first',
+      'ack:second',
+      'ack:action',
+      'start:first',
+      'end:first',
+      'start:second',
+      'end:second',
+      'action',
+    ]);
+  });
+
   it('onMessage が例外を投げても落ちず、logger.error に記録される', async () => {
     const { bridge, socket, logger } = makeBridge();
     const errorSpy = vi.spyOn(logger, 'error');
