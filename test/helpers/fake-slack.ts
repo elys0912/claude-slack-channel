@@ -64,36 +64,76 @@ export function makeWeb(): FakeWeb {
   return web;
 }
 
+/**
+ * SocketModeClient（autoReconnectEnabled: false）の振る舞いを模す。
+ * - start() は冪等ではない。呼ぶたびに新しい WebSocket を作り、古いものは閉じない（leaked で数える）
+ * - start() が成功すると connecting → connected を emit する
+ * - disconnect() は disconnecting → disconnected を emit する（接続が無くても disconnected は出る）
+ * - 自動再接続は無効なので、接続が切れると disconnected を emit するだけ（drop() で模す）
+ */
 export interface FakeSocket extends SocketClientLike {
   listeners: Map<string, ((arg: unknown) => void)[]>;
   started: number;
   disconnected: number;
+  /** 開いている WebSocket の数 */
+  open: number;
+  /** 古い WebSocket を閉じないまま start() された回数 */
+  leaked: number;
+  /**
+   * 次以降の start() を失敗させる。'auth' は apps.connections.open の失敗（disconnected を出さずに reject）、
+   * 'closed' は hello 前に WebSocket が閉じた場合（disconnected を出してから reject）
+   */
+  failStart: ('auth' | 'closed')[];
   emit(event: string, arg: unknown): void;
+  /** サーバー側から接続が切られたことを模す */
+  drop(): void;
 }
 
 export function makeSocket(): FakeSocket {
   const listeners = new Map<string, ((arg: unknown) => void)[]>();
-  return {
+  const socket: FakeSocket = {
     listeners,
     started: 0,
     disconnected: 0,
+    open: 0,
+    leaked: 0,
+    failStart: [],
     on(event: string, listener: (...args: never[]) => void) {
       const list = listeners.get(event) ?? [];
       list.push(listener as unknown as (arg: unknown) => void);
       listeners.set(event, list);
-      return this;
+      return socket;
     },
     async start() {
-      this.started += 1;
+      socket.started += 1;
+      const failure = socket.failStart.shift();
+      if (failure === 'auth') throw platformError('internal_error');
+      if (socket.open > 0) socket.leaked += 1;
+      socket.open += 1;
+      socket.emit('connecting', {});
+      if (failure === 'closed') {
+        socket.open -= 1;
+        socket.emit('disconnected', {});
+        throw new Error('closed before hello');
+      }
+      socket.emit('connected', {});
       return {};
     },
     async disconnect() {
-      this.disconnected += 1;
+      socket.disconnected += 1;
+      socket.emit('disconnecting', {});
+      socket.open = 0;
+      socket.emit('disconnected', {});
     },
     emit(event: string, arg: unknown) {
       for (const l of listeners.get(event) ?? []) l(arg);
     },
+    drop() {
+      socket.open = 0;
+      socket.emit('disconnected', {});
+    },
   };
+  return socket;
 }
 
 /** @slack/web-api が投げる platform error（data.error にコードが入る）を模す */
