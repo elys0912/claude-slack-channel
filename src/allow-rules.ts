@@ -21,6 +21,9 @@ const DANGEROUS_COMMANDS = new Set([
   // プロセス・シェル・任意コード実行
   'start', 'saps', 'kill', 'taskkill', 'spps', 'iex', 'powershell', 'pwsh', 'cmd', 'bash', 'sh', 'wsl',
   'node', 'deno', 'bun', 'python', 'python3', 'py', 'ruby', 'perl', 'php', 'java', 'npx', 'pnpx', 'bunx',
+  'uvx', 'pipx', 'code',
+  // エージェントの CLI（別のエージェントに確認なしで任意の操作をさせられる）
+  'claude', 'codex', 'gemini', 'aider', 'goose', 'opencode', 'cursor-agent', 'copilot',
   'rundll32', 'regsvr32', 'mshta', 'cscript', 'wscript', 'msiexec', 'schtasks', 'at',
   // 権限・システム
   'sudo', 'runas', 'reg', 'shutdown', 'bcdedit', 'net', 'netsh', 'setx',
@@ -31,9 +34,13 @@ const DANGEROUS_COMMANDS = new Set([
 const DANGEROUS_SUBCOMMANDS = new Set([
   'git push', 'git reset', 'git clean', 'git rebase', 'git checkout', 'git restore', 'git rm', 'git stash',
   'git filter-branch', 'git gc', 'git update-ref', 'git config', 'git remote', 'git submodule', 'git worktree',
+  // package.json などのスクリプトを実行するもの（ファイル編集が無確認なら、スクリプトを書き換えてから実行できる）
   'npm publish', 'npm unpublish', 'npm uninstall', 'npm remove', 'npm rm', 'npm exec', 'npm x', 'npm run', 'npm install', 'npm i',
-  'pnpm publish', 'pnpm remove', 'pnpm exec', 'pnpm dlx', 'yarn publish', 'yarn remove', 'yarn dlx',
-  'cargo publish', 'cargo install', 'dotnet nuget', 'go install', 'go run', 'uv run', 'uv pip', 'pip install', 'pip uninstall',
+  'npm test', 'npm t', 'npm start', 'npm restart', 'npm stop', 'npm ci',
+  'pnpm publish', 'pnpm remove', 'pnpm exec', 'pnpm dlx', 'pnpm run', 'pnpm test', 'pnpm start', 'pnpm install', 'pnpm add',
+  'yarn publish', 'yarn remove', 'yarn dlx', 'yarn run', 'yarn test', 'yarn start', 'yarn add', 'yarn install',
+  'cargo publish', 'cargo install', 'cargo run', 'cargo test', 'cargo build', 'dotnet nuget', 'dotnet run', 'dotnet test', 'dotnet build',
+  'go install', 'go run', 'go test', 'go generate', 'uv run', 'uv pip', 'uv tool', 'uv sync', 'pip install', 'pip uninstall',
   'winget install', 'winget uninstall',
 ]);
 /** PowerShell のコマンドレット（動詞-名詞）で許す動詞（読み取り系） */
