@@ -161,13 +161,18 @@ function button(label: string, actionId: string, requestId: string, style?: 'pri
   };
 }
 
+/** Slack は空（空白だけ）の text を持つブロックを受け付けないので、そのときは代わりの文言にする */
+function orPlaceholder(text: string, placeholder: string): string {
+  return text.trim() === '' ? placeholder : text;
+}
+
 export function buildPermissionBlocks(
   req: PermissionRequest,
   previewLimit: number = 2800
 ): { text: string; blocks: unknown[]; truncated: boolean } {
-  const toolNameResult = truncatePlain(req.tool_name, PLAIN_TEXT_LIMIT - 'Tool: '.length);
-  const descriptionResult = truncatePlain(req.description, PLAIN_TEXT_LIMIT);
-  const previewResult = truncateHeadTail(req.input_preview, previewLimit);
+  const toolNameResult = truncatePlain(orPlaceholder(req.tool_name, '(不明なツール)'), PLAIN_TEXT_LIMIT - 'Tool: '.length);
+  const descriptionResult = truncatePlain(orPlaceholder(req.description, '(説明なし)'), PLAIN_TEXT_LIMIT);
+  const previewResult = truncateHeadTail(orPlaceholder(req.input_preview, '(入力なし)'), previewLimit);
 
   const truncated = toolNameResult.truncated || descriptionResult.truncated || previewResult.truncated;
 
@@ -223,7 +228,7 @@ export function buildResolvedBlocks(
 ): { text: string; blocks: unknown[] } {
   const verb = behavior === 'allow' ? 'Allowed' : 'Denied';
   const emoji = behavior === 'allow' ? '✅' : '❌';
-  const toolNameResult = truncatePlain(req.tool_name, PLAIN_TEXT_LIMIT - (verb.length + 3));
+  const toolNameResult = truncatePlain(orPlaceholder(req.tool_name, '(不明なツール)'), PLAIN_TEXT_LIMIT - (verb.length + 3));
 
   const blocks: unknown[] = [
     {
