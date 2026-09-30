@@ -109,6 +109,7 @@ export function loadTokens(dir: string): Tokens {
  * access.json のスキーマ。未知のキーはエラー（strictObject）。
  * teamId はワークスペース ID（T...）、allowFrom はユーザー ID（U...）のみで、1 件以上・重複不可。
  * Enterprise Grid の組織 ID（E...）やグリッドのユーザー ID（W...）は受信イベントの team_id / user と一致しないため不可。
+ * channels は DM に加えて使うチャンネルの ID（C...、古い非公開チャンネルは G...）で、省略時は DM のみ。重複不可。
  */
 export const AccessSchema = z.strictObject({
   teamId: z.string().regex(/^T[A-Z0-9]{2,}$/, 'teamId の形式が不正（T で始まるワークスペース ID）'),
@@ -118,6 +119,12 @@ export const AccessSchema = z.strictObject({
     .refine((arr) => new Set(arr).size === arr.length, {
       message: 'allowFrom に重複がある',
     }),
+  channels: z
+    .array(z.string().regex(/^[CG][A-Z0-9]{2,}$/, 'channels のID形式が不正（C で始まるチャンネル ID）'))
+    .refine((arr) => new Set(arr).size === arr.length, {
+      message: 'channels に重複がある',
+    })
+    .optional(),
 });
 
 export type ParsedAccess = z.infer<typeof AccessSchema>;

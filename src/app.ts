@@ -97,7 +97,7 @@ export function createDegradedDeps(logger: Logger): McpDeps {
 
 // --- Slack → Claude（受信イベントの処理） --------------------------------------
 
-/** DM で届いたメッセージ。保留中の ID への `yes xxxxx` / `no xxxxx` なら許可の回答、それ以外は Claude へ中継する */
+/** DM か許可チャンネルで届いたメッセージ。保留中の ID への `yes xxxxx` / `no xxxxx` なら許可の回答、それ以外は Claude へ中継する */
 export async function handleMessage(
   { bridge, server, relay, logger }: Wiring,
   result: GateResult,

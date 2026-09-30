@@ -18,6 +18,14 @@ function botScopes(): string[] {
 
 describe('slack-app-manifest.yaml', () => {
   it('ブリッジと npm run check が呼ぶ Web API に必要な bot スコープがそろっている', () => {
-    expect(botScopes().sort()).toEqual(['chat:write', 'im:history', 'im:write', 'reactions:write', 'users:read']);
+    expect(botScopes().sort()).toEqual([
+      'channels:history',
+      'chat:write',
+      'groups:history',
+      'im:history',
+      'im:write',
+      'reactions:write',
+      'users:read',
+    ]);
   });
 });

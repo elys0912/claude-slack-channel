@@ -20,6 +20,7 @@ import { ChannelServer } from '../src/mcp.js';
 import { PermissionRelay } from '../src/permission-relay.js';
 import { ACCESS, DM1, DM2, flush, makeSocket, makeWeb, platformError } from './helpers/fake-slack.js';
 import type { FakeSocket, FakeWeb } from './helpers/fake-slack.js';
+import type { ParsedAccess } from '../src/config.js';
 
 interface Notification {
   method: string;
@@ -37,14 +38,14 @@ interface Harness {
   order: string[];
 }
 
-async function startHarness(): Promise<Harness> {
+async function startHarness(access: ParsedAccess = ACCESS): Promise<Harness> {
   const web = makeWeb();
   const socket = makeSocket();
   const logger = new Logger({ stderr: false });
   const bridge = new SlackBridge({
     botToken: 'xoxb-TEST-DUMMY',
     appToken: 'xapp-TEST-DUMMY',
-    access: ACCESS,
+    access,
     logger,
     web,
     socket,
@@ -259,17 +260,16 @@ describe('Slack → MCP', () => {
     expect(h.web.calls).toEqual([{ method: 'reactions.add', args: { channel: DM1, timestamp: '10.1', name: REACTION.SEEN } }]);
   });
 
-  it('permission_request は直前に受信したスレッドに投稿される', async () => {
+  it('permission_request は直前に受信したスレッドにだけ返信される', async () => {
     h.socket.emit('slack_event', dmEnvelope('hello', { ts: '20.1', thread_ts: '20.0' }));
     await flush();
     h.web.calls.length = 0;
 
     await sendPermissionRequest(h.client);
     const posts = h.web.calls.filter((c) => c.method === 'chat.postMessage');
+    expect(posts).toHaveLength(1);
     expect(posts[0]?.args.channel).toBe(DM1);
     expect(posts[0]?.args.thread_ts).toBe('20.0');
-    expect(posts[1]?.args.channel).toBe(DM2);
-    expect(posts[1]?.args).not.toHaveProperty('thread_ts');
   });
 
   it('Allow ボタンで verdict が返り、押されたメッセージが書き換わる', async () => {
@@ -622,5 +622,85 @@ describe('createToolHandlers 単体', () => {
     expect(await handlers.onEdit({ chat_id: DM1, message_id: '1', text: 'x' })).toBe('error: not-an-error');
     expect(await handlers.onReact({ chat_id: DM1, message_id: '1', emoji: ':+1:' })).toBe('reacted');
     expect(errorSpy).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('チャンネル（access.channels）', () => {
+  const CH = 'C333CCC';
+  let h: Harness;
+
+  beforeEach(async () => {
+    h = await startHarness({ ...ACCESS, channels: [CH] });
+  });
+
+  afterEach(async () => {
+    await h.client.close();
+    await h.stop();
+  });
+
+  function channelEnvelope(text: string, overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return dmEnvelope(text, { channel_type: 'channel', channel: CH, ...overrides });
+  }
+
+  it('許可チャンネルの投稿が Claude に届き、同じチャンネルに返信・リアクションできる', async () => {
+    h.socket.emit('slack_event', channelEnvelope('hello', { ts: '30.1' }));
+    await flush();
+
+    const n = h.notifications.find((x) => x.method === 'notifications/claude/channel');
+    expect(n?.params?.meta).toMatchObject({ chat_id: CH, thread_ts: '30.1' });
+    expect(h.web.calls).toEqual([{ method: 'reactions.add', args: { channel: CH, timestamp: '30.1', name: REACTION.SEEN } }]);
+
+    const res = await h.client.callTool({ name: 'reply', arguments: { chat_id: CH, text: 'hi', thread_ts: '30.1' } });
+    expect(res.content).toEqual([{ type: 'text', text: 'sent (1 message(s))' }]);
+  });
+
+  it('非公開チャンネル（group）も受け付け、許可外のチャンネルと許可外ユーザーは無視する', async () => {
+    h.socket.emit('slack_event', channelEnvelope('private', { channel_type: 'group' }));
+    h.socket.emit('slack_event', channelEnvelope('other', { channel: 'C999ZZZ' }));
+    h.socket.emit('slack_event', channelEnvelope('stranger', { user: 'U999ZZZ' }));
+    await flush();
+
+    const delivered = h.notifications.filter((x) => x.method === 'notifications/claude/channel');
+    expect(delivered.map((x) => x.params?.content)).toEqual(['private']);
+  });
+
+  it('permission_request はチャンネルのスレッドに返信され、そのボタンで回答できる', async () => {
+    h.socket.emit('slack_event', channelEnvelope('do it', { ts: '30.2', thread_ts: '30.0' }));
+    await flush();
+    h.web.calls.length = 0;
+
+    await sendPermissionRequest(h.client);
+    const posts = h.web.calls.filter((c) => c.method === 'chat.postMessage');
+    expect(posts).toHaveLength(1);
+    expect(posts[0]?.args).toMatchObject({ channel: CH, thread_ts: '30.0' });
+    h.web.calls.length = 0;
+
+    h.socket.emit(
+      'interactive',
+      blockAction('perm_allow', 'abcde', { channel: { id: CH }, container: { message_ts: '100.1' } })
+    );
+    await flush();
+
+    const verdict = h.notifications.find((x) => x.method === 'notifications/claude/channel/permission');
+    expect(verdict?.params).toEqual({ request_id: 'abcde', behavior: 'allow' });
+    const updates = h.web.calls.filter((c) => c.method === 'chat.update');
+    expect(updates).toHaveLength(1);
+    expect(updates[0]?.args.channel).toBe(CH);
+  });
+
+  it('チャンネルの受信で、そのチャンネルを DM として覚えない（DM への配信先が変わらない）', async () => {
+    h.socket.emit('slack_event', channelEnvelope('hello'));
+    await flush();
+    h.web.calls.length = 0;
+
+    // 直前がチャンネルのスレッドなので、返信が失敗したときの DM 配信先を確かめる
+    h.web.chat.postMessage = async (args) => {
+      h.web.calls.push({ method: 'chat.postMessage', args });
+      if (args.channel === CH) throw platformError('not_in_channel');
+      return { ok: true, ts: '200.1' };
+    };
+    await sendPermissionRequest(h.client);
+    const posts = h.web.calls.filter((c) => c.method === 'chat.postMessage');
+    expect(posts.map((p) => p.args.channel)).toEqual([CH, DM1, DM2]);
   });
 });

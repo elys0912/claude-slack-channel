@@ -195,6 +195,8 @@ export class SlackBridge {
   private readonly dedupe = new EventDedupe();
   private readonly dmChannels = new Map<string, string>();
   private readonly dmChannelIds = new Set<string>();
+  /** 送信やボタン操作を受け付けるチャンネル（許可ユーザーの DM + access.channels） */
+  private readonly allowedChannelIds = new Set<string>();
 
   private botUserId: string | undefined;
   private handlers: SlackBridgeEvents | undefined;
@@ -213,6 +215,7 @@ export class SlackBridge {
     this.logger = deps.logger;
     this.appToken = deps.appToken;
     this.injectedSocket = deps.socket;
+    for (const channel of deps.access.channels ?? []) this.allowedChannelIds.add(channel);
     this.web =
       deps.web ??
       (new WebClient(deps.botToken, {
@@ -272,6 +275,7 @@ export class SlackBridge {
         }
         this.dmChannels.set(userId, channelId);
         this.dmChannelIds.add(channelId);
+        this.allowedChannelIds.add(channelId);
       } catch (e) {
         this.logger.error(`conversations.open に失敗 user=${userId}`, e);
       }
@@ -410,7 +414,7 @@ export class SlackBridge {
 
       const msg = toInboundMessage(body);
       const result = gate(msg, this.access, this.botUserId, this.dedupe, this.handlers?.isKnownRequest);
-      if (result.kind !== 'drop') this.learnDmChannel(msg.user, msg.channel);
+      if (result.kind !== 'drop' && msg.channelType === 'im') this.learnDmChannel(msg.user, msg.channel);
       await this.handlers?.onMessage(result, {
         channel: msg.channel,
         ts: msg.ts,
@@ -423,7 +427,8 @@ export class SlackBridge {
   }
 
   /**
-   * init() で conversations.open に失敗した許可ユーザーの DM を、gate を通った受信（team・im・allowFrom を確認済み）から覚える。
+   * init() で conversations.open に失敗した許可ユーザーの DM を、gate を通った DM の受信（team・im・allowFrom を確認済み）から覚える。
+   * チャンネルの受信からは覚えない（チャンネル ID を DM と取り違えないため。呼び出し側で channel_type を見る）。
    * 既に DM が分かっているユーザーは上書きしない。
    */
   private learnDmChannel(user: string | undefined, channel: string | undefined): void {
@@ -431,6 +436,7 @@ export class SlackBridge {
     if (!this.access.allowFrom.includes(user)) return;
     this.dmChannels.set(user, channel);
     this.dmChannelIds.add(channel);
+    this.allowedChannelIds.add(channel);
     this.logger.info(`受信した DM から送信先を追加 user=${user} channel=${channel}`);
   }
 
@@ -438,7 +444,7 @@ export class SlackBridge {
   private async handleInteractive(arg: RawEvent): Promise<void> {
     try {
       const { input, ctx } = toBlockActionInput(obj(arg.body) ?? {});
-      const parsed = parseBlockAction(input, this.access, this.dmChannelIds);
+      const parsed = parseBlockAction(input, this.access, this.allowedChannelIds);
       await this.handlers?.onAction(parsed, ctx);
     } catch (e) {
       this.logger.error('interactive の処理で例外', e);
@@ -448,13 +454,13 @@ export class SlackBridge {
   // --- 送信 -----------------------------------------------------------------
 
   private assertAllowed(channel: string): void {
-    if (!this.dmChannelIds.has(channel)) {
+    if (!this.allowedChannelIds.has(channel)) {
       throw new Error('許可されていない送信先チャンネル');
     }
   }
 
   /**
-   * テキストを送る。許可ユーザーの DM 以外には送らない（投げる）。一斉メンションは無効化し、空なら何も送らない。
+   * テキストを送る。許可ユーザーの DM と access.channels 以外には送らない（投げる）。一斉メンションは無効化し、空なら何も送らない。
    * まず markdown_text で 11000 文字ごとに送り、markdown_text が拒否されたら（isMarkdownRejection）
    * そのチャンク以降は text（& < > をエスケープ、3900 文字ごと）に切り替える。それ以外のエラーはそのまま投げる。
    * 長文は分割して順に送る。途中のチャンクで失敗した場合、1 通以上送れていれば
