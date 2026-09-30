@@ -179,19 +179,33 @@ function Read-ExtraMcpServers {
     return $servers
 }
 
-$mcpConfig = Write-McpConfig -FileName 'mcp.json' -ServerName 'slackbridge' -ScriptPath $mainJs -ExtraServers (Read-ExtraMcpServers)
+$extraServers = Read-ExtraMcpServers
+$mcpConfig = Write-McpConfig -FileName 'mcp.json' -ServerName 'slackbridge' -ScriptPath $mainJs -ExtraServers $extraServers
 
-# Slack の「今後も許可」で足したルール（状態ディレクトリの allow-extra.json）を channel-settings.json の allow に足し、
-# %TEMP% に書き出したものを --settings に渡す。ブリッジが deny と照合してから書き込んだものだけが入っている。
-# 読めなければ足さずに警告だけ出す（起動は止めない）。
-function Get-EffectiveSettings {
+# Slack の「今後も許可」で足したルール（状態ディレクトリの allow-extra.json）を読む。
+# ブリッジが deny と照合してから書き込んだものだけが入っている。読めなければ警告だけ出して使わない
+function Read-AllowExtra {
     $allowExtra = Join-Path $stateDir 'allow-extra.json'
-    if (-not (Test-Path $allowExtra)) { return $settingsFile }
+    if (-not (Test-Path $allowExtra)) { return @() }
     try {
-        $extra = @((Get-Content -LiteralPath $allowExtra -Raw -Encoding UTF8 | ConvertFrom-Json).allow |
+        $rules = @((Get-Content -LiteralPath $allowExtra -Raw -Encoding UTF8 | ConvertFrom-Json).allow |
             Where-Object { $_ -is [string] -and $_ -ne '' })
-        if ($extra.Count -eq 0) { return $settingsFile }
+        if ($rules.Count -gt 0) { Write-Host "Slack から追加した許可ルール: $($rules.Count) 件（$allowExtra）" }
+        return $rules
+    } catch {
+        Write-Warning "allow-extra.json を読めなかったので、追加の許可ルールは使わない: $($_.Exception.Message)"
+        return @()
+    }
+}
 
+# 次の許可ルールを channel-settings.json の allow に足し、%TEMP% に書き出したものを --settings に渡す。
+# - extra-mcp.json に登録した MCP サーバーのツール全部（mcp__<サーバー名>）。使う人が承知して入れたものなので確認を挟まない
+# - Slack の「今後も許可」で足したルール
+# 足すものが無ければ channel-settings.json をそのまま渡す。deny は channel-settings.json のまま（allow より優先される）
+function Get-EffectiveSettings {
+    $extra = @(@($extraServers.Keys | Sort-Object | ForEach-Object { "mcp__$_" }) + @(Read-AllowExtra))
+    if ($extra.Count -eq 0) { return $settingsFile }
+    try {
         $settings = Get-Content -LiteralPath $settingsFile -Raw -Encoding UTF8 | ConvertFrom-Json
         $settings.permissions.allow = @(@($settings.permissions.allow) + $extra | Select-Object -Unique)
 
@@ -199,10 +213,9 @@ function Get-EffectiveSettings {
         New-Item -ItemType Directory -Path (Split-Path -Parent $merged) -Force | Out-Null
         $json = $settings | ConvertTo-Json -Depth 10
         [System.IO.File]::WriteAllText($merged, $json, [System.Text.UTF8Encoding]::new($false))
-        Write-Host "Slack から追加した許可ルール: $($extra.Count) 件（$allowExtra）"
         return $merged
     } catch {
-        Write-Warning "allow-extra.json を読めなかったので、追加の許可ルールは使わない: $($_.Exception.Message)"
+        Write-Warning "許可ルールを足した設定を作れなかったので、channel-settings.json をそのまま使う: $($_.Exception.Message)"
         return $settingsFile
     }
 }
