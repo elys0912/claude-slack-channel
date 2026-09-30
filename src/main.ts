@@ -91,6 +91,7 @@ async function main(dir: string, logger: Logger): Promise<void> {
     onCleanupReady: (stop) => installShutdown(logger, stop),
     replyTimeoutMs: replyTimeoutMs(),
     console: consoleAccess(logger),
+    home: { users: access.allowFrom, workDir: process.cwd(), channelCount: access.channels?.length ?? 0 },
     allowExtraFile: path.join(dir, 'allow-extra.json'),
     // 起動スクリプトは作業フォルダーで claude.exe を起動し、MCP サーバーも同じ作業フォルダーで動く
     denyFiles: [

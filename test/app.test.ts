@@ -43,7 +43,7 @@ interface Harness {
 async function startHarness(
   access: ParsedAccess = ACCESS,
   replyTimeoutMs?: number,
-  extra: Pick<BridgeAppOptions, 'console' | 'allowExtraFile' | 'denyFiles'> = {}
+  extra: Pick<BridgeAppOptions, 'console' | 'allowExtraFile' | 'denyFiles' | 'home'> = {}
 ): Promise<Harness> {
   const web = makeWeb();
   const socket = makeSocket();
@@ -895,3 +895,59 @@ async function client_sendBash(h: Harness, command: string): Promise<void> {
   });
   await flush();
 }
+
+describe('ホームタブ', () => {
+  let h: Harness;
+  const home = { users: ACCESS.allowFrom, workDir: 'C:\dev', channelCount: 0 };
+  const publishes = () => h.web.calls.filter((c) => c.method === 'views.publish');
+
+  function homeOpened(user: string, tab = 'home', team = 'T123ABC'): Record<string, unknown> {
+    return {
+      type: 'events_api',
+      envelope_id: 'env-home',
+      body: { team_id: team, event_id: `Ev-${Math.random()}`, event: { type: 'app_home_opened', user, tab } },
+      ack: async () => undefined,
+    };
+  }
+
+  beforeEach(async () => {
+    // startHarness は起動前に web.calls を空にするので、起動時の publish は残る
+    h = await startHarness(ACCESS, undefined, { home });
+  });
+
+  afterEach(async () => {
+    await h.client.close();
+    await h.stop();
+  });
+
+  it('起動したら許可ユーザー全員のホームを稼働中にする', () => {
+    expect(publishes().map((p) => p.args.user_id)).toEqual(ACCESS.allowFrom);
+    expect(JSON.stringify(publishes()[0]?.args.view)).toContain('稼働中');
+  });
+
+  it('ホームが開かれたら、許可ユーザーには状態を、それ以外には中身の無い画面を出す', async () => {
+    h.web.calls.length = 0;
+    h.socket.emit('slack_event', homeOpened('U111AAA'));
+    h.socket.emit('slack_event', homeOpened('U999ZZZ'));
+    await flush();
+
+    expect(publishes().map((p) => p.args.user_id)).toEqual(['U111AAA', 'U999ZZZ']);
+    expect(JSON.stringify(publishes()[0]?.args.view)).toContain('作業フォルダー');
+    expect(JSON.stringify(publishes()[1]?.args.view)).not.toContain('作業フォルダー');
+  });
+
+  it('ホーム以外のタブ・別ワークスペースのイベントは無視する', async () => {
+    h.web.calls.length = 0;
+    h.socket.emit('slack_event', homeOpened('U111AAA', 'messages'));
+    h.socket.emit('slack_event', homeOpened('U111AAA', 'home', 'TOTHER'));
+    await flush();
+    expect(publishes()).toEqual([]);
+  });
+
+  it('終了時に許可ユーザー全員のホームを停止中へ書き換える', async () => {
+    h.web.calls.length = 0;
+    await h.stop();
+    expect(publishes().map((p) => p.args.user_id)).toEqual(ACCESS.allowFrom);
+    expect(JSON.stringify(publishes()[0]?.args.view)).toContain('停止中');
+  });
+});

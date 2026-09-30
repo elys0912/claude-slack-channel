@@ -56,6 +56,9 @@ export interface SlackWebApiLike {
   reactions: {
     add(args: Record<string, unknown>): Promise<{ ok?: boolean }>;
   };
+  views: {
+    publish(args: Record<string, unknown>): Promise<{ ok?: boolean }>;
+  };
 }
 
 /** テストで差し替えられるよう、実際に使う Socket Mode のメソッドだけを型にする */
@@ -99,6 +102,8 @@ export interface SlackBridgeEvents {
   onAction: (parsed: ActionParse, ctx: ActionContext) => void | Promise<void>;
   /** 保留中の permission request か（gate に渡す。省略時は `yes xxxxx` の形なら常に verdict） */
   isKnownRequest?: ((requestId: string) => boolean) | undefined;
+  /** アプリのホームタブが開かれた（team は確認済み。allowed は allowFrom に入っているか） */
+  onHomeOpened?: ((userId: string, allowed: boolean) => void | Promise<void>) | undefined;
 }
 
 export interface SlackInitResult {
@@ -414,6 +419,10 @@ export class SlackBridge {
     try {
       const body = obj(arg.body) ?? {};
       const ev = obj(body.event) ?? {};
+      if (str(ev.type) === 'app_home_opened') {
+        await this.handleHomeOpened(body, ev);
+        return;
+      }
       if (str(ev.type) !== 'message') return;
 
       const msg = toInboundMessage(body);
@@ -448,6 +457,22 @@ export class SlackBridge {
     this.dmChannels.set(user, channel);
     this.allowedChannelIds.add(channel);
     this.logger.info(`受信した DM から送信先を追加 user=${user} channel=${channel}`);
+  }
+
+  /** ホームタブが開かれた。別のワークスペースのイベントと、ホーム以外のタブ（メッセージ・概要）は無視する */
+  private async handleHomeOpened(body: RawEvent, ev: RawEvent): Promise<void> {
+    const user = str(ev.user);
+    if (str(body.team_id) !== this.access.teamId || !user || str(ev.tab) !== 'home') return;
+    await this.handlers?.onHomeOpened?.(user, this.access.allowFrom.includes(user));
+  }
+
+  /** ユーザーのホームタブに view を出す。失敗しても投げない（ログに残す） */
+  async publishHome(userId: string, view: unknown): Promise<void> {
+    try {
+      await this.web.views.publish({ user_id: userId, view });
+    } catch (e) {
+      this.logger.warn(`ホームタブの更新に失敗 user=${userId}`, e);
+    }
   }
 
   /** access.channels のチャンネルのスレッドに、ボットが関わっているか */
