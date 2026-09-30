@@ -7,7 +7,6 @@ import type { SlackBridge, ActionContext, InboundRef } from './slack.js';
 import { ChannelServer } from './mcp.js';
 import type { McpDeps } from './mcp.js';
 import { PermissionRelay } from './permission-relay.js';
-import { preformattedBlock } from './permission.js';
 import type { ActionParse } from './permission.js';
 import type { GateResult } from './gate.js';
 
@@ -141,16 +140,29 @@ export async function handleAction(wiring: Wiring, parsed: ActionParse, ctx: Act
   await sendFullPreview(wiring, parsed.requestId, ctx);
 }
 
-/** See more: ボタンのメッセージでは省略した input_preview の全文をスレッドに送る */
+/**
+ * input_preview をコードブロックで包む。中身の行頭の ``` はゼロ幅スペースを前置して、
+ * フェンスの開閉と誤認されない（分割送信時の開き直しも崩れない）ようにする。
+ */
+export function fencePreview(preview: string): string {
+  return '```\n' + preview.replace(/^```/gm, '\u200b```') + '\n```';
+}
+
+/**
+ * See more: ボタンのメッセージでは省略した input_preview の全文をスレッドに送る。
+ * 長いときは postText がコードブロックを保ったまま複数メッセージに分ける。
+ * 送り先はボタンのメッセージが属するスレッド（スレッド外ならボタンのメッセージ自身を起点にする）。
+ */
 async function sendFullPreview({ bridge, relay, logger }: Wiring, requestId: string, ctx: ActionContext): Promise<void> {
   if (!ctx.channelId || !ctx.messageTs) return;
 
+  const threadTs = ctx.threadTs ?? ctx.messageTs;
   const req = relay.lookup(requestId);
   try {
     if (req) {
-      await bridge.postBlocks(ctx.channelId, req.input_preview, [preformattedBlock(req.input_preview)], ctx.messageTs);
+      await bridge.postText(ctx.channelId, fencePreview(req.input_preview), threadTs);
     } else {
-      await bridge.postText(ctx.channelId, `⌛ permission request ${requestId} は既に期限切れ`, ctx.messageTs);
+      await bridge.postText(ctx.channelId, `⌛ permission request ${requestId} は既に期限切れ`, threadTs);
     }
   } catch (e) {
     logger.warn('see_more の送信に失敗', e);

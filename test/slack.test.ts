@@ -530,6 +530,20 @@ describe('toBlockActionInput', () => {
     expect(ctx.messageTs).toBe('77.7');
   });
 
+  it('threadTs は container.thread_ts を優先し、無ければ message.thread_ts を使う', () => {
+    expect(
+      toBlockActionInput({ container: { message_ts: '55.5', thread_ts: '20.0' }, message: { thread_ts: '30.0' } }).ctx
+        .threadTs
+    ).toBe('20.0');
+    expect(toBlockActionInput({ message: { ts: '77.7', thread_ts: '30.0' } }).ctx.threadTs).toBe('30.0');
+    expect(toBlockActionInput({ container: { message_ts: '55.5' } }).ctx).toEqual({
+      userId: undefined,
+      channelId: undefined,
+      messageTs: '55.5',
+      threadTs: undefined,
+    });
+  });
+
   it('actions が配列でない／要素がオブジェクトでない場合は action 無し', () => {
     expect(toBlockActionInput({ actions: { action_id: 'perm_allow' } }).input.actionId).toBeUndefined();
     expect(toBlockActionInput({ actions: ['perm_allow'] }).input.actionId).toBeUndefined();
