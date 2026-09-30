@@ -153,6 +153,16 @@ $projectDir = Resolve-ProjectDir
 # claude.ai の connectors は、このプロセスから起動する claude.exe でだけ無効にする
 $env:ENABLE_CLAUDEAI_MCP_SERVERS = 'false'
 
+# Claude Code のセッション内（VS Code 拡張など）からこのスクリプトを実行すると、親セッションの
+# 目印の環境変数が引き継がれ、子セッション扱い（会話の保存なし）や MCP の非同期接続になって、
+# slackbridge の reply ツールが使えないことがある。独立したセッションとして起動するため消しておく
+@(
+    'CLAUDECODE', 'CLAUDE_PID', 'CLAUDE_AGENT_SDK_VERSION', 'MCP_CONNECTION_NONBLOCKING',
+    'CLAUDE_CODE_CHILD_SESSION', 'CLAUDE_CODE_ENTRYPOINT', 'CLAUDE_CODE_SESSION_ID',
+    'CLAUDE_CODE_SESSION_ATTENDED', 'CLAUDE_CODE_MESSAGING_SOCKET',
+    'CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING', 'CLAUDE_CODE_ENABLE_TASKS'
+) | ForEach-Object { Remove-Item -Path "Env:$_" -ErrorAction SilentlyContinue }
+
 $mcpConfig = Write-McpConfig -FileName 'mcp.json' -ServerName 'slackbridge' -ScriptPath $mainJs
 
 # 各フラグの意味は README の「権限の設計」を参照
