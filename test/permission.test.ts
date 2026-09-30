@@ -111,10 +111,72 @@ describe('buildPermissionBlocks', () => {
     ) as { elements: { elements: { text: string }[] }[] };
     const previewText = preformatted.elements[0]?.elements[0]?.text ?? '';
     expect(previewText.length).toBeLessThanOrEqual(100);
-    expect(previewText.endsWith('…')).toBe(true);
+    expect(previewText).toContain('文字省略');
 
     const actions = blocks.find((b) => (b as { type: string }).type === 'actions') as { elements: { action_id: string }[] };
     expect(actions.elements.some((e) => e.action_id === 'perm_more')).toBe(true);
+  });
+
+  function previewOf(blocks: unknown[]): string {
+    const rich = blocks.find((b) => (b as { type: string }).type === 'rich_text') as {
+      elements: { elements: { text: string }[] }[];
+    };
+    return rich.elements[0]?.elements[0]?.text ?? '';
+  }
+
+  it('長い input_preview は先頭と末尾を残し、省略した文字数を間に入れる（既定で先頭約 2000 + 末尾約 600）', () => {
+    const preview = 'H'.repeat(3000) + 'M'.repeat(3000) + 'T'.repeat(3000);
+    const { blocks } = buildPermissionBlocks({ ...sampleReq, input_preview: preview });
+    const text = previewOf(blocks);
+    expect(text.length).toBeLessThanOrEqual(2800);
+    const m = /^(H+)\n…（途中 (\d+) 文字省略）…\n(T+)$/.exec(text);
+    expect(m).not.toBeNull();
+    const [, head = '', omitted = '0', tail = ''] = m ?? [];
+    expect(head.length).toBeGreaterThanOrEqual(2000);
+    expect(tail.length).toBeGreaterThanOrEqual(550);
+    expect(head.length + Number(omitted) + tail.length).toBe(preview.length);
+  });
+
+  it('input_preview を省略したときだけ警告行（context）を preview の直後に足す', () => {
+    const long = buildPermissionBlocks({ ...sampleReq, input_preview: 'x'.repeat(5000) });
+    const types = long.blocks.map((b) => (b as { type: string }).type);
+    expect(types).toEqual(['header', 'section', 'section', 'rich_text', 'context', 'context', 'actions']);
+    expect(JSON.stringify(long.blocks[4])).toContain('See more');
+
+    const short = buildPermissionBlocks(sampleReq);
+    expect(short.blocks.map((b) => (b as { type: string }).type)).toEqual([
+      'header',
+      'section',
+      'section',
+      'rich_text',
+      'context',
+      'actions'
+    ]);
+  });
+
+  it('双方向制御文字・ゼロ幅文字・BOM を \\u{XXXX} の形で見えるようにする', () => {
+    const invisible = '‪‫‬‭‮⁦⁧⁨⁩​‌‍﻿';
+    const { blocks } = buildPermissionBlocks({
+      ...sampleReq,
+      description: `desc‮gnp.exe`,
+      input_preview: `rm${invisible}x`
+    });
+    expect(previewOf(blocks)).toBe(
+      'rm\\u{202A}\\u{202B}\\u{202C}\\u{202D}\\u{202E}\\u{2066}\\u{2067}\\u{2068}\\u{2069}\\u{200B}\\u{200C}\\u{200D}\\u{FEFF}x'
+    );
+    expect(JSON.stringify(blocks)).not.toMatch(/[‪-‮⁦-⁩​-‍﻿]/);
+    expect((blocks[2] as { text: { text: string } }).text.text).toBe('desc\\u{202E}gnp.exe');
+  });
+
+  it('切り詰めの境目でサロゲートペアや可視化したエスケープを割らない', () => {
+    const preview = ('😀‮').repeat(2000);
+    const { blocks } = buildPermissionBlocks({ ...sampleReq, input_preview: preview }, 101);
+    const text = previewOf(blocks);
+    expect(text.length).toBeLessThanOrEqual(101);
+    const [head = '', tail = ''] = text.split(/\n…（途中 \d+ 文字省略）…\n/);
+    expect(head).toMatch(/^(😀\\u\{202E\}|😀)*$/);
+    expect(tail).toMatch(/^(\\u\{202E\}|😀)*$/);
+    expect(text).not.toMatch(/[\ud800-\udbff](?![\udc00-\udfff])/);
   });
 
   it('does not add a See more button when nothing is truncated', () => {
