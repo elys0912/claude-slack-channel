@@ -756,7 +756,7 @@ describe('SlackBridge の送信（現状固定）', () => {
     await expect(bridge.postText(DM1, 'hi')).rejects.toBe(err);
   });
 
-  it('途中のチャンクで失敗すると、それまでの ts は返らず例外になる', async () => {
+  it('途中のチャンクで失敗すると、送れた件数 sent=N を付けた例外になる', async () => {
     const { bridge, web } = makeBridge();
     await bridge.init();
     web.calls.length = 0;
@@ -768,7 +768,9 @@ describe('SlackBridge の送信（現状固定）', () => {
       return original(args);
     };
     const text = ('あ'.repeat(99) + '\n').repeat(300);
-    await expect(bridge.postText(DM1, text)).rejects.toThrow(/internal_error/);
+    const err = (await bridge.postText(DM1, text).catch((e: unknown) => e)) as Error;
+    expect(err.message).toBe('An API error occurred: internal_error (sent=1)');
+    expect((err.cause as Error).message).toBe('An API error occurred: internal_error');
     expect(web.calls.filter((c) => c.method === 'chat.postMessage').length).toBe(1);
   });
 

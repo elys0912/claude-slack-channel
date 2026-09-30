@@ -11,7 +11,7 @@ import { parseBlockAction } from './permission.js';
 import type { ActionParse, BlockActionInput } from './permission.js';
 import { chunkText } from './chunk.js';
 import { escapeMrkdwn, neutralizeBroadcasts } from './format.js';
-import { slackErrorCode } from './errors.js';
+import { errMessage, slackErrorCode } from './errors.js';
 
 // markdown_text は Slack 側の上限が 12000。余裕をみて 11000 で切る。
 const MARKDOWN_LIMIT = 11000;
@@ -416,12 +416,27 @@ export class SlackBridge {
     }
   }
 
+  /**
+   * 長文は分割して順に送る。途中のチャンクで失敗した場合、1 通以上送れていれば
+   * 例外のメッセージに `sent=N`（送れた件数）を付けて投げる（Claude が再送の範囲を判断できるように）。
+   */
   async postText(channel: string, text: string, threadTs?: string): Promise<{ ts: string[] }> {
     this.assertAllowed(channel);
     const safe = neutralizeBroadcasts(text);
     const tsList: string[] = [];
     if (safe === '') return { ts: tsList };
 
+    try {
+      await this.postChunks(channel, safe, threadTs, tsList);
+    } catch (e) {
+      if (tsList.length === 0) throw e;
+      throw new Error(`${errMessage(e)} (sent=${tsList.length})`, { cause: e });
+    }
+    return { ts: tsList };
+  }
+
+  /** postText の本体。送れたメッセージの ts を tsList に積む */
+  private async postChunks(channel: string, safe: string, threadTs: string | undefined, tsList: string[]): Promise<void> {
     const blocksOfMarkdown = chunkText(safe, MARKDOWN_LIMIT);
     let useMarkdown = true;
 
@@ -452,8 +467,6 @@ export class SlackBridge {
         if (res.ts) tsList.push(res.ts);
       }
     }
-
-    return { ts: tsList };
   }
 
   async postBlocks(channel: string, text: string, blocks: unknown[], threadTs?: string): Promise<{ ts: string }> {
