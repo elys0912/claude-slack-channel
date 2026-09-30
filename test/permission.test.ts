@@ -242,6 +242,23 @@ describe('buildResolvedBlocks', () => {
     expect(text).toContain('Allowed');
   });
 
+  it('ID は plain_text で出し、mrkdwn はユーザー ID の形のメンションだけに使う', () => {
+    const { blocks } = buildResolvedBlocks(sampleReq, 'allow', 'U123');
+    const context = blocks[1] as { type: string; elements: { type: string; text: string }[] };
+    expect(context.type).toBe('context');
+    expect(context.elements).toEqual([
+      { type: 'plain_text', text: 'ID: abcde ・ by' },
+      { type: 'mrkdwn', text: '<@U123>' }
+    ]);
+  });
+
+  it('ユーザー ID の形でない byUserId は mrkdwn に入れない', () => {
+    const { blocks } = buildResolvedBlocks({ ...sampleReq, request_id: '*x* <!here>' }, 'deny', '<!channel>');
+    const context = blocks[1] as { elements: { type: string; text: string }[] };
+    expect(context.elements.every((e) => e.type === 'plain_text')).toBe(true);
+    expect(context.elements.map((e) => e.text)).toEqual(['ID: *x* <!here> ・ by', '<!channel>']);
+  });
+
   it('reflects deny', () => {
     const { text } = buildResolvedBlocks(sampleReq, 'deny', 'U123');
     expect(text).toContain('Denied');
