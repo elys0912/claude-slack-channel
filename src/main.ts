@@ -9,6 +9,7 @@ import { Logger } from './log.js';
 import { InstanceLock } from './lock.js';
 import { SlackBridge } from './slack.js';
 import { startBridgeApp, startDegradedApp } from './app.js';
+import { replyTimeoutMs } from './watchdog.js';
 
 function createLogger(dir: string): Logger {
   const logger = new Logger({ file: path.join(dir, 'logs', 'bridge.log') });
@@ -79,7 +80,13 @@ async function main(dir: string, logger: Logger): Promise<void> {
   }
 
   // 終了処理は Socket Mode の接続を待つ前に登録する。開始に失敗したら startBridgeApp が後片付けしてから投げる
-  await startBridgeApp({ bridge, logger, lock, onCleanupReady: (stop) => installShutdown(logger, stop) });
+  await startBridgeApp({
+    bridge,
+    logger,
+    lock,
+    onCleanupReady: (stop) => installShutdown(logger, stop),
+    replyTimeoutMs: replyTimeoutMs(),
+  });
 }
 
 // --- 終了処理 -------------------------------------------------------------------

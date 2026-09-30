@@ -38,7 +38,7 @@ interface Harness {
   order: string[];
 }
 
-async function startHarness(access: ParsedAccess = ACCESS): Promise<Harness> {
+async function startHarness(access: ParsedAccess = ACCESS, replyTimeoutMs?: number): Promise<Harness> {
   const web = makeWeb();
   const socket = makeSocket();
   const logger = new Logger({ stderr: false });
@@ -83,7 +83,7 @@ async function startHarness(access: ParsedAccess = ACCESS): Promise<Harness> {
     },
   };
 
-  const app = await startBridgeApp({ bridge, logger, transport: serverTransport, lock });
+  const app = await startBridgeApp({ bridge, logger, transport: serverTransport, lock, replyTimeoutMs });
   await client.connect(clientTransport);
   harness.stop = app.stop;
   return harness;
@@ -702,5 +702,48 @@ describe('チャンネル（access.channels）', () => {
     await sendPermissionRequest(h.client);
     const posts = h.web.calls.filter((c) => c.method === 'chat.postMessage');
     expect(posts.map((p) => p.args.channel)).toEqual([CH, DM1, DM2]);
+  });
+});
+
+describe('無応答の見張り（replyTimeoutMs）', () => {
+  let h: Harness;
+  const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const warnings = () =>
+    h.web.calls.filter((c) => c.method === 'chat.postMessage' && String(c.args.markdown_text).includes('応答が無い'));
+
+  beforeEach(async () => {
+    h = await startHarness(ACCESS, 60);
+  });
+
+  afterEach(async () => {
+    await h.client.close();
+    await h.stop();
+  });
+
+  it('Claude が何も返さないまま待ち時間を過ぎたら、そのスレッドに警告を投稿する', async () => {
+    h.socket.emit('slack_event', dmEnvelope('hello', { ts: '40.1', thread_ts: '40.0' }));
+    await flush();
+    await wait(120);
+
+    expect(warnings()).toHaveLength(1);
+    expect(warnings()[0]?.args).toMatchObject({ channel: DM1, thread_ts: '40.0' });
+  });
+
+  it('待ち時間内に reply があれば警告しない', async () => {
+    h.socket.emit('slack_event', dmEnvelope('hello', { ts: '40.1' }));
+    await flush();
+    await h.client.callTool({ name: 'reply', arguments: { chat_id: DM1, text: 'ok', thread_ts: '40.1' } });
+    await wait(120);
+
+    expect(warnings()).toHaveLength(0);
+  });
+
+  it('待ち時間内に permission_request が来れば警告しない', async () => {
+    h.socket.emit('slack_event', dmEnvelope('hello', { ts: '40.1' }));
+    await flush();
+    await sendPermissionRequest(h.client);
+    await wait(120);
+
+    expect(warnings()).toHaveLength(0);
   });
 });
