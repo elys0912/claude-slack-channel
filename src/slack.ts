@@ -90,6 +90,8 @@ export interface ActionContext {
 export interface SlackBridgeEvents {
   onMessage: (r: GateResult, raw: InboundRef) => void | Promise<void>;
   onAction: (parsed: ActionParse, ctx: ActionContext) => void | Promise<void>;
+  /** 保留中の permission request か（gate に渡す。省略時は `yes xxxxx` の形なら常に verdict） */
+  isKnownRequest?: ((requestId: string) => boolean) | undefined;
 }
 
 export interface SlackInitResult {
@@ -384,7 +386,7 @@ export class SlackBridge {
       if (str(ev.type) !== 'message') return;
 
       const msg = toInboundMessage(body);
-      const result = gate(msg, this.access, this.botUserId, this.dedupe);
+      const result = gate(msg, this.access, this.botUserId, this.dedupe, this.handlers?.isKnownRequest);
       await this.handlers?.onMessage(result, {
         channel: msg.channel,
         ts: msg.ts,
