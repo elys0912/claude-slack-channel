@@ -22,14 +22,19 @@ export function escapeMrkdwn(text: string): string {
 }
 
 const META_KEY_RE = /^[A-Za-z0-9_]+$/;
+/** meta の値 1 つあたりの上限（添付が大量・長いファイル名でも Claude に渡すタグを膨らませない） */
+export const META_VALUE_MAX = 2000;
 
-/** meta のキー・値ルールを適用する（キーは英数字とアンダースコアのみ、値は undefined 除外） */
+/**
+ * meta のキー・値ルールを適用する（キーは英数字とアンダースコアのみ、値は undefined 除外、
+ * 値は META_VALUE_MAX 文字まで。超えた分は切り捨てて末尾を … にする）
+ */
 export function sanitizeMeta(meta: Record<string, string | undefined>): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [key, value] of Object.entries(meta)) {
     if (value === undefined) continue;
     if (!META_KEY_RE.test(key)) continue;
-    out[key] = value;
+    out[key] = value.length > META_VALUE_MAX ? value.slice(0, META_VALUE_MAX - 1) + '…' : value;
   }
   return out;
 }

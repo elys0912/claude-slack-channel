@@ -13,6 +13,10 @@ describe('redact', () => {
     expect(redact('xoxp-111-222-aaa')).toBe('xox?-***');
   });
 
+  it('xoxe などその他の xox?- トークンも伏せる', () => {
+    expect(redact('refresh=xoxe-1-abcDEF user=xoxc-111-aaa')).toBe('refresh=xox?-*** user=xox?-***');
+  });
+
   it('xapp トークンを伏せる', () => {
     expect(redact('xapp-1-A123-456-xyz')).toBe('xapp-***');
   });
@@ -94,24 +98,40 @@ describe('Logger', () => {
 });
 
 describe('toSlackLogger', () => {
-  it('set/getLevel が委譲される', () => {
+  it('getLevel は共有 Logger の level を返し、setLevel は共有側に透過させない', () => {
     const inner = new Logger({ stderr: false });
     const slackLogger = toSlackLogger(inner, 'test-logger');
     expect(slackLogger.getLevel()).toBe('info');
-    slackLogger.setLevel('debug');
-    expect(slackLogger.getLevel()).toBe('debug');
-    expect(inner.getLevel()).toBe('debug');
+    // @slack/logger の LogLevel は enum。値 import を避けるためキャストで渡す
+    slackLogger.setLevel('debug' as Parameters<typeof slackLogger.setLevel>[0]);
+    expect(slackLogger.getLevel()).toBe('info');
+    expect(inner.getLevel()).toBe('info');
   });
 
-  it('debug/info/warn/error を委譲する', () => {
+  it('setName は共有 Logger の名前を書き換えない', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'log-test-'));
+    const file = path.join(dir, 'app.log');
+    const inner = new Logger({ file, stderr: false });
+    inner.setName('bridge');
+    toSlackLogger(inner, 'slack-web').setName('web-api');
+    inner.info('x');
+    const line = fs.readFileSync(file, 'utf8').trim();
+    fs.rmSync(dir, { recursive: true, force: true });
+    expect(line).toContain('[bridge]');
+    expect(line).not.toContain('web-api');
+  });
+
+  it('debug/info/warn/error を範囲名付きで委譲する', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'log-test-'));
     const file = path.join(dir, 'app.log');
     const inner = new Logger({ file, stderr: false, level: 'debug' });
+    inner.setName('bridge');
     const slackLogger = toSlackLogger(inner, 'named');
     slackLogger.info('hi');
-    const content = fs.readFileSync(file, 'utf8');
-    expect(content).toContain('[named]');
-    expect(content).toContain('hi');
+    slackLogger.debug('dbg', { a: 1 });
+    const lines = fs.readFileSync(file, 'utf8').trim().split('\n');
+    expect(lines[0]).toMatch(/INFO \[bridge\] \[named\] hi$/);
+    expect(lines[1]).toMatch(/DEBUG \[bridge\] \[named\] dbg \{"a":1\}$/);
     fs.rmSync(dir, { recursive: true, force: true });
   });
 });

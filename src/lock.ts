@@ -17,6 +17,8 @@ export interface InstanceLockOptions {
 
 const DEFAULT_STALE_MS = 30000;
 const DEFAULT_INTERVAL_MS = 10000;
+// heartbeat が現在時刻よりこれ以上未来なら不正な値とみなす（時計のずれを少しだけ許容する）
+const FUTURE_TOLERANCE_MS = 5000;
 
 function isLockInfo(v: unknown): v is LockInfo {
   if (typeof v !== 'object' || v === null) return false;
@@ -74,12 +76,22 @@ export class InstanceLock {
     fs.renameSync(tmp, this.file);
   }
 
+  /**
+   * ロックを取る。既存のロックが次のどちらかなら上書きして取る（どちらでもなければ holder を返して諦める）:
+   * - isSelf: 記録された pid が自分の pid と同じ
+   * - stale: heartbeat が staleMs（既定 30 秒）より古い、または現在時刻より 5 秒を超えて未来
+   * 記録された pid のプロセスが生きているかは確認しない（heartbeat の新しさだけで判断する）。
+   * 読めない・形の違うロックファイルは無いものとして扱う。取れたら intervalMs ごとの heartbeat 更新を始める。
+   */
   tryAcquire(): { acquired: true } | { acquired: false; holder: LockInfo } {
     const existing = this.readInfo();
 
     if (existing) {
       const isSelf = existing.pid === this.pid;
-      const isStale = this.now() - existing.heartbeat > this.staleMs;
+      // 未来の heartbeat は時計の巻き戻しや改ざんで生じる。そのままだと永久に stale にならないため
+      // 不正として stale 扱いにする。
+      const age = this.now() - existing.heartbeat;
+      const isStale = age > this.staleMs || age < -FUTURE_TOLERANCE_MS;
       if (!isSelf && !isStale) {
         return { acquired: false, holder: existing };
       }

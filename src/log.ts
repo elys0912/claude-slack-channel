@@ -12,8 +12,9 @@ const LEVEL_ORDER: Record<LogLevel, number> = {
   error: 3,
 };
 
-// Slack のトークン（bot/user/app）と Bearer トークンをログから伏せる。
-const XOX_TOKEN_RE = /xox[abposr]-[\w-]+/g;
+// Slack のトークン（xox?- 系すべて、xapp-）と Bearer トークンをログから伏せる。
+// xox の後ろの 1 文字は種別（b/p/a/e など）で、将来増えても漏れないよう英小文字すべてを対象にする。
+const XOX_TOKEN_RE = /xox[a-z]-[\w-]+/g;
 const XAPP_TOKEN_RE = /xapp-[\w-]+/g;
 const BEARER_RE = /Bearer\s+\S+/g;
 
@@ -81,10 +82,6 @@ export class Logger {
 
   setName(name: string): void {
     this.name = name;
-  }
-
-  getName(): string {
-    return this.name;
   }
 
   debug(...a: unknown[]): void {
@@ -155,34 +152,24 @@ export class Logger {
   }
 }
 
-// @slack/logger の Logger インターフェース互換のアダプタ。
-// SocketModeClient / WebClient の logger オプションにそのまま渡せる形。
-// @slack/logger の LogLevel（文字列 enum）は値が 'debug' | 'info' | 'warn' | 'error' で
-// このモジュールの LogLevel と同じ。受け取りは既知の値へ正規化し、返す側だけ enum 型として扱う。
-function normalizeLevel(level: string): LogLevel {
-  switch (level.toLowerCase()) {
-    case 'debug':
-      return 'debug';
-    case 'warn':
-      return 'warn';
-    case 'error':
-      return 'error';
-    default:
-      return 'info';
-  }
-}
-
-export function toSlackLogger(l: Logger, name?: string): SlackLogger {
-  if (name !== undefined) {
-    l.setName(name);
-  }
+/**
+ * @slack/logger の Logger インターフェース互換のアダプタ。
+ * SocketModeClient / WebClient の logger オプションにそのまま渡せる形。
+ *
+ * Logger はプロセスで 1 つを共有しているので、SDK からの setName / setLevel は共有側に透過させない
+ * （WebClient はコンストラクタで setLevel(INFO) を呼ぶ）。代わりに行頭へ範囲名 `[scope]` を付ける。
+ * @slack/logger の LogLevel（文字列 enum）は値が 'debug' | 'info' | 'warn' | 'error' で
+ * このモジュールの LogLevel と同じなので、getLevel は enum 型として返す。
+ */
+export function toSlackLogger(l: Logger, scope: string): SlackLogger {
+  const tag = `[${scope}]`;
   return {
-    debug: (...m: unknown[]) => l.debug(...m),
-    info: (...m: unknown[]) => l.info(...m),
-    warn: (...m: unknown[]) => l.warn(...m),
-    error: (...m: unknown[]) => l.error(...m),
-    setLevel: (level: SlackLogLevel) => l.setLevel(normalizeLevel(level)),
+    debug: (...m: unknown[]) => l.debug(tag, ...m),
+    info: (...m: unknown[]) => l.info(tag, ...m),
+    warn: (...m: unknown[]) => l.warn(tag, ...m),
+    error: (...m: unknown[]) => l.error(tag, ...m),
+    setLevel: () => undefined,
     getLevel: (): SlackLogLevel => l.getLevel() as SlackLogLevel,
-    setName: (n: string) => l.setName(n),
+    setName: () => undefined,
   };
 }

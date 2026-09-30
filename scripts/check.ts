@@ -60,7 +60,8 @@ async function main(): Promise<void> {
   console.log(`bot user_id: ${auth.user_id ?? '(不明)'}`);
 
   if (access) {
-    if (auth.team_id && access.teamId !== auth.team_id) {
+    // ブリッジ本体（SlackBridge.init）と同じく team_id との完全一致を求める
+    if (access.teamId !== auth.team_id) {
       console.warn(
         `[check] 警告: access.json の teamId（${access.teamId}）と auth.test の team_id（${auth.team_id}）が一致しない`
       );

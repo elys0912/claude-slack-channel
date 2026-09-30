@@ -153,13 +153,81 @@ $projectDir = Resolve-ProjectDir
 # claude.ai の connectors は、このプロセスから起動する claude.exe でだけ無効にする
 $env:ENABLE_CLAUDEAI_MCP_SERVERS = 'false'
 
-$mcpConfig = Write-McpConfig -FileName 'mcp.json' -ServerName 'slackbridge' -ScriptPath $mainJs
+# Claude Code のセッション内（VS Code 拡張など）からこのスクリプトを実行すると、親セッションの
+# 目印の環境変数が引き継がれ、子セッション扱い（会話の保存なし）や MCP の非同期接続になって、
+# slackbridge の reply ツールが使えないことがある。独立したセッションとして起動するため消しておく
+@(
+    'CLAUDECODE', 'CLAUDE_PID', 'CLAUDE_AGENT_SDK_VERSION', 'MCP_CONNECTION_NONBLOCKING',
+    'CLAUDE_CODE_CHILD_SESSION', 'CLAUDE_CODE_ENTRYPOINT', 'CLAUDE_CODE_SESSION_ID',
+    'CLAUDE_CODE_SESSION_ATTENDED', 'CLAUDE_CODE_MESSAGING_SOCKET',
+    'CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING', 'CLAUDE_CODE_ENABLE_TASKS'
+) | ForEach-Object { Remove-Item -Path "Env:$_" -ErrorAction SilentlyContinue }
+
+# --strict-mcp-config で他の MCP サーバーは読み込まれないので、Slack セッションでも使うものは
+# config\extra-mcp.json（git 管理外。ひな形は extra-mcp.example.json）に書いて一緒に渡す。読めなければ警告だけ出す
+function Read-ExtraMcpServers {
+    $file = Join-Path $repoRoot 'config\extra-mcp.json'
+    $servers = @{}
+    if (-not (Test-Path -LiteralPath $file)) { return $servers }
+    try {
+        $parsed = Get-Content -LiteralPath $file -Raw -Encoding UTF8 | ConvertFrom-Json
+        foreach ($p in $parsed.mcpServers.PSObject.Properties) { $servers[$p.Name] = $p.Value }
+        if ($servers.Count -gt 0) { Write-Host "追加の MCP サーバー: $(($servers.Keys | Sort-Object) -join ', ')" }
+    } catch {
+        Write-Warning "config\extra-mcp.json を読めなかったので、追加の MCP サーバーは使わない: $($_.Exception.Message)"
+    }
+    return $servers
+}
+
+$extraServers = Read-ExtraMcpServers
+$mcpConfig = Write-McpConfig -FileName 'mcp.json' -ServerName 'slackbridge' -ScriptPath $mainJs -ExtraServers $extraServers
+
+# Slack の「今後も許可」で足したルール（状態ディレクトリの allow-extra.json）を読む。
+# ブリッジが deny と照合してから書き込んだものだけが入っている。読めなければ警告だけ出して使わない
+function Read-AllowExtra {
+    $allowExtra = Join-Path $stateDir 'allow-extra.json'
+    if (-not (Test-Path $allowExtra)) { return @() }
+    try {
+        $rules = @((Get-Content -LiteralPath $allowExtra -Raw -Encoding UTF8 | ConvertFrom-Json).allow |
+            Where-Object { $_ -is [string] -and $_ -ne '' })
+        if ($rules.Count -gt 0) { Write-Host "Slack から追加した許可ルール: $($rules.Count) 件（$allowExtra）" }
+        return $rules
+    } catch {
+        Write-Warning "allow-extra.json を読めなかったので、追加の許可ルールは使わない: $($_.Exception.Message)"
+        return @()
+    }
+}
+
+# 次の許可ルールを channel-settings.json の allow に足し、%TEMP% に書き出したものを --settings に渡す。
+# - extra-mcp.json に登録した MCP サーバーのツール全部（mcp__<サーバー名>）。使う人が承知して入れたものなので確認を挟まない
+# - Slack の「今後も許可」で足したルール
+# 足すものが無ければ channel-settings.json をそのまま渡す。deny は channel-settings.json のまま（allow より優先される）
+function Get-EffectiveSettings {
+    $extra = @(@($extraServers.Keys | Sort-Object | ForEach-Object { "mcp__$_" }) + @(Read-AllowExtra))
+    if ($extra.Count -eq 0) { return $settingsFile }
+    try {
+        $settings = Get-Content -LiteralPath $settingsFile -Raw -Encoding UTF8 | ConvertFrom-Json
+        $settings.permissions.allow = @(@($settings.permissions.allow) + $extra | Select-Object -Unique)
+
+        $merged = Join-Path $env:TEMP 'claude-slack-channel\channel-settings.merged.json'
+        New-Item -ItemType Directory -Path (Split-Path -Parent $merged) -Force | Out-Null
+        $json = $settings | ConvertTo-Json -Depth 10
+        [System.IO.File]::WriteAllText($merged, $json, [System.Text.UTF8Encoding]::new($false))
+        return $merged
+    } catch {
+        Write-Warning "許可ルールを足した設定を作れなかったので、channel-settings.json をそのまま使う: $($_.Exception.Message)"
+        return $settingsFile
+    }
+}
+$effectiveSettings = Get-EffectiveSettings
 
 # 各フラグの意味は README の「権限の設計」を参照
 $claudeArgs = @(
     '--mcp-config', $mcpConfig,
+    '--strict-mcp-config',
+    '--no-chrome',
     '--setting-sources', 'project,local',
-    '--settings', $settingsFile,
+    '--settings', $effectiveSettings,
     '--permission-mode', $PermissionMode,
     # 他のフラグより後ろ、最後に置く
     '--dangerously-load-development-channels', 'server:slackbridge'

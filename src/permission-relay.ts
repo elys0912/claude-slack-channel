@@ -1,10 +1,13 @@
 // 実行許可（permission）リレーの状態管理。
-// Claude からの permission_request を Slack の DM に配信し、Slack 側の回答（ボタン / yes・no 返信）を
+// Claude からの permission_request を、最後に話しかけられたスレッド（DM でもチャンネルでも）に返信として投稿し
+// （まだ話しかけられていない・返信に失敗したときは DM に配信し）、Slack 側の回答（ボタン / yes・no 返信）を
 // Claude へ返して、ボタン付きメッセージを結果表示に書き換える。
+// 回答が無いまま有効期限を過ぎたものは、Claude Code を待たせ続けないよう自動で deny を返す。
 import type { Logger } from './log.js';
 import type { Verdict } from './types.js';
 import {
   PendingPermissions,
+  buildAutoDeniedBlocks,
   buildExpiredBlocks,
   buildPermissionBlocks,
   buildResolvedBlocks,
@@ -23,6 +26,7 @@ export interface RelaySlack {
     blocks?: unknown[],
     threadFor?: (channel: string) => string | undefined
   ): Promise<MessageRef[]>;
+  postBlocks(channel: string, text: string, blocks: unknown[], threadTs?: string): Promise<{ ts: string }>;
   updateBlocks(channel: string, ts: string, text: string, blocks: unknown[]): Promise<void>;
 }
 
@@ -38,8 +42,15 @@ export class PermissionRelay {
   private readonly pending: PendingPermissions;
   /** request_id → ボタンを出したメッセージ（回答が決まったら結果表示に書き換える） */
   private readonly posted = new Map<string, MessageRef[]>();
-  /** DM チャンネル → 最後にメッセージを受け取ったスレッド（確認はそのスレッドに出す） */
+  /** チャンネル → 最後にメッセージを受け取ったスレッド（DM に配信するときはそのスレッドに出す） */
   private readonly activeThread = new Map<string, string>();
+  /** 最後にメッセージを受け取ったスレッド。permission request はまずここに返信する */
+  private lastThread: { channel: string; threadTs: string } | undefined;
+  /**
+   * request_id → 期限切れで自動 deny するタイマー。ここにある ID はまだ Claude に回答を送っていない。
+   * 回答を送ったら消す（期限切れのあとに押されたボタンなど、送らなかった回答では消さない）。
+   */
+  private readonly expiryTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   constructor(slack: RelaySlack, claude: RelayClaude, logger: Logger, pending = new PendingPermissions()) {
     this.slack = slack;
@@ -48,9 +59,10 @@ export class PermissionRelay {
     this.pending = pending;
   }
 
-  /** 会話中のスレッドを覚えておく。次の permission request はそこに投稿される */
+  /** 会話中のスレッドを覚えておく。次の permission request はそこに返信される */
   rememberThread(channel: string, threadTs: string): void {
     this.activeThread.set(channel, threadTs);
+    this.lastThread = { channel, threadTs };
   }
 
   /** 期限内の保留中リクエストを返す（See more ボタン用） */
@@ -58,33 +70,73 @@ export class PermissionRelay {
     return this.pending.get(requestId);
   }
 
-  /** Claude からの permission_request を、許可ユーザー全員の DM にボタン付きで配信する */
+  /**
+   * Claude からの permission_request を、最後に話しかけられたスレッドにボタン付きで返信する。
+   * まだ話しかけられていない・返信に失敗したときは、許可ユーザー全員の DM に配信する。
+   * 1 件も届かなかった（全チャンネルで失敗・DM チャンネルが無い）ときは、誰も答えられないので
+   * その場で Claude に deny を返す。投げない。
+   */
   async request(req: PermissionRequest): Promise<void> {
     this.pending.prune();
     this.pending.add(req);
+    this.startExpiryTimer(req.request_id);
 
     const { text, blocks } = buildPermissionBlocks(req);
-    const results = await this.slack.postToAll(text, blocks, (channel) => this.activeThread.get(channel));
-    this.posted.set(req.request_id, results.filter((r) => r.ts !== ''));
-    this.logger.info(`permission_request を配信 id=${req.request_id} tool=${req.tool_name} 宛先=${results.length}`);
+    const target = this.lastThread;
+    if (target) {
+      try {
+        const res = await this.slack.postBlocks(target.channel, text, blocks, target.threadTs);
+        if (res.ts !== '') {
+          this.posted.set(req.request_id, [{ channel: target.channel, ts: res.ts }]);
+          this.logger.info(
+            `permission_request をスレッドに返信 id=${req.request_id} tool=${req.tool_name} channel=${target.channel}`
+          );
+          return;
+        }
+      } catch (e) {
+        this.logger.warn(`permission_request のスレッド返信に失敗、DM に配信する channel=${target.channel}`, e);
+      }
+    }
+
+    let results: MessageRef[] = [];
+    try {
+      results = await this.slack.postToAll(text, blocks, (channel) => this.activeThread.get(channel));
+    } catch (e) {
+      this.logger.error(`permission_request の配信で例外 id=${req.request_id}`, e);
+    }
+    const delivered = results.filter((r) => r.ts !== '');
+    this.posted.set(req.request_id, delivered);
+
+    if (delivered.length === 0) {
+      this.logger.error(`permission_request をどの DM にも配信できなかった id=${req.request_id} 宛先=${results.length}`);
+      await this.autoDeny(req.request_id, '配信失敗');
+      return;
+    }
+    this.logger.info(
+      `permission_request を配信 id=${req.request_id} tool=${req.tool_name} 成功=${delivered.length}/${results.length}`
+    );
   }
 
   /**
-   * `yes xxxxx` / `no xxxxx` の返信による回答。
-   * 手元に記録が無い ID でも Claude 側はまだ待っている可能性があるので、判定はそのまま送る。
+   * `yes xxxxx` / `no xxxxx` の返信による回答。手元に記録が無い（期限切れ・未知の）ID は Claude に送らない。
+   * 送ったら true を返す。
    */
-  async answerByText(verdict: Verdict, byUserId: string): Promise<void> {
+  async answerByText(verdict: Verdict, byUserId: string): Promise<boolean> {
     const req = this.pending.take(verdict.requestId);
+    if (!req) {
+      this.logger.warn(`記録の無い permission id=${verdict.requestId} への返信は送らない`);
+      return false;
+    }
+    this.clearExpiryTimer(verdict.requestId);
     await this.claude.sendVerdict(verdict);
-    this.logger.info(
-      `verdict を送信 id=${verdict.requestId} behavior=${verdict.behavior} known=${req !== undefined}`
-    );
-    if (req) await this.markResolved(req, verdict.behavior, byUserId);
+    this.logger.info(`verdict を送信 id=${verdict.requestId} behavior=${verdict.behavior}`);
+    await this.markResolved(req, verdict.behavior, byUserId);
+    return true;
   }
 
   /**
    * Allow / Deny ボタンによる回答。期限切れのボタンは Claude に送らず、
-   * 押されたメッセージを「期限切れ」表示に書き換える。
+   * 押されたメッセージを「期限切れ」表示に書き換える（Claude への deny は期限切れのタイマーが送る）。
    */
   async answerByButton(verdict: Verdict, byUserId: string, pressed: MessageRef | undefined): Promise<void> {
     const req = this.pending.take(verdict.requestId);
@@ -94,9 +146,63 @@ export class PermissionRelay {
       return;
     }
 
+    this.clearExpiryTimer(verdict.requestId);
     await this.claude.sendVerdict(verdict);
     this.logger.info(`verdict を送信（ボタン） id=${verdict.requestId} behavior=${verdict.behavior}`);
     await this.markResolved(req, verdict.behavior, byUserId);
+  }
+
+  /**
+   * まだ回答を送っていない全リクエストに deny を返し、配信済みのメッセージを自動拒否の表示に書き換える（終了時用）。
+   * 1 件ずつベストエフォートで、失敗はログに残して続ける。投げない。
+   */
+  async denyAll(reason: string): Promise<void> {
+    for (const requestId of [...this.expiryTimers.keys()]) {
+      await this.autoDeny(requestId, reason);
+    }
+  }
+
+  private startExpiryTimer(requestId: string): void {
+    this.clearExpiryTimer(requestId);
+    const timer = setTimeout(() => {
+      void this.autoDeny(requestId, '期限切れ');
+    }, this.pending.ttl);
+    timer.unref?.();
+    this.expiryTimers.set(requestId, timer);
+  }
+
+  private clearExpiryTimer(requestId: string): void {
+    const timer = this.expiryTimers.get(requestId);
+    if (timer !== undefined) clearTimeout(timer);
+    this.expiryTimers.delete(requestId);
+  }
+
+  /**
+   * まだ回答を送っていないリクエストに、Claude へ deny を送って保留から消し、配信済みのメッセージを
+   * 自動拒否の表示に書き換える。回答済みなら何もしない（二重に送らない）。失敗しても投げない。
+   */
+  private async autoDeny(requestId: string, reason: string): Promise<void> {
+    if (!this.expiryTimers.has(requestId)) return;
+    this.clearExpiryTimer(requestId);
+    this.pending.remove(requestId);
+    const targets = this.posted.get(requestId) ?? [];
+    this.posted.delete(requestId);
+
+    try {
+      await this.claude.sendVerdict({ requestId, behavior: 'deny' });
+      this.logger.info(`${reason}のため deny を送信 id=${requestId}`);
+    } catch (e) {
+      this.logger.error(`自動 deny の送信に失敗 id=${requestId}`, e);
+    }
+
+    const { text, blocks } = buildAutoDeniedBlocks(requestId, reason);
+    for (const t of targets) {
+      try {
+        await this.slack.updateBlocks(t.channel, t.ts, text, blocks);
+      } catch (e) {
+        this.logger.warn(`自動拒否の表示への書き換えに失敗 channel=${t.channel}`, e);
+      }
+    }
   }
 
   /** 配信済みのボタン付きメッセージを、すべて「Allowed / Denied」表示に書き換える */
