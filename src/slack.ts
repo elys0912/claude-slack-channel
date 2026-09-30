@@ -197,7 +197,6 @@ export class SlackBridge {
   private socketClient: SocketClientLike | undefined;
   private readonly dedupe = new EventDedupe();
   private readonly dmChannels = new Map<string, string>();
-  private readonly dmChannelIds = new Set<string>();
   /** 送信やボタン操作を受け付けるチャンネル（許可ユーザーの DM + access.channels） */
   private readonly allowedChannelIds = new Set<string>();
   /** access.channels のチャンネルで、ボットが関わっているスレッド（`channel:threadTs`）。古いものから忘れる */
@@ -244,8 +243,9 @@ export class SlackBridge {
     return this.socketClient;
   }
 
+  /** 送信先として分かっている許可ユーザーの DM チャンネル（access.channels は含まない） */
   get allowedDmChannels(): ReadonlySet<string> {
-    return this.dmChannelIds;
+    return new Set(this.dmChannels.values());
   }
 
   // --- 初期化 ---------------------------------------------------------------
@@ -279,7 +279,6 @@ export class SlackBridge {
           continue;
         }
         this.dmChannels.set(userId, channelId);
-        this.dmChannelIds.add(channelId);
         this.allowedChannelIds.add(channelId);
       } catch (e) {
         this.logger.error(`conversations.open に失敗 user=${userId}`, e);
@@ -447,7 +446,6 @@ export class SlackBridge {
     if (!user || !channel || this.dmChannels.has(user)) return;
     if (!this.access.allowFrom.includes(user)) return;
     this.dmChannels.set(user, channel);
-    this.dmChannelIds.add(channel);
     this.allowedChannelIds.add(channel);
     this.logger.info(`受信した DM から送信先を追加 user=${user} channel=${channel}`);
   }

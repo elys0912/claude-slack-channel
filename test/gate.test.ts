@@ -449,7 +449,7 @@ describe('gate の現状固定', () => {
     expect(result.kind).toBe('deliver');
   });
 
-  it('判定順: team → user_team → im → bot → subtype → allowFrom → dedupe の順で最初に当たった理由になる', () => {
+  it('判定順: team → user_team → チャンネル種別 → bot → subtype → allowFrom → メンション/スレッド → dedupe の順で最初に当たった理由になる', () => {
     const dedupe = new EventDedupe();
     // teamId 不一致かつ許可外ユーザー → team_mismatch が先
     expect(gate(baseMsg({ teamId: 'TX', user: 'U999' }), access, selfBotUserId, dedupe)).toEqual({
@@ -469,6 +469,19 @@ describe('gate の現状固定', () => {
     expect(gate(baseMsg({ subtype: 'bot_message', user: 'U999' }), access, selfBotUserId, dedupe)).toEqual({
       kind: 'drop',
       reason: 'unsupported_subtype',
+    });
+    const withChannels = { ...access, channels: ['C1'] };
+    const inChannel = { channelType: 'channel', channel: 'C1' };
+    // 許可外ユーザーかつメンション無し → user_not_allowed が先
+    expect(gate(baseMsg({ ...inChannel, user: 'U999' }), withChannels, selfBotUserId, dedupe)).toEqual({
+      kind: 'drop',
+      reason: 'user_not_allowed',
+    });
+    // メンション無しかつ既出の event_id → not_addressed が先（dedupe には記録しない）
+    dedupe.seen('E-dup');
+    expect(gate(baseMsg({ ...inChannel, eventId: 'E-dup' }), withChannels, selfBotUserId, dedupe)).toEqual({
+      kind: 'drop',
+      reason: 'not_addressed',
     });
   });
 
