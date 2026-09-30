@@ -36,7 +36,6 @@ export interface SlackWebApiLike {
     test(args?: Record<string, unknown>): Promise<{
       ok?: boolean;
       team_id?: string;
-      enterprise_id?: string;
       user_id?: string;
       bot_id?: string;
     }>;
@@ -237,8 +236,7 @@ export class SlackBridge {
   async init(): Promise<SlackInitResult> {
     const auth = await this.web.auth.test();
     const teamId = auth.team_id ?? '';
-    const enterpriseId = auth.enterprise_id ?? '';
-    if (teamId !== this.access.teamId && enterpriseId !== this.access.teamId) {
+    if (teamId !== this.access.teamId) {
       throw new Error(
         `auth.test の team_id が access.json と一致しない（設定=${this.access.teamId}）`
       );
@@ -268,7 +266,7 @@ export class SlackBridge {
       throw new Error('許可ユーザーの DM チャンネルを 1 件も開けなかった');
     }
 
-    return { botUserId, teamId: teamId || enterpriseId, dmChannelCount: this.dmChannels.size };
+    return { botUserId, teamId, dmChannelCount: this.dmChannels.size };
   }
 
   // --- 起動・停止 -----------------------------------------------------------
