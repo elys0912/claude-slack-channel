@@ -54,6 +54,29 @@ describe('parseDotenv', () => {
     expect(parseDotenv('FOO=a=b=c')).toEqual({ FOO: 'a=b=c' });
   });
 
+  it('引用符の無い値の後ろの " # ..." は行末コメントとして捨てる', () => {
+    expect(parseDotenv('FOO=bar # comment\nBAZ=qux\t# tab')).toEqual({ FOO: 'bar', BAZ: 'qux' });
+  });
+
+  it('値が空で行末コメントだけなら空値にする', () => {
+    expect(parseDotenv('FOO= # comment')).toEqual({ FOO: '' });
+  });
+
+  it('空白の無い # は値の一部として残す', () => {
+    expect(parseDotenv('FOO=a#b')).toEqual({ FOO: 'a#b' });
+  });
+
+  it('引用符の中の # は残し、閉じ引用符の後ろのコメントは捨てる', () => {
+    expect(parseDotenv('FOO="a # b" # comment\nBAZ=\'c # d\'')).toEqual({
+      FOO: 'a # b',
+      BAZ: 'c # d',
+    });
+  });
+
+  it('途中に同じ引用符を含む値は両端の引用符だけを剥がす', () => {
+    expect(parseDotenv('FOO="a"b"')).toEqual({ FOO: 'a"b' });
+  });
+
   it('展開や複数行はしない', () => {
     expect(parseDotenv('FOO=$BAR\nBAR=baz')).toEqual({ FOO: '$BAR', BAR: 'baz' });
   });
