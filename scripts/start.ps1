@@ -10,12 +10,18 @@
 #   scripts\start.cmd my-app -PermissionMode auto
 #                                        # 実行許可のモードを変える（既定は default = 都度確認）
 #   scripts\start.cmd -DryRun            # 実行せずコマンドラインだけ表示
+#   scripts\start.cmd C:\path\to\app -StateDir %USERPROFILE%\.claude\channels\slack-app2 -SettingsFile config\channel-settings.relaxed.json
+#                                        # 別の Slack アプリ（状態ディレクトリ）と設定で、もう1つセッションを起動する
 
 param(
     [Parameter(Position = 0)]
     [string]$Project,
     [ValidateSet('default', 'auto', 'acceptEdits', 'plan')]
     [string]$PermissionMode = 'default',
+    # 状態ディレクトリ（.env / access.json の場所）。省略時は SLACK_CHANNEL_STATE_DIR、それも無ければ既定の場所
+    [string]$StateDir,
+    # channel セッションの設定ファイル。省略時は config\channel-settings.json。相対パスはリポジトリ基準
+    [string]$SettingsFile,
     [switch]$DryRun
 )
 
@@ -25,12 +31,27 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $mainJs = Join-Path $repoRoot 'dist\src\main.js'
 $projectList = Join-Path $repoRoot 'config\projects.json'
-$settingsFile = Join-Path $repoRoot 'config\channel-settings.json'
-$stateDir = if ($env:SLACK_CHANNEL_STATE_DIR) {
+$settingsFile = if (-not $SettingsFile) {
+    Join-Path $repoRoot 'config\channel-settings.json'
+} elseif ([System.IO.Path]::IsPathRooted($SettingsFile)) {
+    $SettingsFile
+} else {
+    Join-Path $repoRoot $SettingsFile
+}
+if (-not (Test-Path -LiteralPath $settingsFile)) {
+    Write-Error "設定ファイルが見つからない: $settingsFile"
+    exit 1
+}
+$stateDir = if ($StateDir) {
+    [System.IO.Path]::GetFullPath($StateDir)
+} elseif ($env:SLACK_CHANNEL_STATE_DIR) {
     $env:SLACK_CHANNEL_STATE_DIR
 } else {
     Join-Path $env:USERPROFILE '.claude\channels\slack'
 }
+# 一時ファイル（mcp.json・合成した設定）は状態ディレクトリごとに分ける。複数のセッションを並べても上書きし合わず、
+# claude.exe のコマンドラインのパスでどのセッションか見分けられる（例: %TEMP%\claude-slack-channel\slack\mcp.json）
+$sessionName = Split-Path -Leaf $stateDir
 
 # --- 起動前の確認 -------------------------------------------------------------
 
@@ -180,7 +201,9 @@ function Read-ExtraMcpServers {
 }
 
 $extraServers = Read-ExtraMcpServers
-$mcpConfig = Write-McpConfig -FileName 'mcp.json' -ServerName 'slackbridge' -ScriptPath $mainJs -ExtraServers $extraServers
+# ブリッジには状態ディレクトリを環境変数で明示して渡す（claude.exe の環境の引き継ぎに頼らない）
+$mcpConfig = Write-McpConfig -FileName "$sessionName\mcp.json" -ServerName 'slackbridge' -ScriptPath $mainJs `
+    -ExtraServers $extraServers -Env @{ SLACK_CHANNEL_STATE_DIR = $stateDir }
 
 # Slack の「今後も許可」で足したルール（状態ディレクトリの allow-extra.json）を読む。
 # ブリッジが deny と照合してから書き込んだものだけが入っている。読めなければ警告だけ出して使わない
@@ -209,13 +232,13 @@ function Get-EffectiveSettings {
         $settings = Get-Content -LiteralPath $settingsFile -Raw -Encoding UTF8 | ConvertFrom-Json
         $settings.permissions.allow = @(@($settings.permissions.allow) + $extra | Select-Object -Unique)
 
-        $merged = Join-Path $env:TEMP 'claude-slack-channel\channel-settings.merged.json'
+        $merged = Join-Path $env:TEMP "claude-slack-channel\$sessionName\channel-settings.merged.json"
         New-Item -ItemType Directory -Path (Split-Path -Parent $merged) -Force | Out-Null
         $json = $settings | ConvertTo-Json -Depth 10
         [System.IO.File]::WriteAllText($merged, $json, [System.Text.UTF8Encoding]::new($false))
         return $merged
     } catch {
-        Write-Warning "許可ルールを足した設定を作れなかったので、channel-settings.json をそのまま使う: $($_.Exception.Message)"
+        Write-Warning "許可ルールを足した設定を作れなかったので、$settingsFile をそのまま使う: $($_.Exception.Message)"
         return $settingsFile
     }
 }
