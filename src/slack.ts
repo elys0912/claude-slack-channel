@@ -1,5 +1,5 @@
 // Slack との接続（Socket Mode の受信 + Web API の送信）をまとめる。
-// MCP のことは知らない。MCP との結合は main.ts の役目。
+// MCP のことは知らない。MCP との結合は app.ts の役目。
 import { WebClient } from '@slack/web-api';
 import { SocketModeClient } from '@slack/socket-mode';
 import type { ParsedAccess } from './config.js';
@@ -242,6 +242,12 @@ export class SlackBridge {
 
   // --- 初期化 ---------------------------------------------------------------
 
+  /**
+   * 接続前の確認。auth.test の team_id が access.teamId と一致するかを確かめ、bot の user ID を覚える。
+   * 続けて allowFrom の各ユーザーと conversations.open で DM を開き、送信先として登録する
+   * （開けなかったユーザーはログに残して飛ばし、後で DM を受信した時点で登録する）。
+   * team_id の不一致、user_id が返らない、DM を 1 件も開けないときは投げる。
+   */
   async init(): Promise<SlackInitResult> {
     const auth = await this.web.auth.test();
     const teamId = auth.team_id ?? '';
@@ -448,6 +454,9 @@ export class SlackBridge {
   }
 
   /**
+   * テキストを送る。許可ユーザーの DM 以外には送らない（投げる）。一斉メンションは無効化し、空なら何も送らない。
+   * まず markdown_text で 11000 文字ごとに送り、markdown_text が拒否されたら（isMarkdownRejection）
+   * そのチャンク以降は text（& < > をエスケープ、3900 文字ごと）に切り替える。それ以外のエラーはそのまま投げる。
    * 長文は分割して順に送る。途中のチャンクで失敗した場合、1 通以上送れていれば
    * 例外のメッセージに `sent=N`（送れた件数）を付けて投げる（Claude が再送の範囲を判断できるように）。
    */
