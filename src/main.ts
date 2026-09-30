@@ -2,7 +2,7 @@
 import './stdio-guard.js';
 
 import path from 'node:path';
-import { loadAccess, loadTokens, stateDir } from './config.js';
+import { loadAccess, loadHomeCustom, loadTokens, stateDir } from './config.js';
 import type { ParsedAccess, Tokens } from './config.js';
 import { errMessage } from './errors.js';
 import { Logger } from './log.js';
@@ -93,7 +93,20 @@ async function main(dir: string, logger: Logger): Promise<void> {
     onCleanupReady: (stop) => installShutdown(logger, stop),
     replyTimeoutMs: replyTimeoutMs(),
     console: consoleAccess(logger),
-    home: { users: access.allowFrom, workDir: process.cwd(), channelCount: access.channels?.length ?? 0, botUserId },
+    home: {
+      users: access.allowFrom,
+      workDir: process.cwd(),
+      channelCount: access.channels?.length ?? 0,
+      botUserId,
+      loadCustom: () => {
+        try {
+          return loadHomeCustom(dir);
+        } catch (e) {
+          logger.warn('home.json を読めなかったので既定の文面にする', errMessage(e));
+          return undefined;
+        }
+      },
+    },
     allowExtraFile: path.join(dir, 'allow-extra.json'),
     // 起動スクリプトは作業フォルダーで claude.exe を起動し、MCP サーバーも同じ作業フォルダーで動く。
     // channel セッションの設定ファイルは -SettingsFile で替えられるので、起動スクリプトが渡した場所を優先する

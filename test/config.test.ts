@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { loadAccess, loadTokens, parseDotenv, stateDir } from '../src/config.js';
+import { loadAccess, loadHomeCustom, loadTokens, parseDotenv, stateDir } from '../src/config.js';
 
 describe('stateDir', () => {
   it('環境変数があればそれを使う', () => {
@@ -238,5 +238,33 @@ describe('loadAccess', () => {
   it('JSON の構文エラーなら拒否する', () => {
     fs.writeFileSync(path.join(dir, 'access.json'), '{ not valid json');
     expect(() => loadAccess(dir)).toThrow();
+  });
+});
+
+describe('loadHomeCustom', () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-custom-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('無ければ undefined', () => {
+    expect(loadHomeCustom(dir)).toBeUndefined();
+  });
+
+  it('BOM 付きでも読める', () => {
+    fs.writeFileSync(path.join(dir, 'home.json'), '﻿' + JSON.stringify({ greetings: ['やっほー'] }));
+    expect(loadHomeCustom(dir)).toEqual({ greetings: ['やっほー'] });
+  });
+
+  it('未知のキー・壊れた JSON は投げる', () => {
+    fs.writeFileSync(path.join(dir, 'home.json'), JSON.stringify({ greeting: 'typo' }));
+    expect(() => loadHomeCustom(dir)).toThrow(/home.json の検証に失敗/);
+    fs.writeFileSync(path.join(dir, 'home.json'), '{ broken');
+    expect(() => loadHomeCustom(dir)).toThrow();
   });
 });
