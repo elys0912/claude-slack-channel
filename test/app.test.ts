@@ -17,6 +17,7 @@ import {
   startDegradedApp,
 } from '../src/app.js';
 import { ChannelServer } from '../src/mcp.js';
+import { PermissionRelay } from '../src/permission-relay.js';
 import { ACCESS, DM1, DM2, flush, makeSocket, makeWeb, platformError } from './helpers/fake-slack.js';
 import type { FakeSocket, FakeWeb } from './helpers/fake-slack.js';
 
@@ -491,18 +492,42 @@ describe('停止', () => {
     });
   }
 
-  it('stop は lock.release → bridge.stop → server.close の順で、2 回呼んでも 1 回だけ片付ける', async () => {
+  it('stop は lock.release → relay.denyAll → bridge.stop → server.close の順で、2 回呼んでも 1 回だけ片付ける', async () => {
     const order: string[] = [];
     recordServerClose(order);
     const h = await startHarness();
+    const originalDenyAll = PermissionRelay.prototype.denyAll;
+    vi.spyOn(PermissionRelay.prototype, 'denyAll').mockImplementation(async function (this: PermissionRelay, reason) {
+      h.order.push('relay.denyAll');
+      return originalDenyAll.call(this, reason);
+    });
     await h.client.close();
     order.length = 0;
     h.order.length = 0;
     await h.stop();
     await h.stop();
-    expect([...h.order, ...order]).toEqual(['lock.release', 'bridge.stop', 'server.close']);
+    expect([...h.order, ...order]).toEqual(['lock.release', 'relay.denyAll', 'bridge.stop', 'server.close']);
     expect(h.socket.disconnected).toBe(1);
     expect(h.lockReleased).toBe(1);
+  });
+
+  it('stop は保留中の permission request に deny を返し、Slack のメッセージを書き換えてから切断する', async () => {
+    const h = await startHarness();
+    await sendPermissionRequest(h.client);
+    h.web.calls.length = 0;
+
+    await h.stop();
+    await flush();
+
+    const verdicts = h.notifications.filter((x) => x.method === 'notifications/claude/channel/permission');
+    expect(verdicts.map((v) => v.params)).toEqual([{ request_id: 'abcde', behavior: 'deny' }]);
+    const updates = h.web.calls.filter((c) => c.method === 'chat.update');
+    expect(updates.map((u) => [u.args.channel, u.args.ts])).toEqual([
+      [DM1, '100.1'],
+      [DM2, '100.2'],
+    ]);
+    expect(String(updates[0]?.args.text)).toContain('自動で拒否した');
+    await h.client.close();
   });
 
   it('Socket Mode の開始に失敗したら、後片付けしてから投げる。後片付けの関数は start より前に渡される', async () => {
