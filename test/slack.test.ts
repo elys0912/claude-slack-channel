@@ -63,7 +63,7 @@ describe('SlackBridge.init', () => {
     const res = await bridge.init();
     expect(res.botUserId).toBe(BOT);
     expect(res.teamId).toBe('T123ABC');
-    expect(res.dmChannels.get('U111AAA')).toBe(DM1);
+    expect(res.dmChannelCount).toBe(2);
     expect(bridge.allowedDmChannels.has(DM2)).toBe(true);
     expect(web.calls[0]?.method).toBe('auth.test');
   });
@@ -336,7 +336,7 @@ describe('SlackBridge の受信', () => {
 
     expect(order).toEqual(['ack', 'handler']);
     expect(seen[0]).toEqual({ ok: true, kind: 'verdict', verdict: { requestId: 'abcde', behavior: 'allow' } });
-    expect(ctxs[0]).toEqual({ userId: 'U111AAA', channelId: DM1, messageTs: '55.5', value: 'abcde' });
+    expect(ctxs[0]).toEqual({ userId: 'U111AAA', channelId: DM1, messageTs: '55.5' });
   });
 
   it('許可外チャンネルの block_actions は ok:false になる', async () => {
@@ -460,7 +460,7 @@ describe('toBlockActionInput', () => {
       actionId: 'perm_allow',
       value: 'abcde',
     });
-    expect(ctx).toEqual({ userId: 'U111AAA', channelId: DM1, messageTs: '55.5', value: 'abcde' });
+    expect(ctx).toEqual({ userId: 'U111AAA', channelId: DM1, messageTs: '55.5' });
   });
 
   it('container.message_ts が無ければ message.ts を使う', () => {
@@ -490,7 +490,7 @@ describe('toBlockActionInput', () => {
       actionId: undefined,
       value: undefined,
     });
-    expect(ctx).toEqual({ userId: undefined, channelId: undefined, messageTs: undefined, value: undefined });
+    expect(ctx).toEqual({ userId: undefined, channelId: undefined, messageTs: undefined });
   });
 });
 
@@ -605,7 +605,7 @@ describe('SlackBridge の受信（現状固定）', () => {
     });
     await flush();
     expect(seen[0]).toEqual({ ok: false, reason: 'invalid_request_id' });
-    expect(ctxs[0]).toEqual({ userId: 'U111AAA', channelId: DM1, messageTs: undefined, value: undefined });
+    expect(ctxs[0]).toEqual({ userId: 'U111AAA', channelId: DM1, messageTs: undefined });
   });
 
   it('body が空でも onAction は呼ばれる（not_block_actions）', async () => {
@@ -613,7 +613,7 @@ describe('SlackBridge の受信（現状固定）', () => {
     socket.emit('interactive', { type: 'interactive', body: {}, ack: async () => undefined });
     await flush();
     expect(seen[0]).toEqual({ ok: false, reason: 'not_block_actions' });
-    expect(ctxs[0]).toEqual({ userId: undefined, channelId: undefined, messageTs: undefined, value: undefined });
+    expect(ctxs[0]).toEqual({ userId: undefined, channelId: undefined, messageTs: undefined });
   });
 
   it('ack が例外を投げても処理は続く（warn に記録）', async () => {
@@ -748,7 +748,7 @@ describe('SlackBridge の送信（現状固定）', () => {
     web.conversations.open = async (args) =>
       args.users === 'U111AAA' ? { ok: true } : { ok: true, channel: { id: DM2 } };
     const res = await bridge.init();
-    expect(res.dmChannels.size).toBe(1);
+    expect(res.dmChannelCount).toBe(1);
     expect(bridge.allowedDmChannels.has(DM1)).toBe(false);
     expect(warnSpy).toHaveBeenCalledTimes(1);
   });

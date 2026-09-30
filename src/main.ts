@@ -70,7 +70,7 @@ async function main(dir: string, logger: Logger): Promise<void> {
   const bridge = new SlackBridge({ botToken: tokens.botToken, appToken: tokens.appToken, access, logger });
   try {
     const init = await bridge.init();
-    logger.info(`Slack 接続確認 OK bot=${init.botUserId} team=${init.teamId} dm=${init.dmChannels.size}件`);
+    logger.info(`Slack 接続確認 OK bot=${init.botUserId} team=${init.teamId} dm=${init.dmChannelCount}件`);
   } catch (e) {
     return abort(logger, 'Slack への接続確認に失敗', e, async () => {
       await bridge.stop();
