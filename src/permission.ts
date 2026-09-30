@@ -37,6 +37,11 @@ export class PendingPermissions {
     this.store = new Map();
   }
 
+  /** 有効期限（ミリ秒） */
+  get ttl(): number {
+    return this.ttlMs;
+  }
+
   add(req: PermissionRequest): void {
     this.store.set(req.request_id, { req, expiresAt: this.now() + this.ttlMs });
   }
@@ -59,6 +64,13 @@ export class PendingPermissions {
     this.store.delete(id);
     if (this.now() > entry.expiresAt) return undefined;
     return entry.req;
+  }
+
+  /** 期限に関係なく取り出して消す（自動 deny 用） */
+  remove(id: string): PermissionRequest | undefined {
+    const entry = this.store.get(id);
+    this.store.delete(id);
+    return entry?.req;
   }
 
   prune(): void {
@@ -275,6 +287,15 @@ export function buildExpiredBlocks(requestId: string): { text: string; blocks: u
   return {
     text: neutralizeBroadcasts(`⌛ Permission request ${requestId} expired`),
     blocks
+  };
+}
+
+/** 回答が無いまま自動で deny したときの表示。reason は「期限切れ」のような固定の文言（「〜のため自動で拒否した」に続く） */
+export function buildAutoDeniedBlocks(requestId: string, reason: string): { text: string; blocks: unknown[] } {
+  const text = neutralizeBroadcasts(`⌛ Permission request ${requestId}: ${reason}のため自動で拒否した`);
+  return {
+    text,
+    blocks: [{ type: 'section', text: { type: 'plain_text', text } }],
   };
 }
 

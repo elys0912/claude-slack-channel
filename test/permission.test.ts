@@ -7,6 +7,7 @@ import {
   buildPermissionBlocks,
   buildResolvedBlocks,
   buildExpiredBlocks,
+  buildAutoDeniedBlocks,
   parseBlockAction,
   type PermissionRequest
 } from '../src/permission.js';
@@ -270,6 +271,27 @@ describe('buildExpiredBlocks', () => {
     const { text } = buildExpiredBlocks('abcde');
     expect(text).toContain('abcde');
     expect(text).toContain('expired');
+  });
+});
+
+describe('buildAutoDeniedBlocks', () => {
+  it('ID と自動で拒否した理由を plain_text で出す', () => {
+    const { text, blocks } = buildAutoDeniedBlocks('abcde', '期限切れ');
+    expect(text).toContain('abcde');
+    expect(text).toContain('期限切れのため自動で拒否した');
+    expect(blocks).toEqual([{ type: 'section', text: { type: 'plain_text', text } }]);
+  });
+});
+
+describe('PendingPermissions.remove', () => {
+  it('期限に関係なく取り出して消す', () => {
+    let now = 1000;
+    const pending = new PendingPermissions(1000, () => now);
+    pending.add(sampleReq);
+    now = 5000;
+    expect(pending.remove('abcde')).toEqual(sampleReq);
+    expect(pending.remove('abcde')).toBeUndefined();
+    expect(pending.ttl).toBe(1000);
   });
 });
 
