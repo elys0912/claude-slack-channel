@@ -283,7 +283,7 @@ export interface BridgeAppOptions {
    * アプリのホームタブに状態を出す。起動時に users 全員のホームを「稼働中」にし、終了時に「停止中」へ書き換え、
    * ホームが開かれたら最新の状態で出し直す。省略時はホームを更新しない
    */
-  home?: { users: string[]; workDir: string; channelCount: number } | undefined;
+  home?: { users: string[]; workDir: string; channelCount: number; botUserId?: string | undefined } | undefined;
 }
 
 /**
@@ -336,6 +336,7 @@ export async function startBridgeApp(opts: BridgeAppOptions): Promise<RunningApp
       since,
       workDir: opts.home?.workDir ?? '',
       channelCount: opts.home?.channelCount ?? 0,
+      botUserId: opts.home?.botUserId,
       ruleCount: ruleStore?.list().length,
       replyTimeoutMin: Math.round((opts.replyTimeoutMs ?? 0) / 60000),
       now: new Date(),

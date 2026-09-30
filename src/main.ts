@@ -73,8 +73,10 @@ async function main(dir: string, logger: Logger): Promise<void> {
   }
 
   const bridge = new SlackBridge({ botToken: tokens.botToken, appToken: tokens.appToken, access, logger });
+  let botUserId: string;
   try {
     const init = await bridge.init();
+    botUserId = init.botUserId;
     logger.info(`Slack 接続確認 OK bot=${init.botUserId} team=${init.teamId} dm=${init.dmChannelCount}件`);
   } catch (e) {
     return abort(logger, 'Slack への接続確認に失敗', e, async () => {
@@ -91,11 +93,12 @@ async function main(dir: string, logger: Logger): Promise<void> {
     onCleanupReady: (stop) => installShutdown(logger, stop),
     replyTimeoutMs: replyTimeoutMs(),
     console: consoleAccess(logger),
-    home: { users: access.allowFrom, workDir: process.cwd(), channelCount: access.channels?.length ?? 0 },
+    home: { users: access.allowFrom, workDir: process.cwd(), channelCount: access.channels?.length ?? 0, botUserId },
     allowExtraFile: path.join(dir, 'allow-extra.json'),
-    // 起動スクリプトは作業フォルダーで claude.exe を起動し、MCP サーバーも同じ作業フォルダーで動く
+    // 起動スクリプトは作業フォルダーで claude.exe を起動し、MCP サーバーも同じ作業フォルダーで動く。
+    // channel セッションの設定ファイルは -SettingsFile で替えられるので、起動スクリプトが渡した場所を優先する
     denyFiles: [
-      path.join(repoRoot, 'config', 'channel-settings.json'),
+      process.env.SLACK_CHANNEL_SETTINGS_FILE ?? path.join(repoRoot, 'config', 'channel-settings.json'),
       path.join(process.cwd(), '.claude', 'settings.json'),
       path.join(process.cwd(), '.claude', 'settings.local.json'),
     ],
