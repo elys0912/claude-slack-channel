@@ -17,6 +17,8 @@ export interface InstanceLockOptions {
 
 const DEFAULT_STALE_MS = 30000;
 const DEFAULT_INTERVAL_MS = 10000;
+// heartbeat が現在時刻よりこれ以上未来なら不正な値とみなす（時計のずれを少しだけ許容する）
+const FUTURE_TOLERANCE_MS = 5000;
 
 function isLockInfo(v: unknown): v is LockInfo {
   if (typeof v !== 'object' || v === null) return false;
@@ -79,7 +81,10 @@ export class InstanceLock {
 
     if (existing) {
       const isSelf = existing.pid === this.pid;
-      const isStale = this.now() - existing.heartbeat > this.staleMs;
+      // 未来の heartbeat は時計の巻き戻しや改ざんで生じる。そのままだと永久に stale にならないため
+      // 不正として stale 扱いにする。
+      const age = this.now() - existing.heartbeat;
+      const isStale = age > this.staleMs || age < -FUTURE_TOLERANCE_MS;
       if (!isSelf && !isStale) {
         return { acquired: false, holder: existing };
       }
