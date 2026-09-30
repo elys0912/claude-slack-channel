@@ -6,9 +6,14 @@ import { loadAccess, loadTokens, parseDotenv, stateDir } from '../src/config.js'
 
 describe('stateDir', () => {
   it('環境変数があればそれを使う', () => {
-    expect(stateDir({ SLACK_CHANNEL_STATE_DIR: 'C:\\custom\\dir' } as NodeJS.ProcessEnv)).toBe(
-      'C:\\custom\\dir',
-    );
+    const abs = path.resolve(os.tmpdir(), 'custom', 'dir');
+    expect(stateDir({ SLACK_CHANNEL_STATE_DIR: abs } as NodeJS.ProcessEnv)).toBe(abs);
+  });
+
+  it('環境変数が相対パスなら絶対パスに解決する', () => {
+    const result = stateDir({ SLACK_CHANNEL_STATE_DIR: 'rel/state' } as NodeJS.ProcessEnv);
+    expect(path.isAbsolute(result)).toBe(true);
+    expect(result).toBe(path.resolve('rel/state'));
   });
 
   it('環境変数がなければ既定パスを使う', () => {

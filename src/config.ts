@@ -10,9 +10,11 @@ function stripBom(text: string): string {
   return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
 }
 
+// 状態ディレクトリ。SLACK_CHANNEL_STATE_DIR があれば絶対パスに解決して使う
+// （相対パスのままだと、起動時のカレントディレクトリ次第で参照先が変わるため）。
 export function stateDir(env: NodeJS.ProcessEnv = process.env): string {
   const dir = env.SLACK_CHANNEL_STATE_DIR;
-  if (dir) return dir;
+  if (dir) return path.resolve(dir);
   return path.join(os.homedir(), '.claude', 'channels', 'slack');
 }
 
