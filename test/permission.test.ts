@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   PendingPermissions,
+  PERMISSION_ID_BODY,
   PERMISSION_ID_RE,
   isValidRequestId,
   buildPermissionBlocks,
@@ -9,9 +10,9 @@ import {
   parseBlockAction,
   type PermissionRequest
 } from '../src/permission.js';
-import type { AccessConfig } from '../src/types.js';
+import type { ParsedAccess } from '../src/config.js';
 
-const access: AccessConfig = { teamId: 'T123', allowFrom: ['U123'] };
+const access: ParsedAccess = { teamId: 'T123', allowFrom: ['U123'] };
 
 const sampleReq: PermissionRequest = {
   request_id: 'abcde',
@@ -38,6 +39,11 @@ describe('PERMISSION_ID_RE / isValidRequestId', () => {
   it('rejects wrong lengths', () => {
     expect(isValidRequestId('abcd')).toBe(false);
     expect(isValidRequestId('abcdef')).toBe(false);
+  });
+
+  it('PERMISSION_ID_RE は PERMISSION_ID_BODY を前後アンカーで包んだもの', () => {
+    expect(PERMISSION_ID_RE.source).toBe(`^${PERMISSION_ID_BODY}$`);
+    expect(PERMISSION_ID_RE.flags).toBe('');
   });
 });
 
