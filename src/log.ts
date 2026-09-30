@@ -12,8 +12,9 @@ const LEVEL_ORDER: Record<LogLevel, number> = {
   error: 3,
 };
 
-// Slack のトークン（bot/user/app）と Bearer トークンをログから伏せる。
-const XOX_TOKEN_RE = /xox[abposr]-[\w-]+/g;
+// Slack のトークン（xox?- 系すべて、xapp-）と Bearer トークンをログから伏せる。
+// xox の後ろの 1 文字は種別（b/p/a/e など）で、将来増えても漏れないよう英小文字すべてを対象にする。
+const XOX_TOKEN_RE = /xox[a-z]-[\w-]+/g;
 const XAPP_TOKEN_RE = /xapp-[\w-]+/g;
 const BEARER_RE = /Bearer\s+\S+/g;
 
