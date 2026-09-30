@@ -5,6 +5,11 @@ import path from 'node:path';
 import { z } from 'zod';
 import { errMessage } from './errors.js';
 
+/** 先頭の BOM（メモ帳などが付ける U+FEFF）を取り除く */
+function stripBom(text: string): string {
+  return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+}
+
 export function stateDir(env: NodeJS.ProcessEnv = process.env): string {
   const dir = env.SLACK_CHANNEL_STATE_DIR;
   if (dir) return dir;
@@ -14,7 +19,7 @@ export function stateDir(env: NodeJS.ProcessEnv = process.env): string {
 // 自前の .env パーサー。KEY=VALUE / # コメント / 空行 / 前後空白 / "..." '...' の引用符 /
 // CRLF / BOM / `export ` 接頭辞に対応する。値の展開や複数行はしない。
 export function parseDotenv(text: string): Record<string, string> {
-  const stripped = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+  const stripped = stripBom(text);
   const result: Record<string, string> = {};
 
   for (const rawLine of stripped.split(/\r\n|\r|\n/)) {
@@ -107,7 +112,7 @@ export function loadAccess(dir: string): ParsedAccess {
 
   let json: unknown;
   try {
-    json = JSON.parse(text);
+    json = JSON.parse(stripBom(text));
   } catch (e) {
     throw new Error(`access.json の JSON 構文が不正: ${errMessage(e)}`);
   }

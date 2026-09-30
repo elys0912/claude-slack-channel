@@ -180,6 +180,14 @@ describe('loadAccess', () => {
     expect(() => loadAccess(dir)).toThrow();
   });
 
+  it('BOM 付きの UTF-8 でも読み込める', () => {
+    fs.writeFileSync(
+      path.join(dir, 'access.json'),
+      '\uFEFF' + JSON.stringify({ teamId: 'T12345', allowFrom: ['U12345'] }),
+    );
+    expect(loadAccess(dir)).toEqual({ teamId: 'T12345', allowFrom: ['U12345'] });
+  });
+
   it('JSON の構文エラーなら拒否する', () => {
     fs.writeFileSync(path.join(dir, 'access.json'), '{ not valid json');
     expect(() => loadAccess(dir)).toThrow();
