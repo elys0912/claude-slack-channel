@@ -163,7 +163,23 @@ $env:ENABLE_CLAUDEAI_MCP_SERVERS = 'false'
     'CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING', 'CLAUDE_CODE_ENABLE_TASKS'
 ) | ForEach-Object { Remove-Item -Path "Env:$_" -ErrorAction SilentlyContinue }
 
-$mcpConfig = Write-McpConfig -FileName 'mcp.json' -ServerName 'slackbridge' -ScriptPath $mainJs
+# --strict-mcp-config で他の MCP サーバーは読み込まれないので、Slack セッションでも使うものは
+# config\extra-mcp.json（git 管理外。ひな形は extra-mcp.example.json）に書いて一緒に渡す。読めなければ警告だけ出す
+function Read-ExtraMcpServers {
+    $file = Join-Path $repoRoot 'config\extra-mcp.json'
+    $servers = @{}
+    if (-not (Test-Path -LiteralPath $file)) { return $servers }
+    try {
+        $parsed = Get-Content -LiteralPath $file -Raw -Encoding UTF8 | ConvertFrom-Json
+        foreach ($p in $parsed.mcpServers.PSObject.Properties) { $servers[$p.Name] = $p.Value }
+        if ($servers.Count -gt 0) { Write-Host "追加の MCP サーバー: $(($servers.Keys | Sort-Object) -join ', ')" }
+    } catch {
+        Write-Warning "config\extra-mcp.json を読めなかったので、追加の MCP サーバーは使わない: $($_.Exception.Message)"
+    }
+    return $servers
+}
+
+$mcpConfig = Write-McpConfig -FileName 'mcp.json' -ServerName 'slackbridge' -ScriptPath $mainJs -ExtraServers (Read-ExtraMcpServers)
 
 # Slack の「今後も許可」で足したルール（状態ディレクトリの allow-extra.json）を channel-settings.json の allow に足し、
 # %TEMP% に書き出したものを --settings に渡す。ブリッジが deny と照合してから書き込んだものだけが入っている。

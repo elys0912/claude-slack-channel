@@ -237,7 +237,7 @@ Claude Code がターミナル側の選択画面（Slack に中継されない�
 | フラグ | 目的 |
 |---|---|
 | `--mcp-config %TEMP%\claude-slack-channel\mcp.json` | `slackbridge` サーバーを読み込む。clone 先の絶対パスを含むので、起動のたびに生成する |
-| `--strict-mcp-config` | `--mcp-config` 以外の MCP サーバー（ユーザー設定やプロジェクトの `.mcp.json`）を読み込まない |
+| `--strict-mcp-config` | `--mcp-config` 以外の MCP サーバー（ユーザー設定やプロジェクトの `.mcp.json`）を読み込まない。Slack セッションでも使うサーバーは `config\extra-mcp.json` に書く（下記） |
 | `--no-chrome` | Claude in Chrome 連携を無効にする。有効だと、ブラウザ操作が必要になったときに「Claude wants to use your browser」の選択画面がターミナルに出て、Slack には中継されないまま止まる |
 | `--setting-sources project,local` | ユーザー設定（`~/.claude/settings.json`）を読まない。便利さのために入れた緩い許可（`Bash(*)` など）に乗って、Slack からの指示が無確認で実行されるのを防ぐ |
 | `--settings config\channel-settings.json` | channel セッション専用の設定を重ねる。managed（組織の管理設定）を除き、どの設定よりも上位 |
@@ -335,6 +335,7 @@ deny は allow より必ず優先される（評価順は deny → ask → allow
 |---|---|---|
 | `.env` | 状態ディレクトリ | `SLACK_BOT_TOKEN`（`xoxb-`）、`SLACK_APP_TOKEN`（`xapp-`） |
 | `access.json` | 状態ディレクトリ | `teamId`（`T...`）、`allowFrom`（`U...` の配列）、`channels`（`C...` / `G...` の配列、省略可）。これ以外のキーはエラー |
+| `extra-mcp.json` | `config\`（git 管理外） | Slack セッションで一緒に使う MCP サーバー（`.mcp.json` と同じ `mcpServers` の形。ひな形: `extra-mcp.example.json`）。ツールの実行は通常どおり実行許可の確認に掛かる |
 | `allow-extra.json` | 状態ディレクトリ | Slack の「今後も許可」で足したルール（`{"allow": [...]}`）。ブリッジが書き、起動スクリプトが allow に足す |
 | `projects.json` | `config\` | `projects`: `{ name, path }` の配列。起動時の選択肢 |
 | `channel-settings.json` | `config\` | channel セッション専用の Claude Code 設定 |
