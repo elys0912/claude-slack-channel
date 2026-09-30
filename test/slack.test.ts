@@ -298,6 +298,43 @@ describe('SlackBridge の受信', () => {
     expect(seen.length).toBe(0);
   });
 
+  it('init で DM を開けなかった許可ユーザーも、gate を通った受信の channel を送信先に加える', async () => {
+    const { bridge, web, socket } = makeBridge();
+    const open = web.conversations.open;
+    web.conversations.open = async (args) => {
+      if (args.users === 'U222BBB') throw platformError('ratelimited');
+      return open(args);
+    };
+    await bridge.init();
+    expect(bridge.allowedDmChannels.has(DM2)).toBe(false);
+
+    const allowedAtHandler: boolean[] = [];
+    await bridge.start({
+      onMessage: () => void allowedAtHandler.push(bridge.allowedDmChannels.has(DM2)),
+      onAction: () => undefined,
+    });
+    // gate で落ちる受信（許可外ユーザー）では加えない
+    socket.emit('slack_event', {
+      ...messageEnvelope({ user: 'U999ZZZ', channel: 'D999ZZZ' }),
+      ack: async () => undefined,
+    });
+    await flush();
+    expect(bridge.allowedDmChannels.has('D999ZZZ')).toBe(false);
+
+    socket.emit('slack_event', {
+      ...messageEnvelope({ user: 'U222BBB', channel: DM2 }),
+      body: { ...(messageEnvelope({ user: 'U222BBB', channel: DM2 }).body as object), event_id: 'Ev2' },
+      ack: async () => undefined,
+    });
+    await flush();
+    expect(allowedAtHandler).toEqual([false, true]); // onMessage より前に加わっている
+    expect(bridge.allowedDmChannels.has(DM2)).toBe(true);
+
+    web.calls.length = 0;
+    const res = await bridge.postToAll('perm', [{ type: 'section' }]);
+    expect(res.map((r) => r.channel)).toEqual([DM1, DM2]);
+  });
+
   it('onMessage が例外を投げても落ちず、logger.error に記録される', async () => {
     const { bridge, socket, logger } = makeBridge();
     const errorSpy = vi.spyOn(logger, 'error');
