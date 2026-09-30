@@ -8,18 +8,7 @@ import { errMessage } from './errors.js';
 import { Logger } from './log.js';
 import { InstanceLock } from './lock.js';
 import { SlackBridge } from './slack.js';
-import type { ActionContext, InboundRef } from './slack.js';
-import { ChannelServer } from './mcp.js';
-import type { McpDeps } from './mcp.js';
-import { PermissionRelay } from './permission-relay.js';
-import { preformattedBlock } from './permission.js';
-import type { ActionParse } from './permission.js';
-import type { GateResult } from './gate.js';
-
-// Slack 側で「読んだ」「許可した」「拒否した」を示すリアクション
-const REACTION_SEEN = 'eyes';
-const REACTION_ALLOW = 'white_check_mark';
-const REACTION_DENY = 'x';
+import { startBridgeApp, startDegradedApp } from './app.js';
 
 function createLogger(dir: string): Logger {
   const logger = new Logger({ file: path.join(dir, 'logs', 'bridge.log') });
@@ -76,35 +65,12 @@ async function main(): Promise<void> {
   );
 
   if (degraded) {
-    await runDegraded(logger);
-  } else {
-    await runBridge(tokens, access, logger, lock);
+    const app = await startDegradedApp({ logger });
+    installShutdown(logger, app.stop);
+    return;
   }
-}
 
-/** 縮退モード: MCP サーバーだけ起動し、ツールはすべてエラーを返す */
-async function runDegraded(logger: Logger): Promise<void> {
-  const busy = async (): Promise<string> =>
-    'error: 別のインスタンスが動いているため、この Slack ブリッジは送信できない';
-
-  const server = new ChannelServer({
-    logger,
-    onReply: busy,
-    onReact: busy,
-    onEdit: busy,
-    onPermissionRequest: () => {
-      logger.warn('縮退モードのため permission_request を無視する');
-    },
-  });
-  await server.connectStdio();
-
-  installShutdown(logger, () => server.close());
-}
-
-/** 通常モード: Slack と Claude Code（MCP）をつないで中継を始める */
-async function runBridge(tokens: Tokens, access: ParsedAccess, logger: Logger, lock: InstanceLock): Promise<void> {
   const bridge = new SlackBridge({ botToken: tokens.botToken, appToken: tokens.appToken, access, logger });
-
   try {
     const init = await bridge.init();
     logger.info(`Slack 接続確認 OK bot=${init.botUserId} team=${init.teamId} dm=${init.dmChannels.size}件`);
@@ -115,128 +81,8 @@ async function runBridge(tokens: Tokens, access: ParsedAccess, logger: Logger, l
     });
   }
 
-  // server と relay は互いを参照する。relay を使うのは接続後なので、宣言順はこれでよい
-  const server: ChannelServer = new ChannelServer({
-    logger,
-    ...createToolHandlers(bridge, logger),
-    onPermissionRequest: (req) => relay.request(req),
-  });
-  const relay: PermissionRelay = new PermissionRelay(bridge, server, logger);
-  const wiring: Wiring = { bridge, server, relay, logger };
-
-  await server.connectStdio();
-  await bridge.start({
-    onMessage: (result, raw) => handleMessage(wiring, result, raw),
-    onAction: (parsed, ctx) => handleAction(wiring, parsed, ctx),
-  });
-  logger.info('Slack ブリッジ稼働中');
-
-  installShutdown(logger, async () => {
-    await bridge.stop();
-    await server.close();
-    lock.release();
-  });
-}
-
-// --- Claude → Slack（MCP ツールの実体） ----------------------------------------
-
-type ToolHandlers = Pick<McpDeps, 'onReply' | 'onReact' | 'onEdit'>;
-
-/** reply / react / edit_message の実体。失敗しても投げず、Claude が読めるエラー文を返す */
-function createToolHandlers(bridge: SlackBridge, logger: Logger): ToolHandlers {
-  const run = async (tool: string, action: () => Promise<string>): Promise<string> => {
-    try {
-      return await action();
-    } catch (e) {
-      logger.error(`${tool} に失敗`, e);
-      return `error: ${errMessage(e)}`;
-    }
-  };
-
-  return {
-    onReply: ({ chat_id, text, thread_ts }) =>
-      run('reply', async () => {
-        const res = await bridge.postText(chat_id, text, thread_ts);
-        return `sent (${res.ts.length} message(s))`;
-      }),
-
-    onReact: ({ chat_id, message_id, emoji }) =>
-      run('react', async () => {
-        // Claude が `:eyes:` のようにコロン付きで渡してきても受け付ける
-        await bridge.addReaction(chat_id, message_id, emoji.replace(/^:|:$/g, ''));
-        return 'reacted';
-      }),
-
-    onEdit: ({ chat_id, message_id, text }) =>
-      run('edit_message', async () => {
-        await bridge.updateText(chat_id, message_id, text);
-        return 'edited';
-      }),
-  };
-}
-
-// --- Slack → Claude（受信イベントの処理） --------------------------------------
-
-interface Wiring {
-  bridge: SlackBridge;
-  server: ChannelServer;
-  relay: PermissionRelay;
-  logger: Logger;
-}
-
-/** DM で届いたメッセージ。`yes xxxxx` / `no xxxxx` なら許可の回答、それ以外は Claude へ中継する */
-async function handleMessage({ bridge, server, relay, logger }: Wiring, result: GateResult, raw: InboundRef): Promise<void> {
-  switch (result.kind) {
-    case 'drop':
-      logger.debug(`受信を破棄 reason=${result.reason}`);
-      return;
-
-    case 'verdict':
-      await relay.answerByText(result.verdict, raw.user ?? '');
-      if (raw.channel && raw.ts) {
-        const reaction = result.verdict.behavior === 'allow' ? REACTION_ALLOW : REACTION_DENY;
-        await bridge.addReaction(raw.channel, raw.ts, reaction);
-      }
-      return;
-
-    case 'deliver':
-      if (raw.channel && raw.threadTs) relay.rememberThread(raw.channel, raw.threadTs);
-      await server.pushMessage(result.content, result.meta);
-      if (raw.channel && raw.ts) await bridge.addReaction(raw.channel, raw.ts, REACTION_SEEN);
-      return;
-  }
-}
-
-/** permission request のボタン（Allow / Deny / See more）が押されたとき */
-async function handleAction(wiring: Wiring, parsed: ActionParse, ctx: ActionContext): Promise<void> {
-  if (!parsed.ok) {
-    wiring.logger.warn(`block_actions を無視 reason=${parsed.reason}`);
-    return;
-  }
-
-  if (parsed.kind === 'verdict') {
-    const pressed = ctx.channelId && ctx.messageTs ? { channel: ctx.channelId, ts: ctx.messageTs } : undefined;
-    await wiring.relay.answerByButton(parsed.verdict, ctx.userId ?? '', pressed);
-    return;
-  }
-
-  await sendFullPreview(wiring, parsed.requestId, ctx);
-}
-
-/** See more: ボタンのメッセージでは省略した input_preview の全文をスレッドに送る */
-async function sendFullPreview({ bridge, relay, logger }: Wiring, requestId: string, ctx: ActionContext): Promise<void> {
-  if (!ctx.channelId || !ctx.messageTs) return;
-
-  const req = relay.lookup(requestId);
-  try {
-    if (req) {
-      await bridge.postBlocks(ctx.channelId, req.input_preview, [preformattedBlock(req.input_preview)], ctx.messageTs);
-    } else {
-      await bridge.postText(ctx.channelId, `⌛ permission request ${requestId} は既に期限切れ`, ctx.messageTs);
-    }
-  } catch (e) {
-    logger.warn('see_more の送信に失敗', e);
-  }
+  const app = await startBridgeApp({ bridge, logger, lock });
+  installShutdown(logger, app.stop);
 }
 
 // --- 終了処理 -------------------------------------------------------------------
