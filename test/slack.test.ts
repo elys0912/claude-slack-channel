@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { SlackBridge, isMarkdownRejection, toInboundMessage } from '../src/slack.js';
-import type { SlackWebApiLike, SocketClientLike } from '../src/slack.js';
+import type { ActionContext, SlackWebApiLike, SocketClientLike } from '../src/slack.js';
 import { Logger } from '../src/log.js';
 import type { ParsedAccess } from '../src/config.js';
 import type { GateResult } from '../src/gate.js';
@@ -410,7 +410,7 @@ describe('SlackBridge の受信', () => {
     await bridge.init();
     const order: string[] = [];
     const seen: ActionParse[] = [];
-    const ctxs: { userId?: string; channelId?: string; messageTs?: string; value?: string }[] = [];
+    const ctxs: ActionContext[] = [];
     await bridge.start({
       onMessage: () => undefined,
       onAction: (p, ctx) => {

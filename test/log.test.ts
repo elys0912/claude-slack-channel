@@ -98,7 +98,8 @@ describe('toSlackLogger', () => {
     const inner = new Logger({ stderr: false });
     const slackLogger = toSlackLogger(inner, 'test-logger');
     expect(slackLogger.getLevel()).toBe('info');
-    slackLogger.setLevel('debug');
+    // @slack/logger の LogLevel は enum。値 import を避けるためキャストで渡す
+    slackLogger.setLevel('debug' as Parameters<typeof slackLogger.setLevel>[0]);
     expect(slackLogger.getLevel()).toBe('debug');
     expect(inner.getLevel()).toBe('debug');
   });

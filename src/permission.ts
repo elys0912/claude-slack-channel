@@ -191,12 +191,12 @@ export function buildExpiredBlocks(requestId: string): { text: string; blocks: u
 }
 
 export interface BlockActionInput {
-  type?: string;
-  teamId?: string;
-  userId?: string;
-  channelId?: string;
-  actionId?: string;
-  value?: string;
+  type?: string | undefined;
+  teamId?: string | undefined;
+  userId?: string | undefined;
+  channelId?: string | undefined;
+  actionId?: string | undefined;
+  value?: string | undefined;
 }
 
 export type ActionParse =

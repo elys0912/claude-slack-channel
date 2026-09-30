@@ -140,7 +140,7 @@ const PermissionRequestNotificationSchema = z.object({
 
 export interface McpDeps {
   logger: Logger;
-  onReply: (args: { chat_id: string; text: string; thread_ts?: string }) => Promise<string>;
+  onReply: (args: { chat_id: string; text: string; thread_ts?: string | undefined }) => Promise<string>;
   onReact: (args: { chat_id: string; message_id: string; emoji: string }) => Promise<string>;
   onEdit: (args: { chat_id: string; message_id: string; text: string }) => Promise<string>;
   onPermissionRequest: (req: PermissionRequest) => void | Promise<void>;
