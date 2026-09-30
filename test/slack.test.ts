@@ -100,18 +100,19 @@ function makeSocket(): FakeSocket {
   };
 }
 
-function makeBridge(): { bridge: SlackBridge; web: FakeWeb; socket: FakeSocket } {
+function makeBridge(): { bridge: SlackBridge; web: FakeWeb; socket: FakeSocket; logger: Logger } {
   const web = makeWeb();
   const socket = makeSocket();
+  const logger = new Logger({ stderr: false });
   const bridge = new SlackBridge({
     botToken: 'xoxb-TEST-DUMMY',
     appToken: 'xapp-TEST-DUMMY',
     access: ACCESS,
-    logger: new Logger({ stderr: false }),
+    logger,
     web,
     socket,
   });
-  return { bridge, web, socket };
+  return { bridge, web, socket, logger };
 }
 
 function platformError(code: string): Error & { data: { error: string } } {
@@ -390,8 +391,9 @@ describe('SlackBridge の受信', () => {
     expect(seen.length).toBe(0);
   });
 
-  it('onMessage が例外を投げても落ちない', async () => {
-    const { bridge, socket } = makeBridge();
+  it('onMessage が例外を投げても落ちず、logger.error に記録される', async () => {
+    const { bridge, socket, logger } = makeBridge();
+    const errorSpy = vi.spyOn(logger, 'error');
     await bridge.init();
     await bridge.start({
       onMessage: () => {
@@ -401,8 +403,9 @@ describe('SlackBridge の受信', () => {
     });
     socket.emit('slack_event', { ...messageEnvelope(), ack: async () => undefined });
     await flush();
-    // 例外が外に漏れなければここに到達する
-    expect(true).toBe(true);
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+    expect(errorSpy.mock.calls[0]?.[0]).toContain('slack_event');
+    expect((errorSpy.mock.calls[0]?.[1] as Error).message).toBe('boom');
   });
 
   it('block_actions を parseBlockAction に通す。ack が先', async () => {
@@ -462,8 +465,9 @@ describe('SlackBridge の受信', () => {
     expect(seen[0]).toEqual({ ok: false, reason: 'channel_not_allowed' });
   });
 
-  it('onAction が例外を投げても落ちない', async () => {
-    const { bridge, socket } = makeBridge();
+  it('onAction が例外を投げても落ちず、logger.error に記録される', async () => {
+    const { bridge, socket, logger } = makeBridge();
+    const errorSpy = vi.spyOn(logger, 'error');
     await bridge.init();
     await bridge.start({
       onMessage: () => undefined,
@@ -473,7 +477,9 @@ describe('SlackBridge の受信', () => {
     });
     socket.emit('interactive', { type: 'interactive', body: {}, ack: async () => undefined });
     await flush();
-    expect(true).toBe(true);
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+    expect(errorSpy.mock.calls[0]?.[0]).toContain('interactive');
+    expect((errorSpy.mock.calls[0]?.[1] as Error).message).toBe('boom');
   });
 
   it('stop すると disconnect される', async () => {
@@ -518,14 +524,23 @@ describe('SlackBridge の受信', () => {
     }
   });
 
-  it('接続状態のイベントで落ちない', async () => {
-    const { bridge, socket } = makeBridge();
+  it('接続状態のイベントは info ログに残り、error は出ない', async () => {
+    const { bridge, socket, logger } = makeBridge();
+    const infoSpy = vi.spyOn(logger, 'info');
+    const errorSpy = vi.spyOn(logger, 'error');
     await bridge.init();
     await bridge.start({ onMessage: () => undefined, onAction: () => undefined });
+    infoSpy.mockClear();
     for (const s of ['connecting', 'connected', 'reconnecting', 'disconnecting']) {
       socket.emit(s, {});
     }
-    expect(true).toBe(true);
+    expect(infoSpy.mock.calls.map((c) => c[0])).toEqual([
+      'socket: connecting',
+      'socket: connected',
+      'socket: reconnecting',
+      'socket: disconnecting',
+    ]);
+    expect(errorSpy).not.toHaveBeenCalled();
     await bridge.stop();
   });
 });
