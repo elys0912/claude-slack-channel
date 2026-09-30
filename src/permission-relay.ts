@@ -65,16 +65,34 @@ export class PermissionRelay {
     return this.pending.get(requestId);
   }
 
-  /** Claude からの permission_request を、許可ユーザー全員の DM にボタン付きで配信する */
+  /**
+   * Claude からの permission_request を、許可ユーザー全員の DM にボタン付きで配信する。
+   * 1 件も届かなかった（全チャンネルで失敗・DM チャンネルが無い）ときは、誰も答えられないので
+   * その場で Claude に deny を返す。投げない。
+   */
   async request(req: PermissionRequest): Promise<void> {
     this.pending.prune();
     this.pending.add(req);
     this.startExpiryTimer(req.request_id);
 
     const { text, blocks } = buildPermissionBlocks(req);
-    const results = await this.slack.postToAll(text, blocks, (channel) => this.activeThread.get(channel));
-    this.posted.set(req.request_id, results.filter((r) => r.ts !== ''));
-    this.logger.info(`permission_request を配信 id=${req.request_id} tool=${req.tool_name} 宛先=${results.length}`);
+    let results: MessageRef[] = [];
+    try {
+      results = await this.slack.postToAll(text, blocks, (channel) => this.activeThread.get(channel));
+    } catch (e) {
+      this.logger.error(`permission_request の配信で例外 id=${req.request_id}`, e);
+    }
+    const delivered = results.filter((r) => r.ts !== '');
+    this.posted.set(req.request_id, delivered);
+
+    if (delivered.length === 0) {
+      this.logger.error(`permission_request をどの DM にも配信できなかった id=${req.request_id} 宛先=${results.length}`);
+      await this.autoDeny(req.request_id, '配信失敗');
+      return;
+    }
+    this.logger.info(
+      `permission_request を配信 id=${req.request_id} tool=${req.tool_name} 成功=${delivered.length}/${results.length}`
+    );
   }
 
   /**
