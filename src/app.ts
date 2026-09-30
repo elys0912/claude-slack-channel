@@ -172,7 +172,7 @@ async function sendFullPreview({ bridge, relay, logger }: Wiring, requestId: str
 // --- 起動 ---------------------------------------------------------------------
 
 export interface RunningApp {
-  /** 後片付け（bridge.stop → server.close → lock.release の順） */
+  /** 後片付け（lock.release → bridge.stop → server.close の順。2 回目以降の呼び出しは 1 回目と同じ Promise を返す） */
   stop: () => Promise<void>;
 }
 
@@ -182,11 +182,19 @@ export interface BridgeAppOptions {
   logger: Logger;
   /** MCP のトランスポート。省略時は stdio */
   transport?: Transport | undefined;
-  /** stop() の最後に release する */
+  /** stop() の最初に release する（後片付けが固まってもロックを残さないため） */
   lock?: Pick<InstanceLock, 'release'> | undefined;
+  /**
+   * bridge.start() より前に、後片付けの関数を渡して呼ぶ。終了処理（stdin の終了・シグナル）の登録に使い、
+   * Socket Mode の接続待ちの最中に Claude Code が終了しても後片付けされるようにする。
+   */
+  onCleanupReady?: ((stop: () => Promise<void>) => void) | undefined;
 }
 
-/** 通常モード: Slack と Claude Code（MCP）をつないで中継を始める */
+/**
+ * 通常モード: Slack と Claude Code（MCP）をつないで中継を始める。
+ * MCP の接続か Socket Mode の開始に失敗したら、後片付け（lock.release → bridge.stop → server.close）をしてから投げ直す。
+ */
 export async function startBridgeApp(opts: BridgeAppOptions): Promise<RunningApp> {
   const { bridge, logger } = opts;
 
@@ -199,22 +207,33 @@ export async function startBridgeApp(opts: BridgeAppOptions): Promise<RunningApp
   const relay: PermissionRelay = new PermissionRelay(bridge, server, logger);
   const wiring: Wiring = { bridge, server, relay, logger };
 
-  if (opts.transport) await server.connect(opts.transport);
-  else await server.connectStdio();
-  await bridge.start({
-    onMessage: (result, raw) => handleMessage(wiring, result, raw),
-    onAction: (parsed, ctx) => handleAction(wiring, parsed, ctx),
-    isKnownRequest: (id) => relay.lookup(id) !== undefined,
-  });
+  let stopped: Promise<void> | undefined;
+  const stop = (): Promise<void> =>
+    (stopped ??= (async () => {
+      opts.lock?.release();
+      try {
+        await bridge.stop();
+      } finally {
+        await server.close();
+      }
+    })());
+  opts.onCleanupReady?.(stop);
+
+  try {
+    if (opts.transport) await server.connect(opts.transport);
+    else await server.connectStdio();
+    await bridge.start({
+      onMessage: (result, raw) => handleMessage(wiring, result, raw),
+      onAction: (parsed, ctx) => handleAction(wiring, parsed, ctx),
+      isKnownRequest: (id) => relay.lookup(id) !== undefined,
+    });
+  } catch (e) {
+    await stop().catch((err: unknown) => logger.error('起動失敗後の後片付けで例外', err));
+    throw e;
+  }
   logger.info('Slack ブリッジ稼働中');
 
-  return {
-    stop: async () => {
-      await bridge.stop();
-      await server.close();
-      opts.lock?.release();
-    },
-  };
+  return { stop };
 }
 
 export interface DegradedAppOptions {

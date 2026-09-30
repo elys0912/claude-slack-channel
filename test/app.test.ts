@@ -464,13 +464,60 @@ describe('MCP → Slack', () => {
 });
 
 describe('停止', () => {
-  it('stop は bridge.stop → server.close → lock.release の順', async () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** ChannelServer.close の呼び出しを order に記録する */
+  function recordServerClose(order: string[]): void {
+    const originalClose = ChannelServer.prototype.close;
+    vi.spyOn(ChannelServer.prototype, 'close').mockImplementation(async function (this: ChannelServer) {
+      order.push('server.close');
+      return originalClose.call(this);
+    });
+  }
+
+  it('stop は lock.release → bridge.stop → server.close の順で、2 回呼んでも 1 回だけ片付ける', async () => {
+    const order: string[] = [];
+    recordServerClose(order);
     const h = await startHarness();
     await h.client.close();
+    order.length = 0;
+    h.order.length = 0;
     await h.stop();
-    expect(h.order).toEqual(['bridge.stop', 'lock.release']);
+    await h.stop();
+    expect([...h.order, ...order]).toEqual(['lock.release', 'bridge.stop', 'server.close']);
     expect(h.socket.disconnected).toBe(1);
     expect(h.lockReleased).toBe(1);
+  });
+
+  it('Socket Mode の開始に失敗したら、後片付けしてから投げる。後片付けの関数は start より前に渡される', async () => {
+    const order: string[] = [];
+    recordServerClose(order);
+    const web = makeWeb();
+    const socket = makeSocket();
+    const logger = new Logger({ stderr: false });
+    const bridge = new SlackBridge({ botToken: 'xoxb-TEST-DUMMY', appToken: 'xapp-TEST-DUMMY', access: ACCESS, logger, web, socket });
+    await bridge.init();
+    socket.failStart = ['auth'];
+    const [, serverTransport] = InMemoryTransport.createLinkedPair();
+    const lock = { release: () => void order.push('lock.release') };
+    let startedWhenReady: number | undefined;
+
+    await expect(
+      startBridgeApp({
+        bridge,
+        logger,
+        transport: serverTransport,
+        lock,
+        onCleanupReady: () => {
+          startedWhenReady = socket.started;
+        },
+      })
+    ).rejects.toThrow(/internal_error/);
+    expect(startedWhenReady).toBe(0);
+    expect(order).toEqual(['lock.release', 'server.close']);
+    expect(socket.disconnected).toBe(1);
   });
 
   it('startBridgeApp は Socket Mode を 1 回だけ開始する', async () => {
