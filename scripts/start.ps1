@@ -143,25 +143,7 @@ function Resolve-ProjectDir {
     return (Resolve-Path -LiteralPath $dir).ProviderPath
 }
 
-# --- 本体 ---------------------------------------------------------------------
-
-$claude = Get-ClaudeExeOrExit
-Confirm-Built
-Confirm-StateFiles
-$projectDir = Resolve-ProjectDir
-
-# claude.ai の connectors は、このプロセスから起動する claude.exe でだけ無効にする
-$env:ENABLE_CLAUDEAI_MCP_SERVERS = 'false'
-
-# Claude Code のセッション内（VS Code 拡張など）からこのスクリプトを実行すると、親セッションの
-# 目印の環境変数が引き継がれ、子セッション扱い（会話の保存なし）や MCP の非同期接続になって、
-# slackbridge の reply ツールが使えないことがある。独立したセッションとして起動するため消しておく
-@(
-    'CLAUDECODE', 'CLAUDE_PID', 'CLAUDE_AGENT_SDK_VERSION', 'MCP_CONNECTION_NONBLOCKING',
-    'CLAUDE_CODE_CHILD_SESSION', 'CLAUDE_CODE_ENTRYPOINT', 'CLAUDE_CODE_SESSION_ID',
-    'CLAUDE_CODE_SESSION_ATTENDED', 'CLAUDE_CODE_MESSAGING_SOCKET',
-    'CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING', 'CLAUDE_CODE_ENABLE_TASKS'
-) | ForEach-Object { Remove-Item -Path "Env:$_" -ErrorAction SilentlyContinue }
+# --- MCP サーバーと許可ルールの設定を組み立てる ---------------------------------------
 
 # --strict-mcp-config で他の MCP サーバーは読み込まれないので、Slack セッションでも使うものは
 # config\extra-mcp.json（git 管理外。ひな形は extra-mcp.example.json）に書いて一緒に渡す。読めなければ警告だけ出す
@@ -178,9 +160,6 @@ function Read-ExtraMcpServers {
     }
     return $servers
 }
-
-$extraServers = Read-ExtraMcpServers
-$mcpConfig = Write-McpConfig -FileName 'mcp.json' -ServerName 'slackbridge' -ScriptPath $mainJs -ExtraServers $extraServers
 
 # Slack の「今後も許可」で足したルール（状態ディレクトリの allow-extra.json）を読む。
 # ブリッジが deny と照合してから書き込んだものだけが入っている。読めなければ警告だけ出して使わない
@@ -203,7 +182,9 @@ function Read-AllowExtra {
 # - Slack の「今後も許可」で足したルール
 # 足すものが無ければ channel-settings.json をそのまま渡す。deny は channel-settings.json のまま（allow より優先される）
 function Get-EffectiveSettings {
-    $extra = @(@($extraServers.Keys | Sort-Object | ForEach-Object { "mcp__$_" }) + @(Read-AllowExtra))
+    param([hashtable]$ExtraServers)
+
+    $extra = @(@($ExtraServers.Keys | Sort-Object | ForEach-Object { "mcp__$_" }) + @(Read-AllowExtra))
     if ($extra.Count -eq 0) { return $settingsFile }
     try {
         $settings = Get-Content -LiteralPath $settingsFile -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -219,7 +200,30 @@ function Get-EffectiveSettings {
         return $settingsFile
     }
 }
-$effectiveSettings = Get-EffectiveSettings
+
+# --- 本体 ---------------------------------------------------------------------
+
+$claude = Get-ClaudeExeOrExit
+Confirm-Built
+Confirm-StateFiles
+$projectDir = Resolve-ProjectDir
+
+# claude.ai の connectors は、このプロセスから起動する claude.exe でだけ無効にする
+$env:ENABLE_CLAUDEAI_MCP_SERVERS = 'false'
+
+# Claude Code のセッション内（VS Code 拡張など）からこのスクリプトを実行すると、親セッションの
+# 目印の環境変数が引き継がれ、子セッション扱い（会話の保存なし）や MCP の非同期接続になって、
+# slackbridge の reply ツールが使えないことがある。独立したセッションとして起動するため消しておく
+@(
+    'CLAUDECODE', 'CLAUDE_PID', 'CLAUDE_AGENT_SDK_VERSION', 'MCP_CONNECTION_NONBLOCKING',
+    'CLAUDE_CODE_CHILD_SESSION', 'CLAUDE_CODE_ENTRYPOINT', 'CLAUDE_CODE_SESSION_ID',
+    'CLAUDE_CODE_SESSION_ATTENDED', 'CLAUDE_CODE_MESSAGING_SOCKET',
+    'CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING', 'CLAUDE_CODE_ENABLE_TASKS'
+) | ForEach-Object { Remove-Item -Path "Env:$_" -ErrorAction SilentlyContinue }
+
+$extraServers = Read-ExtraMcpServers
+$mcpConfig = Write-McpConfig -FileName 'mcp.json' -ServerName 'slackbridge' -ScriptPath $mainJs -ExtraServers $extraServers
+$effectiveSettings = Get-EffectiveSettings -ExtraServers $extraServers
 
 # 各フラグの意味は README の「権限の設計」を参照
 $claudeArgs = @(

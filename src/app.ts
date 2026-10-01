@@ -123,23 +123,14 @@ export function createDegradedDeps(logger: Logger): McpDeps {
 // --- Slack → Claude（受信イベントの処理） --------------------------------------
 
 /** DM か許可チャンネルで届いたメッセージ。保留中の ID への `yes xxxxx` / `no xxxxx` なら許可の回答、それ以外は Claude へ中継する */
-export async function handleMessage(
-  { bridge, server, relay, logger, watchdog, screen, rules }: Wiring,
-  result: GateResult,
-  raw: InboundRef
-): Promise<void> {
+export async function handleMessage(wiring: Wiring, result: GateResult, raw: InboundRef): Promise<void> {
+  const { bridge, server, relay, logger, watchdog } = wiring;
+
   // `!screen` / `!rules` は Claude に渡さずにここで処理する（Claude が止まっていても使えるように）
   const command = result.kind === 'deliver' ? COMMAND_RE.exec(result.content)?.[1]?.toLowerCase() : undefined;
   if (command && raw.channel && raw.threadTs) {
     if (raw.ts) await bridge.addReaction(raw.channel, raw.ts, REACTION.SEEN);
-    if (command === 'screen') {
-      if (screen) await screen.show(raw.channel, raw.threadTs);
-      else await bridge.postText(raw.channel, '⚠️ このブリッジでは !screen を使えない', raw.threadTs);
-    } else if (rules) {
-      await rules.list(raw.channel, raw.threadTs);
-    } else {
-      await bridge.postText(raw.channel, '⚠️ このブリッジでは !rules を使えない', raw.threadTs);
-    }
+    await handleCommand(wiring, command, raw.channel, raw.threadTs);
     return;
   }
 
@@ -164,6 +155,17 @@ export async function handleMessage(
       if (raw.channel && raw.ts) await bridge.addReaction(raw.channel, raw.ts, REACTION.SEEN);
       return;
   }
+}
+
+/** ブリッジ自身のコマンド。使えない環境ではその旨をスレッドに返す */
+async function handleCommand({ bridge, screen, rules }: Wiring, command: string, channel: string, threadTs: string): Promise<void> {
+  if (command === 'screen') {
+    if (screen) await screen.show(channel, threadTs);
+    else await bridge.postText(channel, '⚠️ このブリッジでは !screen を使えない', threadTs);
+    return;
+  }
+  if (rules) await rules.list(channel, threadTs);
+  else await bridge.postText(channel, '⚠️ このブリッジでは !rules を使えない', threadTs);
 }
 
 /** permission request のボタン（Allow / Deny / See more）が押されたとき */

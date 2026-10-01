@@ -97,15 +97,7 @@ export class ScreenRelay {
    * 押されたメッセージを結果の表示に書き換える。期限切れ・画面が変わっていたら何も送らず知らせる。投げない。
    */
   async pick(snapshotId: string, index: number, pressed: PressedMessage, byUserId: string): Promise<void> {
-    const report = async (message: string): Promise<void> => {
-      if (pressed.ts) {
-        await this.slack
-          .updateBlocks(pressed.channel, pressed.ts, message, [{ type: 'section', text: { type: 'plain_text', text: message } }])
-          .catch((e: unknown) => this.logger.warn('選択画面の表示の書き換えに失敗', e));
-      } else {
-        await this.slack.postText(pressed.channel, message, pressed.threadTs).catch(() => undefined);
-      }
-    };
+    const report = (message: string): Promise<void> => this.report(pressed, message);
 
     const snapshot = this.snapshots.get(snapshotId);
     this.snapshots.delete(snapshotId);
@@ -131,6 +123,17 @@ export class ScreenRelay {
     } catch (e) {
       this.logger.warn('選択キーの送信に失敗', e);
       await report(`⚠️ 選択を送れなかった: ${errMessage(e)}`);
+    }
+  }
+
+  /** 結果を知らせる。押されたメッセージが分かればそれを書き換え、分からなければスレッドに投稿する。投げない */
+  private async report(pressed: PressedMessage, message: string): Promise<void> {
+    if (pressed.ts) {
+      await this.slack
+        .updateBlocks(pressed.channel, pressed.ts, message, [{ type: 'section', text: { type: 'plain_text', text: message } }])
+        .catch((e: unknown) => this.logger.warn('選択画面の表示の書き換えに失敗', e));
+    } else {
+      await this.slack.postText(pressed.channel, message, pressed.threadTs).catch(() => undefined);
     }
   }
 

@@ -80,25 +80,19 @@ export function loadTokens(dir: string): Tokens {
   }
 
   const parsed = parseDotenv(text);
-
-  const botToken = parsed.SLACK_BOT_TOKEN;
-  if (!botToken) {
-    throw new Error('SLACK_BOT_TOKEN が設定されていない');
-  }
-  if (!botToken.startsWith('xoxb-')) {
-    throw new Error('SLACK_BOT_TOKEN の接頭辞が不正（xoxb- で始まる必要がある）');
-  }
-
-  const appToken = parsed.SLACK_APP_TOKEN;
-  if (!appToken) {
-    throw new Error('SLACK_APP_TOKEN が設定されていない');
-  }
-  if (!appToken.startsWith('xapp-')) {
-    throw new Error('SLACK_APP_TOKEN の接頭辞が不正（xapp- で始まる必要がある）');
-  }
-
   // process.env には書き込まない（子プロセスへ引き継がれるため）
-  return { botToken, appToken };
+  return {
+    botToken: requireToken(parsed, 'SLACK_BOT_TOKEN', 'xoxb-'),
+    appToken: requireToken(parsed, 'SLACK_APP_TOKEN', 'xapp-'),
+  };
+}
+
+/** .env の値のうち、key が設定されていて prefix で始まるものを返す。無い・接頭辞が違えば投げる（値は含めない） */
+function requireToken(parsed: Record<string, string>, key: string, prefix: string): string {
+  const value = parsed[key];
+  if (!value) throw new Error(`${key} が設定されていない`);
+  if (!value.startsWith(prefix)) throw new Error(`${key} の接頭辞が不正（${prefix} で始まる必要がある）`);
+  return value;
 }
 
 /**

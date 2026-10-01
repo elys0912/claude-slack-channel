@@ -429,12 +429,7 @@ export class SlackBridge {
       const result = gate(msg, this.access, this.botUserId, this.dedupe, this.handlers?.isKnownRequest, (c, t) =>
         this.isActiveThread(c, t)
       );
-      if (result.kind !== 'drop' && msg.channelType === 'im') this.learnDmChannel(msg.user, msg.channel);
-      // チャンネルでメンションされたら、そのスレッドの続きはメンション無しでも受け付ける
-      if (result.kind !== 'drop' && msg.channelType !== 'im' && msg.channel) {
-        const threadTs = msg.threadTs ?? msg.ts;
-        if (threadTs) this.markActiveThread(msg.channel, threadTs);
-      }
+      if (result.kind !== 'drop') this.rememberSender(msg);
       await this.handlers?.onMessage(result, {
         channel: msg.channel,
         ts: msg.ts,
@@ -444,6 +439,19 @@ export class SlackBridge {
     } catch (e) {
       this.logger.error('slack_event の処理で例外', e);
     }
+  }
+
+  /**
+   * gate を通った受信から送信先を覚える。DM なら送信者の DM チャンネルを、
+   * チャンネルならそのスレッド（メンションされたら続きはメンション無しでも受け付ける）を覚える
+   */
+  private rememberSender(msg: InboundMessage): void {
+    if (msg.channelType === 'im') {
+      this.learnDmChannel(msg.user, msg.channel);
+      return;
+    }
+    const threadTs = msg.threadTs ?? msg.ts;
+    if (msg.channel && threadTs) this.markActiveThread(msg.channel, threadTs);
   }
 
   /**

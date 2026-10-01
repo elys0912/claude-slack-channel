@@ -65,21 +65,13 @@ function findBreak(s: string, maxCut: number): number {
   const searchStart = Math.floor(maxCut / 2);
   const segment = s.slice(searchStart, maxCut);
 
-  let cut: number;
-  const paraIdx = segment.lastIndexOf('\n\n');
-  if (paraIdx !== -1) {
-    cut = searchStart + paraIdx + 2;
-  } else {
-    const nlIdx = segment.lastIndexOf('\n');
-    if (nlIdx !== -1) {
-      cut = searchStart + nlIdx + 1;
-    } else {
-      const spIdx = segment.lastIndexOf(' ');
-      if (spIdx !== -1) {
-        cut = searchStart + spIdx + 1;
-      } else {
-        cut = maxCut;
-      }
+  let cut = maxCut;
+  for (const separator of ['\n\n', '\n', ' ']) {
+    const idx = segment.lastIndexOf(separator);
+    if (idx !== -1) {
+      // 区切りの直後で切る（区切りは前のチャンクに残す）
+      cut = searchStart + idx + separator.length;
+      break;
     }
   }
   return cut <= 0 ? maxCut : cut;
