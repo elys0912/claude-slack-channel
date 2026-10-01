@@ -10,6 +10,10 @@ import { isValidRequestId } from './permission.js';
 import type { PermissionRequest } from './permission.js';
 import { sanitizeMeta } from './format.js';
 import { errMessage } from './errors.js';
+import { clip } from './text.js';
+
+/** 不正な request_id をログに残すときの長さ */
+const LOGGED_ID_MAX = 40;
 
 /**
  * MCP サーバーの名前。scripts/start.ps1 の $ServerName（--mcp-config と --dangerously-load-development-channels）と
@@ -200,7 +204,7 @@ export class ChannelServer {
         // 想定外の形の request_id は Slack に出さず（ボタンの value や "yes xxxxx" で扱えない）、
         // Claude Code 側で待たせ続けないよう、その場で deny を返す
         if (!isValidRequestId(params.request_id)) {
-          this.logger.warn(`permission_request の request_id が不正なので deny を返す: ${JSON.stringify(params.request_id.slice(0, 40))}`);
+          this.logger.warn(`permission_request の request_id が不正なので deny を返す: ${JSON.stringify(clip(params.request_id, LOGGED_ID_MAX))}`);
           await this.sendVerdict({ requestId: params.request_id, behavior: 'deny' });
           return;
         }
