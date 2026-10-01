@@ -116,8 +116,8 @@ export function createToolHandlers(bridge: ToolBridge, logger: Logger, onActivit
 
 /** 縮退モード: ツールはすべてエラーを返し、permission_request は無視する */
 export function createDegradedDeps(logger: Logger): McpDeps {
-  const busy = async (): Promise<string> =>
-    'error: 別のインスタンスが動いているため、この Slack ブリッジは送信できない';
+  const busy = (): Promise<string> =>
+    Promise.resolve('error: 別のインスタンスが動いているため、この Slack ブリッジは送信できない');
 
   return {
     logger,

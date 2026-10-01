@@ -508,6 +508,7 @@ deny は allow より必ず優先される（評価順は deny → ask → allow
 ```powershell
 npm test             # vitest run
 npm run typecheck    # tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json（本体とテストの両方）
+npm run lint         # eslint .（typescript-eslint の型情報付き推奨ルール。設定は eslint.config.js）
 npm run build        # tsc -p tsconfig.json で dist へ出力
 npm run check        # precheck（npm run build）のあと dist/scripts/check.js を実行
 ```
@@ -560,6 +561,7 @@ npm run check        # precheck（npm run build）のあと dist/scripts/check.j
 | `tsconfig.json` | 本体（`src` / `scripts`）のビルド設定 |
 | `tsconfig.test.json` | テストを含めた型検査用の設定（出力なし） |
 | `vitest.config.ts` | vitest の設定 |
+| `eslint.config.js` | eslint の設定（flat config） |
 
 ## ライセンス
 

@@ -342,7 +342,7 @@ export class SlackBridge {
 
   private bindListeners(): void {
     const on = (event: string, fn: (arg: RawEvent) => void): void => {
-      this.socket().on(event, ((arg: RawEvent) => fn(arg ?? {})) as (...a: never[]) => void);
+      this.socket().on(event, (arg: RawEvent) => fn(arg ?? {}));
     };
 
     on('connecting', () => this.logger.info('socket: connecting'));

@@ -78,8 +78,8 @@ export function loadTokens(dir: string): Tokens {
   let text: string;
   try {
     text = fs.readFileSync(file, 'utf8');
-  } catch {
-    throw new Error(`.env が見つからない: ${file}`);
+  } catch (e) {
+    throw new Error(`.env が見つからない: ${file}`, { cause: e });
   }
 
   const parsed = parseDotenv(text);
@@ -132,15 +132,15 @@ export function loadAccess(dir: string): ParsedAccess {
   let text: string;
   try {
     text = fs.readFileSync(file, 'utf8');
-  } catch {
-    throw new Error(`access.json が見つからない: ${file}`);
+  } catch (e) {
+    throw new Error(`access.json が見つからない: ${file}`, { cause: e });
   }
 
   let json: unknown;
   try {
     json = JSON.parse(stripBom(text));
   } catch (e) {
-    throw new Error(`access.json の JSON 構文が不正: ${errMessage(e)}`);
+    throw new Error(`access.json の JSON 構文が不正: ${errMessage(e)}`, { cause: e });
   }
 
   const result = AccessSchema.safeParse(json);

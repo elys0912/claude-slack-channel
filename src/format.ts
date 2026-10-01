@@ -4,6 +4,8 @@ import { clip } from './text.js';
 const BROADCAST_TAG_RE = /<!(channel|here|everyone)>/g;
 const SUBTEAM_TAG_RE = /<!subteam\^([A-Za-z0-9]+)(\|[^>]*)?>/g;
 const BARE_BROADCAST_RE = /@(channel|here|everyone)\b/g;
+/** ゼロ幅スペース。`@` と語の間に挟んでメンションとして解釈されないようにする */
+const ZWSP = '​';
 
 /**
  * `<!channel>` `<!here>` `<!everyone>` `<!subteam^ID>` と、素の `@channel` 等の
@@ -11,9 +13,9 @@ const BARE_BROADCAST_RE = /@(channel|here|everyone)\b/g;
  */
 export function neutralizeBroadcasts(text: string): string {
   let result = text;
-  result = result.replace(BROADCAST_TAG_RE, (_m, kind: string) => `@​${kind}`);
-  result = result.replace(SUBTEAM_TAG_RE, (_m, id: string) => `@​subteam:${id}`);
-  result = result.replace(BARE_BROADCAST_RE, (_m, kind: string) => `@​${kind}`);
+  result = result.replace(BROADCAST_TAG_RE, (_m, kind: string) => `@${ZWSP}${kind}`);
+  result = result.replace(SUBTEAM_TAG_RE, (_m, id: string) => `@${ZWSP}subteam:${id}`);
+  result = result.replace(BARE_BROADCAST_RE, (_m, kind: string) => `@${ZWSP}${kind}`);
   return result;
 }
 

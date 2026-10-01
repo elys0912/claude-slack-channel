@@ -901,7 +901,7 @@ async function client_sendBash(h: Harness, command: string): Promise<void> {
 
 describe('ホームタブ', () => {
   let h: Harness;
-  const home = { users: ACCESS.allowFrom, workDir: 'C:\dev', channelCount: 0 };
+  const home = { users: ACCESS.allowFrom, workDir: 'C:\\dev', channelCount: 0 };
   const publishes = () => h.web.calls.filter((c) => c.method === 'views.publish');
 
   function homeOpened(user: string, tab = 'home', team = 'T123ABC'): Record<string, unknown> {
