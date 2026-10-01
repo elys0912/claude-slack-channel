@@ -182,25 +182,49 @@ function Read-AllowExtra {
     }
 }
 
-# 次の許可ルールを channel-settings.json の allow に足し、%TEMP% に書き出したものを --settings に渡す。
-# - extra-mcp.json に登録した MCP サーバーのツール全部（mcp__<サーバー名>）。使う人が承知して入れたものなので確認を挟まない
-# - Slack の「今後も許可」で足したルール
-# 足すものが無ければ channel-settings.json をそのまま渡す。deny は channel-settings.json のまま（allow より優先される）
+# Claude Code の hook から呼ぶ記録コマンド（dist/src/hook.js）の設定。
+# セッションの開始・終了、応答の終了と失敗、通知（ターミナル側の入力待ち・使用量の上限）、圧縮を
+# 状態ディレクトリの hooks.jsonl に書き、ブリッジが Slack に知らせる。node が見つからなければ空
+function Get-HookSettings {
+    $hookJs = Join-Path $repoRoot 'dist\src\hook.js'
+    $node = Get-Command node -ErrorAction SilentlyContinue
+    if (-not $node) {
+        Write-Warning "node が見つからないので hook の通知は使わない"
+        return @{}
+    }
+    $hooks = @{}
+    foreach ($event in @('SessionStart', 'SessionEnd', 'Stop', 'StopFailure', 'Notification', 'PostCompact')) {
+        # exec 形式（command + args）でシェルを挟まず起動する（パスの引用符の問題を避ける）
+        $hooks[$event] = @(@{ hooks = @(@{ type = 'command'; command = $node.Source; args = @($hookJs); timeout = 5 }) })
+    }
+    return $hooks
+}
+
+# channel-settings.json に次を足し、%TEMP% に書き出したものを --settings に渡す。
+# - permissions.allow: extra-mcp.json に登録した MCP サーバーのツール全部（mcp__<サーバー名>。使う人が承知して入れたものなので確認を挟まない）と、
+#   Slack の「今後も許可」で足したルール
+# - hooks: Get-HookSettings
+# deny は channel-settings.json のまま（allow より優先される）。作れなければ channel-settings.json をそのまま渡す
 function Get-EffectiveSettings {
     param([hashtable]$ExtraServers)
 
     $extra = @(@($ExtraServers.Keys | Sort-Object | ForEach-Object { "mcp__$_" }) + @(Read-AllowExtra))
-    if ($extra.Count -eq 0) { return $settingsFile }
     try {
         $settings = Get-Content -LiteralPath $settingsFile -Raw -Encoding UTF8 | ConvertFrom-Json
-        $settings.permissions.allow = @(@($settings.permissions.allow) + $extra | Select-Object -Unique)
+        if ($extra.Count -gt 0) {
+            $settings.permissions.allow = @(@($settings.permissions.allow) + $extra | Select-Object -Unique)
+        }
+        $hooks = Get-HookSettings
+        if ($hooks.Count -gt 0) {
+            $settings | Add-Member -NotePropertyName 'hooks' -NotePropertyValue $hooks -Force
+        }
 
         $merged = Join-Path (Get-TempDir) 'channel-settings.merged.json'
         $json = $settings | ConvertTo-Json -Depth 10
         [System.IO.File]::WriteAllText($merged, $json, [System.Text.UTF8Encoding]::new($false))
         return $merged
     } catch {
-        Write-Warning "許可ルールを足した設定を作れなかったので、channel-settings.json をそのまま使う: $($_.Exception.Message)"
+        Write-Warning "許可ルールと hook を足した設定を作れなかったので、channel-settings.json をそのまま使う: $($_.Exception.Message)"
         return $settingsFile
     }
 }

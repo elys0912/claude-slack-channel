@@ -4,7 +4,7 @@
 // Claude へ返して、ボタン付きメッセージを結果表示に書き換える。
 // 回答が無いまま有効期限を過ぎたものは、Claude Code を待たせ続けないよう自動で deny を返す。
 import type { Logger } from './log.js';
-import type { Verdict } from './types.js';
+import type { ThreadRef, Verdict } from './types.js';
 import {
   PendingPermissions,
   buildAutoDeniedBlocks,
@@ -46,7 +46,7 @@ export class PermissionRelay {
   /** チャンネル → 最後にメッセージを受け取ったスレッド（DM に配信するときはそのスレッドに出す） */
   private readonly activeThread = new Map<string, string>();
   /** 最後にメッセージを受け取ったスレッド。permission request はまずここに返信する */
-  private lastThread: { channel: string; threadTs: string } | undefined;
+  private lastThreadRef: ThreadRef | undefined;
   /**
    * request_id → 期限切れで自動 deny するタイマー。ここにある ID はまだ Claude に回答を送っていない。
    * 回答を送ったら消す（期限切れのあとに押されたボタンなど、送らなかった回答では消さない）。
@@ -63,12 +63,22 @@ export class PermissionRelay {
   /** 会話中のスレッドを覚えておく。次の permission request はそこに返信される */
   rememberThread(channel: string, threadTs: string): void {
     this.activeThread.set(channel, threadTs);
-    this.lastThread = { channel, threadTs };
+    this.lastThreadRef = { channel, threadTs };
   }
 
   /** 期限内の保留中リクエストを返す（See more ボタン用） */
   lookup(requestId: string): PermissionRequest | undefined {
     return this.pending.get(requestId);
+  }
+
+  /** 最後にメッセージを受け取ったスレッド（ブリッジからの知らせの宛先にも使う） */
+  get lastThread(): ThreadRef | undefined {
+    return this.lastThreadRef;
+  }
+
+  /** まだ Claude に回答を送っていない request の件数 */
+  pendingCount(): number {
+    return this.expiryTimers.size;
   }
 
   /**
@@ -111,7 +121,7 @@ export class PermissionRelay {
 
   /** 最後に話しかけられたスレッドに返信する。まだ話しかけられていない・投稿に失敗した・ts が返らなかったら false */
   private async replyToLastThread(req: PermissionRequest, text: string, blocks: unknown[]): Promise<boolean> {
-    const target = this.lastThread;
+    const target = this.lastThreadRef;
     if (!target) return false;
     try {
       const res = await this.slack.postBlocks(target.channel, text, blocks, target.threadTs);
