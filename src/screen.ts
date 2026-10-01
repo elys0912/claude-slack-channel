@@ -110,6 +110,25 @@ export function keysToSelect(cursor: number, target: number): ConsoleKey[] {
   return keys;
 }
 
+/** 入力欄の行（`❯ ` / `> ` だけで、まだ何も打っていない） */
+const EMPTY_PROMPT_RE = /^\s*[❯>]\s*$/;
+/** 入力欄を探す画面の末尾の行数 */
+const PROMPT_LOOKBACK = 8;
+
+/**
+ * 画面が「何も打っていない入力欄で待っている」状態か（選択画面ではなく、末尾の数行に空の入力欄がある）。
+ * Slack から /exit や /compact を送ってよいかの確認に使う。入力欄に打ちかけの文字があれば false
+ */
+export function hasEmptyPrompt(screen: string): boolean {
+  if (parseChoiceScreen(screen) !== undefined) return false;
+  const tail = screen
+    .split('\n')
+    .map((l) => l.replace(/\s+$/, ''))
+    .filter((l) => l.trim() !== '')
+    .slice(-PROMPT_LOOKBACK);
+  return tail.some((l) => EMPTY_PROMPT_RE.test(l));
+}
+
 /** 画面の末尾 maxLines 行（空行を詰める）。選択画面でないときに Slack に送る */
 export function screenTail(screen: string, maxLines = DEFAULT_TAIL_LINES): string {
   return screen

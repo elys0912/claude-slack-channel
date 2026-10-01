@@ -12,6 +12,7 @@ import { startBridgeApp, startDegradedApp } from './app.js';
 import { replyTimeoutMs } from './watchdog.js';
 import { PowerShellConsole, findConsoleScript } from './console.js';
 import { HOOK_LOG_FILE } from './hook-event.js';
+import { RESTART_FLAG_FILE } from './session-control.js';
 
 /** リポジトリのルート（dist/src/main.js の 2 つ上） */
 const repoRoot = path.resolve(import.meta.dirname, '..', '..');
@@ -104,6 +105,7 @@ async function main(dir: string, logger: Logger): Promise<void> {
     home: { users: access.allowFrom, workDir: process.cwd(), channelCount: access.channels?.length ?? 0, botUserId },
     allowExtraFile: path.join(dir, 'allow-extra.json'),
     hookInboxFile: path.join(dir, HOOK_LOG_FILE),
+    restartFlagFile: path.join(dir, RESTART_FLAG_FILE),
     // 起動スクリプトは作業フォルダーで claude.exe を起動し、MCP サーバーも同じ作業フォルダーで動く
     denyFiles: [
       path.join(repoRoot, 'config', 'channel-settings.json'),

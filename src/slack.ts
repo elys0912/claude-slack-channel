@@ -260,6 +260,11 @@ export class SlackBridge {
     return new Set(this.dmChannels.values());
   }
 
+  /** Socket Mode がつながっている（!status 用） */
+  get isConnected(): boolean {
+    return this.connected;
+  }
+
   // --- 初期化 ---------------------------------------------------------------
 
   /**

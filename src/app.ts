@@ -10,7 +10,9 @@ import { PermissionRelay } from './permission-relay.js';
 import { revealInvisible } from './permission.js';
 import type { ActionParse } from './permission.js';
 import type { GateResult } from './gate.js';
-import type { PressedMessage } from './types.js';
+import type { PressedMessage, ThreadRef } from './types.js';
+import { SessionControl } from './session-control.js';
+import { buildStatusText } from './status.js';
 import { MS_PER_MINUTE, ResponseWatchdog, buildNoResponseText } from './watchdog.js';
 import type { ConsoleAccess } from './console.js';
 import { ScreenRelay, screenShowButton } from './screen-relay.js';
@@ -38,7 +40,7 @@ export type AppBridge = Pick<
   SlackBridge,
   'start' | 'stop' | 'postText' | 'postBlocks' | 'addReaction' | 'updateText' | 'postToAll' | 'updateBlocks'
 > &
-  Partial<Pick<SlackBridge, 'publishHome'>>;
+  Partial<Pick<SlackBridge, 'publishHome' | 'isConnected'>>;
 
 /** 受信処理が使う MCP サーバー側の操作 */
 export type AppServer = Pick<ChannelServer, 'pushMessage'>;
@@ -50,6 +52,7 @@ export type AppRelay = Pick<PermissionRelay, 'answerByText' | 'answerByButton' |
 export type AppWatchdog = Pick<ResponseWatchdog, 'delivered'>;
 export type AppScreen = Pick<ScreenRelay, 'show' | 'pick'>;
 export type AppRules = Pick<RuleRelay, 'propose' | 'confirm' | 'list' | 'remove'>;
+export type AppSession = Pick<SessionControl, 'restart' | 'compact'>;
 
 export interface Wiring {
   bridge: AppBridge;
@@ -61,10 +64,14 @@ export interface Wiring {
   screen?: AppScreen | undefined;
   /** 許可リストへの追加（無ければ「今後も許可」は今回の許可だけになる） */
   rules?: AppRules | undefined;
+  /** `!status` の文面。無ければ !status は使えない */
+  status?: (() => string) | undefined;
+  /** `!restart` / `!compact`。無ければ使えない */
+  session?: AppSession | undefined;
 }
 
-/** Claude に渡さず、ブリッジ自身が処理するコマンド */
-const COMMAND_RE = /^\s*!(screen|rules)\s*$/i;
+/** Claude に渡さず、ブリッジ自身が処理するコマンド（`!restart force` だけ引数を取る） */
+const COMMAND_RE = /^\s*!(screen|rules|status|restart(?:\s+force)?|compact)\s*$/i;
 
 // --- Claude → Slack（MCP ツールの実体） ----------------------------------------
 
@@ -129,11 +136,11 @@ export function createDegradedDeps(logger: Logger): McpDeps {
 export async function handleMessage(wiring: Wiring, result: GateResult, raw: InboundRef): Promise<void> {
   const { bridge, server, relay, logger, watchdog } = wiring;
 
-  // `!screen` / `!rules` は Claude に渡さずにここで処理する（Claude が止まっていても使えるように）
-  const command = result.kind === 'deliver' ? COMMAND_RE.exec(result.content)?.[1]?.toLowerCase() : undefined;
+  // `!screen` などのコマンドは Claude に渡さずにここで処理する（Claude が止まっていても使えるように）
+  const command = result.kind === 'deliver' ? COMMAND_RE.exec(result.content)?.[1]?.toLowerCase().replace(/\s+/g, ' ') : undefined;
   if (command && raw.channel && raw.threadTs) {
     if (raw.ts) await bridge.addReaction(raw.channel, raw.ts, REACTION.SEEN);
-    await handleCommand(wiring, command, raw.channel, raw.threadTs);
+    await handleCommand(wiring, command, { channel: raw.channel, threadTs: raw.threadTs }, raw.user ?? '');
     return;
   }
 
@@ -161,14 +168,33 @@ export async function handleMessage(wiring: Wiring, result: GateResult, raw: Inb
 }
 
 /** ブリッジ自身のコマンド。使えない環境ではその旨をスレッドに返す */
-async function handleCommand({ bridge, screen, rules }: Wiring, command: string, channel: string, threadTs: string): Promise<void> {
-  if (command === 'screen') {
-    if (screen) await screen.show(channel, threadTs);
-    else await bridge.postText(channel, '⚠️ このブリッジでは !screen を使えない', threadTs);
-    return;
+async function handleCommand({ bridge, screen, rules, status, session }: Wiring, command: string, at: ThreadRef, byUserId: string): Promise<void> {
+  const unavailable = (name: string): Promise<unknown> => bridge.postText(at.channel, `⚠️ このブリッジでは ${name} を使えない`, at.threadTs);
+  switch (command) {
+    case 'screen':
+      if (screen) await screen.show(at.channel, at.threadTs);
+      else await unavailable('!screen');
+      return;
+    case 'rules':
+      if (rules) await rules.list(at.channel, at.threadTs);
+      else await unavailable('!rules');
+      return;
+    case 'status':
+      if (status) await bridge.postText(at.channel, status(), at.threadTs);
+      else await unavailable('!status');
+      return;
+    case 'restart':
+    case 'restart force':
+      if (session) await session.restart(at, byUserId, command === 'restart force');
+      else await unavailable('!restart');
+      return;
+    case 'compact':
+      if (session) await session.compact(at, byUserId);
+      else await unavailable('!compact');
+      return;
+    default:
+      return;
   }
-  if (rules) await rules.list(channel, threadTs);
-  else await bridge.postText(channel, '⚠️ このブリッジでは !rules を使えない', threadTs);
 }
 
 /** permission request のボタン（Allow / Deny / See more）が押されたとき */
@@ -300,6 +326,10 @@ export interface BridgeAppOptions {
   hookInboxFile?: string | undefined;
   /** hooks.jsonl を読みに行く間隔（ミリ秒。テスト用。省略時は hook-inbox.ts の既定） */
   hookPollMs?: number | undefined;
+  /** `!restart` が置く印（状態ディレクトリの restart.flag。start.ps1 が見て --continue で起動し直す）。省略時は !restart と !compact を使えない */
+  restartFlagFile?: string | undefined;
+  /** `!restart force` で claude.exe を止める手段（テスト用。省略時は親プロセスに process.kill） */
+  killParent?: (() => void) | undefined;
 }
 
 /**
@@ -342,7 +372,7 @@ export async function startBridgeApp(opts: BridgeAppOptions): Promise<RunningApp
     },
   });
   const relay: PermissionRelay = new PermissionRelay(bridge, server, logger);
-  const wiring: Wiring = { bridge, server, relay, logger, watchdog, screen, rules };
+  const startedAt = new Date();
 
   // --- hook の記録 → Slack への知らせ -------------------------------------------
   const notice = new NoticePoster(bridge, () => relay.lastThread, logger);
@@ -364,8 +394,25 @@ export async function startBridgeApp(opts: BridgeAppOptions): Promise<RunningApp
       })
     : undefined;
 
+  // --- !status / !restart / !compact ----------------------------------------------
+  const status = (): string => {
+    const waiting = watchdog.waitingSince();
+    return buildStatusText({
+      startedAt,
+      workDir: opts.home?.workDir ?? '',
+      slackConnected: bridge.isConnected,
+      waitingSince: waiting === undefined ? undefined : new Date(waiting),
+      pendingPermissions: relay.pendingCount(),
+      lastHooks: inbox?.lastEvents(5) ?? [],
+      now: new Date(),
+    });
+  };
+  const session = opts.restartFlagFile
+    ? new SessionControl({ console: opts.console, restartFlagFile: opts.restartFlagFile, slack: bridge, logger, killParent: opts.killParent })
+    : undefined;
+  const wiring: Wiring = { bridge, server, relay, logger, watchdog, screen, rules, status, session };
+
   // --- ホームタブ -------------------------------------------------------------
-  const startedAt = new Date();
   const homeView = (running: boolean, since: Date): unknown =>
     buildHomeView({
       running,
@@ -391,6 +438,7 @@ export async function startBridgeApp(opts: BridgeAppOptions): Promise<RunningApp
     (stopped ??= (async () => {
       opts.lock?.release();
       inbox?.stop();
+      session?.stop();
       watchdog.stop();
       try {
         // Slack の書き換えと Claude への通知が届くよう、切断より前に行う（denyAll・publishHome は投げない）

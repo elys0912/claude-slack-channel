@@ -7,11 +7,15 @@ import { fileURLToPath } from 'node:url';
 
 /** 送れるキー。自由な文字入力は送らない */
 export type ConsoleKey = 'Up' | 'Down' | 'Enter';
+/** 送れるスラッシュコマンド（固定。console.ps1 側でも同じ一覧に限っている） */
+export type ConsoleCommand = 'exit' | 'compact';
 
 export interface ConsoleAccess {
   /** 表示中の範囲の文字（行末の空白は除く） */
   read(): Promise<string>;
   sendKeys(keys: ConsoleKey[]): Promise<void>;
+  /** `/exit` や `/compact` を打って Enter を送る */
+  sendCommand(command: ConsoleCommand): Promise<void>;
 }
 
 const TIMEOUT_MS = 20000;
@@ -49,6 +53,10 @@ export class PowerShellConsole implements ConsoleAccess {
   async sendKeys(keys: ConsoleKey[]): Promise<void> {
     if (keys.length === 0) return;
     await this.run(['-Mode', 'keys', '-Keys', keys.join(',')]);
+  }
+
+  async sendCommand(command: ConsoleCommand): Promise<void> {
+    await this.run(['-Mode', 'command', '-Command', command]);
   }
 
   private run(args: string[]): Promise<string> {
