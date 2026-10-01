@@ -3,7 +3,8 @@ import js from '@eslint/js';
 import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
-  { ignores: ['dist/**', 'node_modules/**', 'eslint.config.js', 'vitest.config.ts'] },
+  // .local/ は git 管理外のローカル用メモ・スパイク置き場（型情報の対象外なので lint しない）
+  { ignores: ['dist/**', 'node_modules/**', '.local/**', 'eslint.config.js', 'vitest.config.ts'] },
   js.configs.recommended,
   ...tseslint.configs.recommendedTypeChecked,
   {
