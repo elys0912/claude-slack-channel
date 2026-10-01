@@ -9,6 +9,8 @@ export interface HomeState {
   workDir: string;
   /** access.json の channels の件数 */
   channelCount: number;
+  /** ボットのユーザー ID（使い方のメンション表記に使う。無ければ名前で書く） */
+  botUserId?: string | undefined;
   /** 「今後も許可」で足したルールの件数（使えないなら undefined） */
   ruleCount: number | undefined;
   /** 無応答の警告までの分数（0 なら無効） */
@@ -39,6 +41,7 @@ export function buildHomeView(state: HomeState): unknown {
     ? `🟢 *稼働中*（${formatTime(state.since)} から）`
     : `⏸ *停止中*（${formatTime(state.since)} に停止）\n手元でセッションを起動すれば、また使えるようになるわ。`;
 
+  const mention = state.botUserId ? `<@${state.botUserId}>` : '@fox3-local';
   const blocks: unknown[] = [
     HEADER,
     section(status),
@@ -55,7 +58,7 @@ export function buildHomeView(state: HomeState): unknown {
     section(
       [
         '*使い方*',
-        '• DM で話しかけるか、許可したチャンネルで @fox3-local にメンションする。スレッドの続きはメンション無しでいい',
+        `• DM で話しかけるか、許可したチャンネルで ${mention} にメンションする。スレッドの続きはメンション無しでいい`,
         '• 返事は元のメッセージのスレッドに返す。届いたら 👀 を付ける',
         '• 確認が要る操作は、スレッドに *Allow* / *♾ 今後も許可* / *Deny* のボタンで出す',
         '• `!screen` でターミナルの画面を確認できる。選択画面で止まっていたらボタンで選べる',

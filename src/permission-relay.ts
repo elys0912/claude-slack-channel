@@ -11,6 +11,7 @@ import {
   buildExpiredBlocks,
   buildPermissionBlocks,
   buildResolvedBlocks,
+  buildVerdictFailedBlocks,
 } from './permission.js';
 import type { PermissionRequest } from './permission.js';
 
@@ -78,6 +79,11 @@ export class PermissionRelay {
    */
   async request(req: PermissionRequest): Promise<void> {
     this.pending.prune();
+    // 同じ ID が再び届いても（再送など）、既に出しているボタンで答えられるので出し直さない
+    if (this.pending.get(req.request_id)) {
+      this.logger.warn(`保留中の permission_request と同じ ID が届いたので無視する id=${req.request_id}`);
+      return;
+    }
     this.pending.add(req);
     this.startExpiryTimer(req.request_id);
 
@@ -119,7 +125,7 @@ export class PermissionRelay {
 
   /**
    * `yes xxxxx` / `no xxxxx` の返信による回答。手元に記録が無い（期限切れ・未知の）ID は Claude に送らない。
-   * 送ったら true を返す。
+   * 送ろうとしたら true を返す（送信に失敗したときも true。失敗はメッセージの書き換えで知らせる）。
    */
   async answerByText(verdict: Verdict, byUserId: string): Promise<boolean> {
     const req = this.pending.take(verdict.requestId);
@@ -127,10 +133,7 @@ export class PermissionRelay {
       this.logger.warn(`記録の無い permission id=${verdict.requestId} への返信は送らない`);
       return false;
     }
-    this.clearExpiryTimer(verdict.requestId);
-    await this.claude.sendVerdict(verdict);
-    this.logger.info(`verdict を送信 id=${verdict.requestId} behavior=${verdict.behavior}`);
-    await this.markResolved(req, verdict.behavior, byUserId);
+    await this.deliverVerdict(req, verdict, byUserId, 'テキスト');
     return true;
   }
 
@@ -145,11 +148,25 @@ export class PermissionRelay {
       if (pressed) await this.markExpired(verdict.requestId, pressed);
       return;
     }
+    await this.deliverVerdict(req, verdict, byUserId, 'ボタン');
+  }
 
+  /**
+   * 保留から取り出した回答を Claude に送り、配信済みのメッセージを結果表示に書き換える。
+   * 送れなかったとき（MCP の切断など）は投げず、メッセージを「送れなかった」表示にして知らせる
+   * （保留には戻さない。Claude 側に届いていない以上、この ID に答え直す手段は無い）。
+   */
+  private async deliverVerdict(req: PermissionRequest, verdict: Verdict, byUserId: string, how: string): Promise<void> {
     this.clearExpiryTimer(verdict.requestId);
-    await this.claude.sendVerdict(verdict);
-    this.logger.info(`verdict を送信（ボタン） id=${verdict.requestId} behavior=${verdict.behavior}`);
-    await this.markResolved(req, verdict.behavior, byUserId);
+    try {
+      await this.claude.sendVerdict(verdict);
+    } catch (e) {
+      this.logger.error(`verdict の送信に失敗（${how}） id=${verdict.requestId} behavior=${verdict.behavior}`, e);
+      await this.rewritePosted(req.request_id, buildVerdictFailedBlocks(req.request_id, verdict.behavior));
+      return;
+    }
+    this.logger.info(`verdict を送信（${how}） id=${verdict.requestId} behavior=${verdict.behavior}`);
+    await this.rewritePosted(req.request_id, buildResolvedBlocks(req, verdict.behavior, byUserId));
   }
 
   /**
@@ -185,8 +202,6 @@ export class PermissionRelay {
     if (!this.expiryTimers.has(requestId)) return;
     this.clearExpiryTimer(requestId);
     this.pending.remove(requestId);
-    const targets = this.posted.get(requestId) ?? [];
-    this.posted.delete(requestId);
 
     try {
       await this.claude.sendVerdict({ requestId, behavior: 'deny' });
@@ -194,30 +209,16 @@ export class PermissionRelay {
     } catch (e) {
       this.logger.error(`自動 deny の送信に失敗 id=${requestId}`, e);
     }
-
-    const { text, blocks } = buildAutoDeniedBlocks(requestId, reason);
-    for (const t of targets) {
-      try {
-        await this.slack.updateBlocks(t.channel, t.ts, text, blocks);
-      } catch (e) {
-        this.logger.warn(`自動拒否の表示への書き換えに失敗 channel=${t.channel}`, e);
-      }
-    }
+    await this.rewritePosted(requestId, buildAutoDeniedBlocks(requestId, reason));
   }
 
-  /** 配信済みのボタン付きメッセージを、すべて「Allowed / Denied」表示に書き換える */
-  private async markResolved(
-    req: PermissionRequest,
-    behavior: Verdict['behavior'],
-    byUserId: string
-  ): Promise<void> {
-    const targets = this.posted.get(req.request_id) ?? [];
-    this.posted.delete(req.request_id);
-
-    const { text, blocks } = buildResolvedBlocks(req, behavior, byUserId);
+  /** 配信済みのボタン付きメッセージをすべて書き換え、配信先の記録を消す。失敗はログに残して続ける */
+  private async rewritePosted(requestId: string, view: { text: string; blocks: unknown[] }): Promise<void> {
+    const targets = this.posted.get(requestId) ?? [];
+    this.posted.delete(requestId);
     for (const t of targets) {
       try {
-        await this.slack.updateBlocks(t.channel, t.ts, text, blocks);
+        await this.slack.updateBlocks(t.channel, t.ts, view.text, view.blocks);
       } catch (e) {
         this.logger.warn(`permission メッセージの書き換えに失敗 channel=${t.channel}`, e);
       }
@@ -229,7 +230,7 @@ export class PermissionRelay {
     try {
       await this.slack.updateBlocks(message.channel, message.ts, text, blocks);
     } catch (e) {
-      this.logger.warn('期限切れ表示への書き換えに失敗', e);
+      this.logger.warn(`期限切れ表示への書き換えに失敗 channel=${message.channel}`, e);
     }
   }
 }

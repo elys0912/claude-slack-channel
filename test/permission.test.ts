@@ -169,6 +169,14 @@ describe('buildPermissionBlocks', () => {
     expect((blocks[2] as { text: { text: string } }).text.text).toBe('desc\\u{202E}gnp.exe');
   });
 
+  it('向きの印・ソフトハイフン・埋め文字・C0/C1 制御文字も見えるようにし、タブと改行はそのまま残す', () => {
+    const { blocks } = buildPermissionBlocks({
+      ...sampleReq,
+      input_preview: 'a‎b­c⁠dㅤe\u001Bf\u0000g\u009Fh\tI\nj\rk'
+    });
+    expect(previewOf(blocks)).toBe('a\\u{200E}b\\u{AD}c\\u{2060}d\\u{3164}e\\u{1B}f\\u{0}g\\u{9F}h\tI\nj\rk');
+  });
+
   it('切り詰めの境目でサロゲートペアや可視化したエスケープを割らない', () => {
     const preview = ('😀‮').repeat(2000);
     const { blocks } = buildPermissionBlocks({ ...sampleReq, input_preview: preview }, 101);

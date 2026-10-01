@@ -5,3 +5,10 @@ export type Verdict = {
   requestId: string;
   behavior: 'allow' | 'deny';
 };
+
+/** ボタンが押されたメッセージの位置。ts が無ければ（押されたメッセージを特定できなければ）結果はスレッドに投稿する */
+export interface PressedMessage {
+  channel: string;
+  ts?: string | undefined;
+  threadTs: string;
+}

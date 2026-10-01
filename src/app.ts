@@ -10,6 +10,7 @@ import { PermissionRelay } from './permission-relay.js';
 import { revealInvisible } from './permission.js';
 import type { ActionParse } from './permission.js';
 import type { GateResult } from './gate.js';
+import type { PressedMessage } from './types.js';
 import { ResponseWatchdog, buildNoResponseText } from './watchdog.js';
 import type { ConsoleAccess } from './console.js';
 import { ScreenRelay, screenShowButton } from './screen-relay.js';
@@ -173,8 +174,7 @@ export async function handleAction(wiring: Wiring, parsed: ActionParse, ctx: Act
   }
 
   const pressed = ctx.channelId && ctx.messageTs ? { channel: ctx.channelId, ts: ctx.messageTs } : undefined;
-  // ボタンのメッセージが属するスレッド（スレッド外ならボタンのメッセージ自身を起点にする）
-  const threadTs = ctx.threadTs ?? ctx.messageTs;
+  const at = pressedMessage(ctx);
   const byUserId = ctx.userId ?? '';
 
   switch (parsed.kind) {
@@ -190,32 +190,36 @@ export async function handleAction(wiring: Wiring, parsed: ActionParse, ctx: Act
       // 回答すると保留から消えるので、先に中身を控えておく
       const req = wiring.relay.lookup(parsed.requestId);
       await wiring.relay.answerByButton({ requestId: parsed.requestId, behavior: 'allow' }, byUserId, pressed);
-      if (req && ctx.channelId && threadTs && wiring.rules) await wiring.rules.propose(req, ctx.channelId, threadTs);
+      if (req && at && wiring.rules) await wiring.rules.propose(req, at.channel, at.threadTs);
       return;
     }
 
     case 'screen_show':
-      if (ctx.channelId && threadTs && wiring.screen) await wiring.screen.show(ctx.channelId, threadTs);
+      if (at && wiring.screen) await wiring.screen.show(at.channel, at.threadTs);
       return;
 
     case 'screen_pick':
-      if (ctx.channelId && threadTs && wiring.screen) {
-        await wiring.screen.pick(parsed.snapshotId, parsed.index, { channel: ctx.channelId, ts: ctx.messageTs, threadTs }, byUserId);
-      }
+      if (at && wiring.screen) await wiring.screen.pick(parsed.snapshotId, parsed.index, at, byUserId);
       return;
 
     case 'rule_confirm':
-      if (ctx.channelId && threadTs && wiring.rules) {
-        await wiring.rules.confirm(parsed.proposalId, parsed.accept, { channel: ctx.channelId, ts: ctx.messageTs, threadTs }, byUserId);
-      }
+      if (at && wiring.rules) await wiring.rules.confirm(parsed.proposalId, parsed.accept, at, byUserId);
       return;
 
     case 'rule_remove':
-      if (ctx.channelId && threadTs && wiring.rules) {
-        await wiring.rules.remove(parsed.rule, { channel: ctx.channelId, ts: ctx.messageTs, threadTs }, byUserId);
-      }
+      if (at && wiring.rules) await wiring.rules.remove(parsed.rule, at, byUserId);
       return;
   }
+}
+
+/**
+ * ボタンが押されたメッセージの位置。結果の書き換え先（ts）と、投稿先のスレッド
+ * （ボタンのメッセージが属するスレッド。スレッド外ならボタンのメッセージ自身を起点にする）。チャンネルが分からなければ undefined
+ */
+function pressedMessage(ctx: ActionContext): PressedMessage | undefined {
+  const threadTs = ctx.threadTs ?? ctx.messageTs;
+  if (!ctx.channelId || !threadTs) return undefined;
+  return { channel: ctx.channelId, ts: ctx.messageTs, threadTs };
 }
 
 /**
@@ -233,15 +237,15 @@ export function fencePreview(preview: string): string {
  * 送り先はボタンのメッセージが属するスレッド（スレッド外ならボタンのメッセージ自身を起点にする）。
  */
 async function sendFullPreview({ bridge, relay, logger }: Wiring, requestId: string, ctx: ActionContext): Promise<void> {
-  if (!ctx.channelId || !ctx.messageTs) return;
+  const at = pressedMessage(ctx);
+  if (!at) return;
 
-  const threadTs = ctx.threadTs ?? ctx.messageTs;
   const req = relay.lookup(requestId);
   try {
     if (req) {
-      await bridge.postText(ctx.channelId, fencePreview(revealInvisible(req.input_preview)), threadTs);
+      await bridge.postText(at.channel, fencePreview(revealInvisible(req.input_preview)), at.threadTs);
     } else {
-      await bridge.postText(ctx.channelId, `⌛ permission request ${requestId} は既に期限切れ`, threadTs);
+      await bridge.postText(at.channel, `⌛ permission request ${requestId} は既に期限切れ`, at.threadTs);
     }
   } catch (e) {
     logger.warn('see_more の送信に失敗', e);
@@ -283,7 +287,7 @@ export interface BridgeAppOptions {
    * アプリのホームタブに状態を出す。起動時に users 全員のホームを「稼働中」にし、終了時に「停止中」へ書き換え、
    * ホームが開かれたら最新の状態で出し直す。省略時はホームを更新しない
    */
-  home?: { users: string[]; workDir: string; channelCount: number } | undefined;
+  home?: { users: string[]; workDir: string; channelCount: number; botUserId?: string | undefined } | undefined;
 }
 
 /**
@@ -336,6 +340,7 @@ export async function startBridgeApp(opts: BridgeAppOptions): Promise<RunningApp
       since,
       workDir: opts.home?.workDir ?? '',
       channelCount: opts.home?.channelCount ?? 0,
+      botUserId: opts.home?.botUserId,
       ruleCount: ruleStore?.list().length,
       replyTimeoutMin: Math.round((opts.replyTimeoutMs ?? 0) / 60000),
       now: new Date(),

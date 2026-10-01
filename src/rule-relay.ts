@@ -1,14 +1,17 @@
 // 「♾ 今後も許可」から許可リスト（allow-extra.json）への追加を提案し、確認のうえ書き込む。`!rules` で一覧・削除もする。
 // 書き込んだルールは start.ps1 が次の起動時に channel-settings.json の allow へ足す（起動中のセッションには効かない）。
-import { randomBytes } from 'node:crypto';
 import type { Logger } from './log.js';
 import type { PermissionRequest } from './permission.js';
 import { AllowRuleStore, denyOverlaps, parseRuleForCheck, proposeRule } from './allow-rules.js';
+import { clip, newToken } from './text.js';
+import type { PressedMessage } from './types.js';
 
 /** 追加の提案の有効期限 */
 const PROPOSAL_TTL_MS = 10 * 60 * 1000;
 /** 一覧に並べる削除ボタンの上限（actions ブロックの要素数の上限 25 に収める） */
 const LIST_MAX = 20;
+/** Slack の button の text の上限（75）に収める */
+const BUTTON_LABEL_MAX = 70;
 
 export interface RuleSlack {
   postText(channel: string, text: string, threadTs?: string): Promise<{ ts: string[] }>;
@@ -26,16 +29,6 @@ export interface RuleRelayOptions {
   newId?: () => string;
 }
 
-interface Pressed {
-  channel: string;
-  ts?: string | undefined;
-  threadTs: string;
-}
-
-function defaultId(): string {
-  return randomBytes(6).toString('base64url').toLowerCase().replace(/[^a-z0-9]/g, '0').slice(0, 8).padEnd(8, '0');
-}
-
 function section(text: string): unknown {
   return { type: 'section', text: { type: 'plain_text', text } };
 }
@@ -49,7 +42,7 @@ export class RuleRelay {
   constructor(opts: RuleRelayOptions) {
     this.opts = opts;
     this.now = opts.now ?? Date.now;
-    this.newId = opts.newId ?? defaultId;
+    this.newId = opts.newId ?? newToken;
   }
 
   /** 実行許可のリクエストから候補を作り、追加してよいかをスレッドで確認する。作れない・deny に当たるならその旨を知らせる。投げない */
@@ -98,7 +91,7 @@ export class RuleRelay {
   }
 
   /** 追加の提案に答えた。追加する前に deny を読み直して、もう一度照合する。投げない */
-  async confirm(proposalId: string, accept: boolean, pressed: Pressed, byUserId: string): Promise<void> {
+  async confirm(proposalId: string, accept: boolean, pressed: PressedMessage, byUserId: string): Promise<void> {
     const proposal = this.proposals.get(proposalId);
     this.proposals.delete(proposalId);
     if (!proposal || this.now() > proposal.expiresAt) {
@@ -145,7 +138,7 @@ export class RuleRelay {
             type: 'actions',
             elements: shown.map((r, i) => ({
               type: 'button',
-              text: { type: 'plain_text', text: `🗑 ${r}`.slice(0, 70) },
+              text: { type: 'plain_text', text: clip(`🗑 ${r}`, BUTTON_LABEL_MAX) },
               action_id: `rule_remove_${i}`,
               value: r,
             })),
@@ -159,7 +152,7 @@ export class RuleRelay {
   }
 
   /** 追加分のルールを消す。投げない */
-  async remove(rule: string, pressed: Pressed, byUserId: string): Promise<void> {
+  async remove(rule: string, pressed: PressedMessage, byUserId: string): Promise<void> {
     try {
       const removed = this.opts.store.remove(rule);
       if (removed) this.opts.logger.info(`許可リストから削除 rule=${rule} by=${byUserId}`);
@@ -173,7 +166,7 @@ export class RuleRelay {
     }
   }
 
-  private async report(pressed: Pressed, text: string): Promise<void> {
+  private async report(pressed: PressedMessage, text: string): Promise<void> {
     try {
       if (pressed.ts) await this.opts.slack.updateBlocks(pressed.channel, pressed.ts, text, [section(text)]);
       else await this.opts.slack.postText(pressed.channel, text, pressed.threadTs);
