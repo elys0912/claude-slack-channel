@@ -1,5 +1,12 @@
 ﻿# start.ps1 から dot-source して使う共通関数。
 
+# 起動のたびに生成するファイル（--mcp-config / --settings）の置き場所。無ければ作る
+function Get-TempDir {
+    $dir = Join-Path $env:TEMP 'claude-slack-channel'
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    return $dir
+}
+
 # claude.exe の場所を返す。PATH を優先し、無ければ VS Code 拡張の同梱版のうち
 # 最新バージョンを使う。見つからなければ $null。
 function Find-ClaudeExe {
@@ -57,8 +64,7 @@ function Write-McpConfig {
         [hashtable]$ExtraServers = @{}
     )
 
-    $path = Join-Path $env:TEMP "claude-slack-channel\$FileName"
-    New-Item -ItemType Directory -Path (Split-Path -Parent $path) -Force | Out-Null
+    $path = Join-Path (Get-TempDir) $FileName
 
     $servers = @{ $ServerName = @{ command = 'node'; args = @($ScriptPath) } }
     foreach ($name in $ExtraServers.Keys) {

@@ -15,7 +15,17 @@ export function clip(text: string, max: number): string {
   return `${text.slice(0, cut)}…`;
 }
 
-/** ブリッジが発行する控え・提案の ID（英小文字と数字 8 文字。permission.ts の TOKEN_ID_RE と対応） */
+/** ブリッジが発行する控え・提案の ID の長さ（permission.ts の TOKEN_ID_RE と対応） */
+export const TOKEN_ID_LENGTH = 8;
+/** base64url で TOKEN_ID_LENGTH 文字以上になる乱数のバイト数（6 バイト → 8 文字） */
+const TOKEN_RANDOM_BYTES = 6;
+
+/** ブリッジが発行する控え・提案の ID（英小文字と数字 TOKEN_ID_LENGTH 文字） */
 export function newToken(): string {
-  return randomBytes(6).toString('base64url').toLowerCase().replace(/[^a-z0-9]/g, '0').slice(0, 8).padEnd(8, '0');
+  return randomBytes(TOKEN_RANDOM_BYTES)
+    .toString('base64url')
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '0')
+    .slice(0, TOKEN_ID_LENGTH)
+    .padEnd(TOKEN_ID_LENGTH, '0');
 }

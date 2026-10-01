@@ -2,6 +2,7 @@
 import type { ParsedAccess } from './config.js';
 import type { Verdict } from './types.js';
 import { neutralizeBroadcasts } from './format.js';
+import { TOKEN_ID_LENGTH } from './text.js';
 
 export interface PermissionRequest {
   request_id: string;
@@ -81,7 +82,31 @@ export class PendingPermissions {
   }
 }
 
-const PLAIN_TEXT_LIMIT = 3000;
+/** Block Kit の plain_text（section / context）の文字数の上限 */
+export const PLAIN_TEXT_LIMIT = 3000;
+/** input_preview を表示する長さの既定（超えたら先頭と末尾を残して間を省略する） */
+const DEFAULT_PREVIEW_LIMIT = 2800;
+
+/**
+ * ボタンの action_id。出す側（この module・screen-relay.ts・rule-relay.ts）と解釈する側（parseBlockAction）で共用する。
+ * SCREEN_PICK / RULE_REMOVE は同じ actions ブロックに並ぶので `_<番号>` を付けて使う（action_id は 1 ブロック内で重複できない）
+ */
+export const ACTION = {
+  ALLOW: 'perm_allow',
+  ALLOW_ALWAYS: 'perm_always',
+  DENY: 'perm_deny',
+  SEE_MORE: 'perm_more',
+  SCREEN_SHOW: 'screen_show',
+  SCREEN_PICK: 'screen_pick',
+  RULE_ADD: 'rule_add',
+  RULE_CANCEL: 'rule_cancel',
+  RULE_REMOVE: 'rule_remove',
+} as const;
+
+/** 同じブロックに並ぶボタンの action_id（`screen_pick_0` など） */
+export function numberedAction(base: typeof ACTION.SCREEN_PICK | typeof ACTION.RULE_REMOVE, index: number): string {
+  return `${base}_${index}`;
+}
 
 /**
  * 表示を偽装できる不可視文字。承認画面で実際と違う内容に見せられないよう、`\u{202E}` の形で見えるようにする。
@@ -193,9 +218,10 @@ function orPlaceholder(text: string, placeholder: string): string {
  */
 export function buildPermissionBlocks(
   req: PermissionRequest,
-  previewLimit: number = 2800
+  previewLimit: number = DEFAULT_PREVIEW_LIMIT
 ): { text: string; blocks: unknown[]; truncated: boolean } {
-  const toolNameResult = truncatePlain(orPlaceholder(req.tool_name, '(不明なツール)'), PLAIN_TEXT_LIMIT - 'Tool: '.length);
+  const toolLabel = 'Tool: ';
+  const toolNameResult = truncatePlain(orPlaceholder(req.tool_name, '(不明なツール)'), PLAIN_TEXT_LIMIT - toolLabel.length);
   const descriptionResult = truncatePlain(orPlaceholder(req.description, '(説明なし)'), PLAIN_TEXT_LIMIT);
   const previewResult = truncateHeadTail(orPlaceholder(req.input_preview, '(入力なし)'), previewLimit);
 
@@ -208,7 +234,7 @@ export function buildPermissionBlocks(
     },
     {
       type: 'section',
-      text: { type: 'plain_text', text: `Tool: ${toolNameResult.text}` }
+      text: { type: 'plain_text', text: `${toolLabel}${toolNameResult.text}` }
     },
     {
       type: 'section',
@@ -231,11 +257,11 @@ export function buildPermissionBlocks(
     {
       type: 'actions',
       elements: [
-        button('Allow', 'perm_allow', req.request_id, 'primary'),
-        button('♾ 今後も許可', 'perm_always', req.request_id),
-        button('Deny', 'perm_deny', req.request_id, 'danger'),
+        button('Allow', ACTION.ALLOW, req.request_id, 'primary'),
+        button('♾ 今後も許可', ACTION.ALLOW_ALWAYS, req.request_id),
+        button('Deny', ACTION.DENY, req.request_id, 'danger'),
         // 省略した部分があるときだけ、全文を出すボタンを付ける
-        ...(truncated ? [button('See more', 'perm_more', req.request_id)] : [])
+        ...(truncated ? [button('See more', ACTION.SEE_MORE, req.request_id)] : [])
       ]
     }
   ];
@@ -256,12 +282,14 @@ export function buildResolvedBlocks(
 ): { text: string; blocks: unknown[] } {
   const verb = behavior === 'allow' ? 'Allowed' : 'Denied';
   const emoji = behavior === 'allow' ? '✅' : '❌';
-  const toolNameResult = truncatePlain(orPlaceholder(req.tool_name, '(不明なツール)'), PLAIN_TEXT_LIMIT - (verb.length + 3));
+  const label = `${verb}: `;
+  // 従来は見出しの余裕を verb + 3 文字で見積もっていた（`: ` の 2 文字 + 1 文字の余裕）。表示を変えないよう同じ値にする
+  const toolNameResult = truncatePlain(orPlaceholder(req.tool_name, '(不明なツール)'), PLAIN_TEXT_LIMIT - (label.length + 1));
 
   const blocks: unknown[] = [
     {
       type: 'section',
-      text: { type: 'plain_text', text: `${verb}: ${toolNameResult.text}` }
+      text: { type: 'plain_text', text: `${label}${toolNameResult.text}` }
     },
     {
       type: 'context',
@@ -336,30 +364,33 @@ export type ActionParse =
   | { ok: true; kind: 'rule_remove'; rule: string }
   | { ok: false; reason: string };
 
-/** 画面の控え・提案の ID（ブリッジが発行する英小文字と数字 8 文字） */
-export const TOKEN_ID_RE = /^[a-z0-9]{8}$/;
-const SCREEN_PICK_RE = /^([a-z0-9]{8})\.(\d)$/;
+/** 画面の控え・提案の ID（ブリッジが発行する英小文字と数字 TOKEN_ID_LENGTH 文字。text.ts の newToken が作る） */
+export const TOKEN_ID_RE = new RegExp(`^[a-z0-9]{${TOKEN_ID_LENGTH}}$`);
+/** screen_pick の value（`<控えの ID>.<選択肢の番号 1 桁>`。screen.ts の MAX_OPTIONS が 9 なので 1 桁で足りる） */
+const SCREEN_PICK_RE = new RegExp(`^([a-z0-9]{${TOKEN_ID_LENGTH}})\\.(\\d)$`);
+/** 同じブロックに並ぶボタン（`screen_pick_0` / `rule_remove_3` など）。番号は 2 桁まで */
+const NUMBERED_ACTION_RE = new RegExp(`^(${ACTION.SCREEN_PICK}|${ACTION.RULE_REMOVE})_\\d{1,2}$`);
 /** rule_remove の value（ルールそのもの）の長さの上限 */
 const RULE_VALUE_MAX = 500;
 
 /** request_id を value に持たないボタン。該当しなければ undefined（従来の perm_* の判定に進む） */
 function parseToolAction(actionId: string | undefined, value: string | undefined): ActionParse | undefined {
   // 同じブロックに並ぶボタンは action_id に番号が付く（screen_pick_0, rule_remove_3, ...）
-  const numbered = actionId === undefined ? undefined : /^(screen_pick|rule_remove)_\d{1,2}$/.exec(actionId);
+  const numbered = actionId === undefined ? undefined : NUMBERED_ACTION_RE.exec(actionId);
   const normalized = numbered ? numbered[1] : actionId;
   switch (normalized) {
-    case 'screen_show':
+    case ACTION.SCREEN_SHOW:
       return { ok: true, kind: 'screen_show' };
-    case 'screen_pick': {
+    case ACTION.SCREEN_PICK: {
       const m = SCREEN_PICK_RE.exec(value ?? '');
       if (!m) return { ok: false, reason: 'invalid_value' };
       return { ok: true, kind: 'screen_pick', snapshotId: m[1] ?? '', index: Number(m[2]) };
     }
-    case 'rule_add':
-    case 'rule_cancel':
+    case ACTION.RULE_ADD:
+    case ACTION.RULE_CANCEL:
       if (!TOKEN_ID_RE.test(value ?? '')) return { ok: false, reason: 'invalid_value' };
-      return { ok: true, kind: 'rule_confirm', proposalId: value ?? '', accept: actionId === 'rule_add' };
-    case 'rule_remove':
+      return { ok: true, kind: 'rule_confirm', proposalId: value ?? '', accept: actionId === ACTION.RULE_ADD };
+    case ACTION.RULE_REMOVE:
       if (!value || value.length > RULE_VALUE_MAX) return { ok: false, reason: 'invalid_value' };
       return { ok: true, kind: 'rule_remove', rule: value };
     default:
@@ -397,13 +428,13 @@ export function parseBlockAction(
   }
 
   switch (input.actionId) {
-    case 'perm_allow':
+    case ACTION.ALLOW:
       return { ok: true, kind: 'verdict', verdict: { requestId: input.value, behavior: 'allow' } };
-    case 'perm_deny':
+    case ACTION.DENY:
       return { ok: true, kind: 'verdict', verdict: { requestId: input.value, behavior: 'deny' } };
-    case 'perm_more':
+    case ACTION.SEE_MORE:
       return { ok: true, kind: 'see_more', requestId: input.value };
-    case 'perm_always':
+    case ACTION.ALLOW_ALWAYS:
       return { ok: true, kind: 'allow_always', requestId: input.value };
     default:
       return { ok: false, reason: 'unknown_action' };

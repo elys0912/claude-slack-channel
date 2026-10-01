@@ -9,11 +9,14 @@ import { choiceFingerprint, keysToSelect, parseChoiceScreen, screenTail } from '
 import type { ChoiceScreen } from './screen.js';
 import { clip, newToken } from './text.js';
 import type { PressedMessage } from './types.js';
+import { ACTION, PLAIN_TEXT_LIMIT, numberedAction } from './permission.js';
 
 /** 選択肢のボタンの有効期限 */
 const SNAPSHOT_TTL_MS = 5 * 60 * 1000;
 /** Slack の button の text の上限（75）に収める */
 const BUTTON_LABEL_MAX = 70;
+/** 通知欄（text）に出す見出しの長さ */
+const NOTIFICATION_TITLE_MAX = 100;
 
 export interface ScreenSlack {
   postText(channel: string, text: string, threadTs?: string): Promise<{ ts: string[] }>;
@@ -41,7 +44,7 @@ export function screenShowButton(): unknown {
   return {
     type: 'button',
     text: { type: 'plain_text', text: '🖥 画面を確認' },
-    action_id: 'screen_show',
+    action_id: ACTION.SCREEN_SHOW,
     value: 'show',
   };
 }
@@ -151,19 +154,19 @@ export function buildChoiceBlocks(id: string, choice: ChoiceScreen): { text: str
   const details = choice.options
     .map((o, i) => `${i === choice.cursor ? '▶' : '・'} ${o.label}${o.description ? ` — ${o.description}` : ''}`)
     .join('\n');
-  const text = `🖥 ターミナルが選択画面で止まっている: ${clip(choice.title[0] ?? '', 100)}`;
+  const text = `🖥 ターミナルが選択画面で止まっている: ${clip(choice.title[0] ?? '', NOTIFICATION_TITLE_MAX)}`;
   return {
     text,
     blocks: [
-      { type: 'section', text: { type: 'plain_text', text: clip(`🖥 ターミナルの選択画面\n${heading}`, 3000) } },
-      { type: 'context', elements: [{ type: 'plain_text', text: clip(redact(details), 3000) }] },
+      { type: 'section', text: { type: 'plain_text', text: clip(`🖥 ターミナルの選択画面\n${heading}`, PLAIN_TEXT_LIMIT) } },
+      { type: 'context', elements: [{ type: 'plain_text', text: clip(redact(details), PLAIN_TEXT_LIMIT) }] },
       {
         type: 'actions',
         elements: choice.options.map((o, i) => ({
           type: 'button',
           text: { type: 'plain_text', text: clip(redact(o.label), BUTTON_LABEL_MAX) },
           // 同じ actions ブロック内で action_id は重複できないので番号を付ける（受け側は接頭辞で判定）
-          action_id: `screen_pick_${i}`,
+          action_id: numberedAction(ACTION.SCREEN_PICK, i),
           value: `${id}.${i}`,
         })),
       },

@@ -22,6 +22,11 @@ param(
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'common.ps1')
 
+# MCP サーバーの名前（src/mcp.ts の SERVER_NAME と config/channel-settings.json の mcp__slackbridge__* と同じ値にすること）
+$ServerName = 'slackbridge'
+# 状態ディレクトリの既定の場所（%USERPROFILE% からの相対。src/config.ts の DEFAULT_STATE_DIR_RELATIVE と同じ値にすること）
+$DefaultStateDirRelative = '.claude\channels\slack'
+
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $mainJs = Join-Path $repoRoot 'dist\src\main.js'
 $projectList = Join-Path $repoRoot 'config\projects.json'
@@ -29,7 +34,7 @@ $settingsFile = Join-Path $repoRoot 'config\channel-settings.json'
 $stateDir = if ($env:SLACK_CHANNEL_STATE_DIR) {
     $env:SLACK_CHANNEL_STATE_DIR
 } else {
-    Join-Path $env:USERPROFILE '.claude\channels\slack'
+    Join-Path $env:USERPROFILE $DefaultStateDirRelative
 }
 
 # --- 起動前の確認 -------------------------------------------------------------
@@ -190,8 +195,7 @@ function Get-EffectiveSettings {
         $settings = Get-Content -LiteralPath $settingsFile -Raw -Encoding UTF8 | ConvertFrom-Json
         $settings.permissions.allow = @(@($settings.permissions.allow) + $extra | Select-Object -Unique)
 
-        $merged = Join-Path $env:TEMP 'claude-slack-channel\channel-settings.merged.json'
-        New-Item -ItemType Directory -Path (Split-Path -Parent $merged) -Force | Out-Null
+        $merged = Join-Path (Get-TempDir) 'channel-settings.merged.json'
         $json = $settings | ConvertTo-Json -Depth 10
         [System.IO.File]::WriteAllText($merged, $json, [System.Text.UTF8Encoding]::new($false))
         return $merged
@@ -222,7 +226,7 @@ $env:ENABLE_CLAUDEAI_MCP_SERVERS = 'false'
 ) | ForEach-Object { Remove-Item -Path "Env:$_" -ErrorAction SilentlyContinue }
 
 $extraServers = Read-ExtraMcpServers
-$mcpConfig = Write-McpConfig -FileName 'mcp.json' -ServerName 'slackbridge' -ScriptPath $mainJs -ExtraServers $extraServers
+$mcpConfig = Write-McpConfig -FileName 'mcp.json' -ServerName $ServerName -ScriptPath $mainJs -ExtraServers $extraServers
 $effectiveSettings = Get-EffectiveSettings -ExtraServers $extraServers
 
 # 各フラグの意味は README の「権限の設計」を参照
@@ -234,7 +238,7 @@ $claudeArgs = @(
     '--settings', $effectiveSettings,
     '--permission-mode', $PermissionMode,
     # 他のフラグより後ろ、最後に置く
-    '--dangerously-load-development-channels', 'server:slackbridge'
+    '--dangerously-load-development-channels', "server:$ServerName"
 )
 
 Write-Host "claude.exe: $claude"

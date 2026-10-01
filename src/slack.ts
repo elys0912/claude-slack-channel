@@ -23,6 +23,11 @@ const ACTIVE_THREAD_CAPACITY = 1000;
 
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 60000;
+/** 再接続に失敗するたびに待ち時間に掛ける倍率 */
+const RECONNECT_BACKOFF_FACTOR = 2;
+
+/** Web API 1 回あたりのタイムアウト */
+const WEB_API_TIMEOUT_MS = 15000;
 
 // 長時間ブロックしないよう、Web API のリトライは控えめにする
 // （Socket Mode 側の apps.connections.open は SDK の既定に任せる）
@@ -230,7 +235,7 @@ export class SlackBridge {
       (new WebClient(deps.botToken, {
         logger: toSlackLogger(deps.logger, 'slack-web'),
         retryConfig: RETRY_CONFIG,
-        timeout: 15000,
+        timeout: WEB_API_TIMEOUT_MS,
       }) as unknown as SlackWebApiLike);
   }
 
@@ -371,7 +376,7 @@ export class SlackBridge {
   private scheduleReconnect(): void {
     if (this.stopping || this.reconnectTimer) return;
     const delay = this.backoffMs;
-    this.backoffMs = Math.min(this.backoffMs * 2, RECONNECT_MAX_MS);
+    this.backoffMs = Math.min(this.backoffMs * RECONNECT_BACKOFF_FACTOR, RECONNECT_MAX_MS);
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = undefined;
       void this.reconnect();

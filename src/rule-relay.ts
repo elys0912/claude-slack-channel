@@ -1,6 +1,7 @@
 // 「♾ 今後も許可」から許可リスト（allow-extra.json）への追加を提案し、確認のうえ書き込む。`!rules` で一覧・削除もする。
 // 書き込んだルールは start.ps1 が次の起動時に channel-settings.json の allow へ足す（起動中のセッションには効かない）。
 import type { Logger } from './log.js';
+import { ACTION, numberedAction } from './permission.js';
 import type { PermissionRequest } from './permission.js';
 import { AllowRuleStore, denyOverlaps, parseRuleForCheck, proposeRule } from './allow-rules.js';
 import { clip, newToken } from './text.js';
@@ -78,8 +79,8 @@ export class RuleRelay {
           {
             type: 'actions',
             elements: [
-              { type: 'button', text: { type: 'plain_text', text: '追加する' }, style: 'primary', action_id: 'rule_add', value: id },
-              { type: 'button', text: { type: 'plain_text', text: 'やめる' }, action_id: 'rule_cancel', value: id },
+              { type: 'button', text: { type: 'plain_text', text: '追加する' }, style: 'primary', action_id: ACTION.RULE_ADD, value: id },
+              { type: 'button', text: { type: 'plain_text', text: 'やめる' }, action_id: ACTION.RULE_CANCEL, value: id },
             ],
           },
         ],
@@ -139,7 +140,7 @@ export class RuleRelay {
             elements: shown.map((r, i) => ({
               type: 'button',
               text: { type: 'plain_text', text: clip(`🗑 ${r}`, BUTTON_LABEL_MAX) },
-              action_id: `rule_remove_${i}`,
+              action_id: numberedAction(ACTION.RULE_REMOVE, i),
               value: r,
             })),
           },

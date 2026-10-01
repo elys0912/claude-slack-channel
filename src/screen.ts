@@ -7,8 +7,10 @@ const CURSOR_RE = /^(\s*)[❯>›]\s+(\S.*)$/;
 const NUMBERED_RE = /^\s*(?:[❯>›]\s+)?(\d+)\.\s+(\S.*)$/;
 /** 選択肢の前に表示する見出しを探す行数 */
 const TITLE_LOOKBACK = 6;
-/** 選択肢の上限（Slack のボタンを出しすぎないため） */
+/** 選択肢の上限（Slack のボタンを出しすぎないため。permission.ts の screen_pick の value は 1 桁の番号） */
 const MAX_OPTIONS = 9;
+/** 選択画面でないときに Slack に送る画面の末尾の行数 */
+const DEFAULT_TAIL_LINES = 25;
 
 export interface ChoiceOption {
   label: string;
@@ -109,7 +111,7 @@ export function keysToSelect(cursor: number, target: number): ConsoleKey[] {
 }
 
 /** 画面の末尾 maxLines 行（空行を詰める）。選択画面でないときに Slack に送る */
-export function screenTail(screen: string, maxLines = 25): string {
+export function screenTail(screen: string, maxLines = DEFAULT_TAIL_LINES): string {
   return screen
     .split('\n')
     .map((l) => l.replace(/\s+$/, ''))
