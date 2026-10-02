@@ -1,4 +1,4 @@
-// Claude Code と共有しているコンソールの画面を読む・選択キーを送る（scripts/console.ps1 を子プロセスで呼ぶ）。
+// Claude Code のコンソールの画面を読む・選択キーを送る（scripts/console.ps1 を子プロセスで呼ぶ）。
 // Slack に中継されないターミナル側の選択画面（Claude in Chrome の案内など）で止まったときに、Slack から解除するために使う。
 import { execFile } from 'node:child_process';
 import fs from 'node:fs';
@@ -41,9 +41,15 @@ export function findConsoleScript(fromDir: string = path.dirname(fileURLToPath(i
  */
 export class PowerShellConsole implements ConsoleAccess {
   private readonly script: string;
+  private readonly targetPid: number | undefined;
 
-  constructor(script: string) {
+  /**
+   * targetPid は Claude Code（claude.exe）の pid。Claude Code は MCP サーバーを別のコンソールで起動することがあり、
+   * そのままではブリッジのコンソール（空）を読んでしまうので、console.ps1 にそのプロセスのコンソールへ付け直させる
+   */
+  constructor(script: string, targetPid?: number) {
     this.script = script;
+    this.targetPid = targetPid;
   }
 
   read(): Promise<string> {
@@ -63,7 +69,10 @@ export class PowerShellConsole implements ConsoleAccess {
     return new Promise((resolve, reject) => {
       execFile(
         'powershell.exe',
-        ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', this.script, ...args],
+        [
+          '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', this.script, ...args,
+          ...(this.targetPid !== undefined ? ['-TargetPid', String(this.targetPid)] : []),
+        ],
         { windowsHide: false, timeout: TIMEOUT_MS, encoding: 'utf8', maxBuffer: MAX_OUTPUT_BYTES },
         (err, stdout, stderr) => {
           if (err) {
