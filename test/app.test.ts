@@ -12,6 +12,7 @@ import {
   REACTION,
   createDegradedDeps,
   createToolHandlers,
+  parseCommand,
   fencePreview,
   startBridgeApp,
   startDegradedApp,
@@ -791,6 +792,25 @@ describe('無応答の見張り（replyTimeoutMs）', () => {
   });
 });
 
+describe('parseCommand', () => {
+  it('コマンドだけの本文を正規化して返す', () => {
+    expect(parseCommand('!status')).toBe('status');
+    expect(parseCommand('  !RESTART   FORCE ')).toBe('restart force');
+  });
+
+  it('アプリの署名（太字 + メンション）が末尾にあっても認める', () => {
+    expect(parseCommand('!status *使用して送信されました* <@U0BF61P77U1>')).toBe('status');
+    expect(parseCommand('!compact\n*Sent using* <@U0BF61P77U1|Claude>')).toBe('compact');
+  });
+
+  it('コマンドの後ろに普通の文があればコマンドにしない', () => {
+    expect(parseCommand('!restart してから続けて')).toBeUndefined();
+    expect(parseCommand('!restart\nそのあと *これ* を見て')).toBeUndefined();
+    expect(parseCommand('!status <@U0BF61P77U1>')).toBeUndefined();
+    expect(parseCommand('status *a* <@U0BF61P77U1>')).toBeUndefined();
+  });
+});
+
 describe('ターミナル画面と許可リスト（!screen / 今後も許可 / !rules）', () => {
   const CHROME = [
     ' Claude wants to use your browser',
@@ -998,6 +1018,14 @@ describe('!status / !restart / !compact', () => {
     expect(text).toContain('C:\\dev\\app');
     expect(text).toContain('返事待ち: 無し');
     expect(text).toContain('実行許可: 0 件');
+  });
+
+  it('アプリが代理投稿した !status（末尾に署名付き）もコマンドとして扱う', async () => {
+    h.socket.emit('slack_event', dmEnvelope('!status *使用して送信されました* <@U0BF61P77U1>', { ts: '80.2' }));
+    await flush();
+
+    expect(h.notifications.filter((x) => x.method === 'notifications/claude/channel')).toEqual([]);
+    expect(texts()[0] ?? '').toContain('ブリッジの状態');
   });
 
   it('!restart は restart.flag を置いて /exit を送る', async () => {
