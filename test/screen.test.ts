@@ -7,6 +7,18 @@ describe('hasEmptyPrompt', () => {
     expect(hasEmptyPrompt('> ')).toBe(true);
   });
 
+  it('起動直後の入力例（Try "…"）だけの入力欄は空とみなす', () => {
+    // 2026-10-03 に !screen で取れた起動直後の画面の末尾
+    const screen = ['─'.repeat(20), '>\u00a0Try "how do I log an error?"', '─'.repeat(20), '  ⏵⏵ accept edits on (shift+tab to cycle)'].join('\n');
+    expect(hasEmptyPrompt(screen)).toBe(true);
+    expect(hasEmptyPrompt('❯ Try "write a test for screen.ts"')).toBe(true);
+  });
+
+  it('入力例に似ていても、続きを打っていれば空とみなさない', () => {
+    expect(hasEmptyPrompt('> Try "a" and more')).toBe(false);
+    expect(hasEmptyPrompt('> Try it')).toBe(false);
+  });
+
   it('打ちかけ・応答中・選択画面なら false', () => {
     expect(hasEmptyPrompt('❯ git sta')).toBe(false);
     expect(hasEmptyPrompt('⠋ Thinking…')).toBe(false);
