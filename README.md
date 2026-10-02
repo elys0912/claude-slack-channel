@@ -163,7 +163,7 @@ Claude Code を起動したいプロジェクトを並べる（`projects.json` �
 - 起動時に experimental channels の警告ダイアログが出たら、**「1」（I am using this for local development）** を選ぶ（起動スクリプトもその旨を表示する。ダイアログ自体は Claude Code 側の挙動で未確認）。
 - `dist` が無いときだけ自動でビルドする。**`git pull` で更新したあとは `npm run build` を手で実行すること**（古い `dist` のまま起動しちゃうから）。
 - 起動したら、Slack でこのボットに DM を送るか、`channels` に書いたチャンネルでボットにメンションして話しかければいいわ。
-- Slack から `!restart` されると、claude.exe の終了後に `--continue` を付けて起動し直す（[セッションの再起動と圧縮](#セッションの再起動と圧縮)）。
+- Slack から `!restart` されると、claude.exe の終了後に `--continue` を付けて起動し直す（[セッションの再起動・圧縮・クリア](#セッションの再起動圧縮クリアrestart--compact--clear)）。
   その起動の警告ダイアログは `scripts\dialog-answer.ps1` が画面を見張って自動で答える。
 
 ### セッションを並べる
@@ -201,8 +201,10 @@ Claude Code を起動したいプロジェクトを並べる（`projects.json` �
   セッションの停止なんかで止まっているのに、Slack からは気付けない……なんてことを防ぐためよ。見張るのは最後に渡したメッセージ1件だけで、
   待ち時間は `SLACK_CHANNEL_REPLY_TIMEOUT_MIN` で変えられる。警告には「🖥 画面を確認」ボタンが付く（[ターミナル画面の確認と解除](#ターミナル画面の確認と解除)）。
 - セッションは1つだけで、Slack 側の会話はすべて同じ文脈を共有する。
-- Slack のメッセージは本文として Claude に届くだけ。Claude Code のコマンドを Slack から実行する機能は、`!restart` と `!compact` を除いて無いわ。
-- `!` で始まる次のコマンドは Claude に渡さず、ブリッジが処理する: `!screen` `!rules` `!status` `!restart` `!restart force` `!compact`。
+- Slack のメッセージは本文として Claude に届くだけ。Claude Code のコマンドを Slack から実行する機能は、`!restart`・`!compact`・`!clear` を除いて無いわ。
+  `/clear` のように `/` で始まる文は Slack 自身のコマンドとして扱われ、Claude Code には届かない。
+- `!` で始まる次のコマンドは Claude に渡さず、ブリッジが処理する: `!help` `!screen` `!rules` `!status` `!restart` `!restart force` `!compact` `!clear`。
+  `!help` はこの一覧をスレッドに返す。
 
 ### 添付ファイルの保存と展開
 
@@ -332,7 +334,7 @@ Slack でボットのアプリを開くと、ホームタブにブリッジの�
 `!status` と送ると、スレッドに次を返す（Claude には渡さない）: 稼働開始時刻と経過時間、作業フォルダー、Slack の接続状態、
 Claude への返事を待ち始めた時刻、回答待ちの実行許可の件数、直近の hook 5 件。「返事が来ない」ときにまず見るもの。
 
-### セッションの再起動と圧縮（`!restart` / `!compact`）
+### セッションの再起動・圧縮・クリア（`!restart` / `!compact` / `!clear`）
 
 手元に行かずにセッションを立て直すための経路。channel プロトコルには Claude Code にコマンドを送る手段が無いので、
 ターミナルの入力欄に **固定のコマンドだけ** を打ち込む（`!screen` と同じ `scripts\console.ps1` 経由。自由な文字入力はできない）。
@@ -343,7 +345,9 @@ Claude への返事を待ち始めた時刻、回答待ちの実行許可の件�
 - `!restart force`: `/exit` を送らず claude.exe を強制終了する（ターミナルが応答中・画面が読めないとき用）。
   会話の記録は逐次保存されているので `--continue` で引き継げるが、直前の応答は失われる。
 - `!compact`: 入力欄に `/compact` + Enter を送る。終わると hook が「🧹 会話を圧縮した」を出す。
-- `/exit` と `/compact` は、画面が **空の入力欄で待っているときだけ** 送る（応答中・選択画面・打ちかけの文字があるときは送らず、その旨を返す）。
+- `!clear`: 入力欄に `/clear` + Enter を送る。会話は捨てられ、新しい会話になる（元に戻せない。残したい文脈があるなら `!compact`）。
+  終わると hook が「🧹 会話をクリアした」を出す。
+- `/exit`・`/compact`・`/clear` は、画面が **空の入力欄で待っているときだけ** 送る（応答中・選択画面・打ちかけの文字があるときは送らず、その旨を返す）。
 - 起動し直したあとの `--continue` と development channels の組み合わせ、ダイアログの自動応答（`development channel` という文字列を画面で探す）は
   Claude Code の版によって変わりうる。動かなくなったら `start.ps1` の `$DevChannelDialogPattern` を直す。
 
@@ -611,7 +615,7 @@ npm run check        # precheck（npm run build）のあと dist/scripts/check.j
 | `src/hook-notices.ts` | hook のイベントを Slack の文言にする（純関数） |
 | `src/notice.ts` | ブリッジからの知らせの投稿（最後のスレッド、無ければ DM） |
 | `src/status.ts` | `!status` の文面（純関数） |
-| `src/session-control.ts` | `!restart` / `!compact`（restart.flag と、ターミナルへの固定コマンドの送信） |
+| `src/session-control.ts` | `!restart` / `!compact` / `!clear`（restart.flag と、ターミナルへの固定コマンドの送信） |
 | `src/console.ts` | ターミナル画面の読み取り・選択キーの送信（`scripts/console.ps1` の呼び出し） |
 | `src/screen.ts` | 画面テキストから選択画面を取り出す（純関数） |
 | `src/screen-relay.ts` | `!screen` と選択肢ボタンの処理 |
@@ -631,7 +635,7 @@ npm run check        # precheck（npm run build）のあと dist/scripts/check.j
 | `scripts/check.ts` | `npm run check` の実体（Slack への疎通確認） |
 | `scripts/start.cmd` / `start.ps1` | 起動スクリプト |
 | `scripts/common.ps1` | 起動スクリプトの共通関数（claude.exe の探索、mcp.json の生成） |
-| `scripts/console.ps1` | ターミナル画面の読み取り・キー送信・固定コマンド（/exit・/compact）の送信（ブリッジが子プロセスで実行） |
+| `scripts/console.ps1` | ターミナル画面の読み取り・キー送信・固定コマンド（/exit・/compact・/clear）の送信（ブリッジが子プロセスで実行） |
 | `scripts/dialog-answer.ps1` | 起動し直すときの警告ダイアログを画面を見張って自動で答える（`start.ps1` が起動） |
 | `config/channel-settings.json` | channel セッション専用の権限設定 |
 | `config/*.example*` | `projects.json` / `access.json` / `.env` / `extra-mcp.json` のひな形 |

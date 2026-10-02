@@ -1,5 +1,5 @@
-// Slack からの `!restart` / `!compact`。Claude Code にスラッシュコマンドを送る手段は channel プロトコルに無いので、
-// ターミナルの入力欄に固定のコマンド（/exit・/compact）を打ち込む。自由な文字入力は受け付けない。
+// Slack からの `!restart` / `!compact` / `!clear`。Claude Code にスラッシュコマンドを送る手段は channel プロトコルに無いので、
+// ターミナルの入力欄に固定のコマンド（/exit・/compact・/clear）を打ち込む。自由な文字入力は受け付けない。
 // 再起動は、状態ディレクトリに restart.flag を置いてから /exit を送り、start.ps1 がフラグを見て --continue で起動し直す。
 import fs from 'node:fs';
 import type { ConsoleAccess, ConsoleCommand } from './console.js';
@@ -18,7 +18,7 @@ export interface SessionSlack {
 }
 
 export interface SessionControlOptions {
-  /** ターミナルを操作する手段。無ければ !restart（force 以外）と !compact は使えない */
+  /** ターミナルを操作する手段。無ければ !restart（force 以外）・!compact・!clear は使えない */
   console: ConsoleAccess | undefined;
   /** start.ps1 が起動し直す印として見るファイル */
   restartFlagFile: string;
@@ -83,6 +83,14 @@ export class SessionControl {
     await this.say(at, '🧹 /compact を送った。終わると「会話を圧縮した」の知らせが来る');
   }
 
+  /** /clear を送る（会話を捨てて新しい会話にする）。投げない */
+  async clear(at: ThreadRef, byUserId: string): Promise<void> {
+    const sent = await this.sendCommand(at, 'clear');
+    if (!sent) return;
+    this.opts.logger.info(`!clear by=${byUserId}: /clear を送った`);
+    await this.say(at, '🧹 /clear を送った。終わると「会話をクリアした」の知らせが来る');
+  }
+
   stop(): void {
     if (this.confirmTimer !== undefined) clearTimeout(this.confirmTimer);
     this.confirmTimer = undefined;
@@ -137,7 +145,7 @@ export class SessionControl {
     try {
       await this.opts.slack.postText(at.channel, text, at.threadTs);
     } catch (e) {
-      this.opts.logger.warn('再起動・圧縮の知らせの投稿に失敗', e);
+      this.opts.logger.warn('再起動・圧縮・クリアの知らせの投稿に失敗', e);
     }
   }
 }
