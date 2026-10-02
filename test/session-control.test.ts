@@ -143,14 +143,4 @@ describe('SessionControl', () => {
     expect(posted[1]).toContain('送れなかった');
     expect(fs.existsSync(flag)).toBe(false);
   });
-
-  it('clear: /clear を送る。送信に失敗しても投げずに知らせる', async () => {
-    await make(fakeConsole()).clear(AT, 'U1');
-    expect(commands).toEqual(['clear']);
-    expect(posted[0]).toContain('/clear を送った');
-
-    await make(fakeConsole({ fail: true })).clear(AT, 'U1');
-    expect(posted[1]).toContain('送れなかった');
-    expect(fs.existsSync(flag)).toBe(false);
-  });
 });

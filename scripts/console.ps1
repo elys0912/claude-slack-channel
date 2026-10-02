@@ -8,7 +8,7 @@
 # 使い方:
 #   console.ps1 -Mode read                     表示中の範囲の文字を UTF-8 で標準出力に書く
 #   console.ps1 -Mode keys -Keys Down,Enter    キーを順に送る（Up / Down / Enter / Digit1 のみ）
-#   console.ps1 -Mode command -Command exit    固定のスラッシュコマンド（/exit・/compact・/clear）を打って Enter を送る
+#   console.ps1 -Mode command -Command exit    固定のスラッシュコマンド（/exit か /compact）を打って Enter を送る
 #   -TargetPid <pid>                           そのプロセスのコンソールに付け直してから操作する
 
 param(
@@ -16,7 +16,7 @@ param(
     # カンマ区切りの文字列で受ける。powershell.exe -File で渡すと配列にならず "Down,Enter" が 1 つの値として届くため、
     # [string[]] + ValidateSet では複数キーが弾かれる。分割と許可一覧との照合はこの下で行う
     [string]$Keys = '',
-    [ValidateSet('exit', 'compact', 'clear')][string]$Command,
+    [ValidateSet('exit', 'compact')][string]$Command,
     [int]$TargetPid = 0
 )
 
