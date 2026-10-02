@@ -40,7 +40,9 @@ export class SessionControl {
 
   /**
    * 再起動する。restart.flag を置いて /exit を送る（force なら claude.exe を止める）。
-   * Claude Code が終わればこの MCP サーバーも終わり、start.ps1 がフラグを見て起動し直す。投げない
+   * Claude Code が終わればこの MCP サーバーも終わり、start.ps1 がフラグを見て起動し直す。投げない。
+   * 印は終了より前に置く必要があるので先に書き、/exit を送れなかった・強制終了に失敗したときは消す
+   * （残すと、後で手元で終了したときに start.ps1 が --continue で勝手に起動し直す）
    */
   async restart(at: ThreadRef, byUserId: string, force: boolean): Promise<void> {
     const { logger } = this.opts;
@@ -57,13 +59,17 @@ export class SessionControl {
       try {
         (this.opts.killParent ?? defaultKillParent)();
       } catch (e) {
+        this.removeFlag();
         await this.say(at, `⚠️ 強制終了に失敗した: ${errMessage(e)}`);
       }
       return;
     }
 
     const sent = await this.sendCommand(at, 'exit');
-    if (!sent) return;
+    if (!sent) {
+      this.removeFlag();
+      return;
+    }
     logger.info(`!restart by=${byUserId}: /exit を送った`);
     await this.say(at, '🔁 /exit を送った。終了したら start.ps1 が --continue で起動し直す（開始の知らせが来るまで待つこと）');
     this.scheduleExitCheck(at);
@@ -112,6 +118,15 @@ export class SessionControl {
       void this.say(at, '⚠️ /exit を送ったが、まだ終了していない。!screen で画面を確認するか、!restart force で強制終了すること');
     }, this.opts.exitConfirmMs ?? EXIT_CONFIRM_MS);
     this.confirmTimer.unref?.();
+  }
+
+  /** 再起動の印を消す。消せなくても投げない（ログに残す） */
+  private removeFlag(): void {
+    try {
+      fs.rmSync(this.opts.restartFlagFile, { force: true });
+    } catch (e) {
+      this.opts.logger.warn('再起動の印（restart.flag）を消せなかった', e);
+    }
   }
 
   private writeFlag(): void {
