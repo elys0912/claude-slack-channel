@@ -63,7 +63,7 @@ async function main(dir: string, logger: Logger): Promise<void> {
 
   logger.info(
     `起動 pid=${process.pid} node=${process.version} stateDir=${dir} ` +
-      `allowFrom=${access.allowFrom.length}人 channels=${access.channels?.length ?? 0}件 degraded=${degraded}`
+      `allowFrom=${access.allowFrom.length}人 channels=${access.channels?.length ?? 0}件 download=${tokens.downloadDir ? 'on' : 'off'} degraded=${degraded}`
   );
 
   if (degraded) {
@@ -108,6 +108,7 @@ async function main(dir: string, logger: Logger): Promise<void> {
       },
     },
     allowExtraFile: path.join(dir, 'allow-extra.json'),
+    download: tokens.downloadDir ? { bridge, dir: tokens.downloadDir } : undefined,
     // 起動スクリプトは作業フォルダーで claude.exe を起動し、MCP サーバーも同じ作業フォルダーで動く。
     // channel セッションの設定ファイルは -SettingsFile で替えられるので、起動スクリプトが渡した場所を優先する
     denyFiles: [

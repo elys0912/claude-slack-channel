@@ -20,6 +20,7 @@ oauth_config:
       - groups:history    # message.groups の受信に必要（access.json の channels に書いた非公開チャンネル）
       - reactions:write   # 受信 / 判定のリアクション
       - users:read        # npm run check で allowFrom の表示名を確認（users.info）
+      - files:read        # download_file で添付を保存（.env に DOWNLOAD_DIR を書いたときだけ使う）
 settings:
   event_subscriptions:
     bot_events:

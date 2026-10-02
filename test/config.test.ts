@@ -111,6 +111,22 @@ describe('loadTokens', () => {
     expect(() => loadTokens(dir)).toThrow();
   });
 
+  it('DOWNLOAD_DIR があれば絶対パスとして downloadDir に入れる', () => {
+    const target = path.join(dir, 'dl');
+    fs.writeFileSync(path.join(dir, '.env'), `SLACK_BOT_TOKEN=xoxb-TEST-DUMMY\nSLACK_APP_TOKEN=xapp-TEST-DUMMY\nDOWNLOAD_DIR="${target}"\n`);
+    expect(loadTokens(dir).downloadDir).toBe(target);
+  });
+
+  it('DOWNLOAD_DIR が無ければ downloadDir は無い', () => {
+    fs.writeFileSync(path.join(dir, '.env'), 'SLACK_BOT_TOKEN=xoxb-TEST-DUMMY\nSLACK_APP_TOKEN=xapp-TEST-DUMMY\n');
+    expect('downloadDir' in loadTokens(dir)).toBe(false);
+  });
+
+  it('DOWNLOAD_DIR が相対パスなら Error', () => {
+    fs.writeFileSync(path.join(dir, '.env'), 'SLACK_BOT_TOKEN=xoxb-TEST-DUMMY\nSLACK_APP_TOKEN=xapp-TEST-DUMMY\nDOWNLOAD_DIR=downloads\n');
+    expect(() => loadTokens(dir)).toThrow(/DOWNLOAD_DIR/);
+  });
+
   it('bot トークンの接頭辞が誤りなら Error（値を含まない）', () => {
     fs.writeFileSync(
       path.join(dir, '.env'),
