@@ -7,17 +7,17 @@ import { loadAccess, loadHomeCustom, loadTokens, parseDotenv, stateDir } from '.
 describe('stateDir', () => {
   it('環境変数があればそれを使う', () => {
     const abs = path.resolve(os.tmpdir(), 'custom', 'dir');
-    expect(stateDir({ SLACK_CHANNEL_STATE_DIR: abs } as NodeJS.ProcessEnv)).toBe(abs);
+    expect(stateDir({ SLACK_CHANNEL_STATE_DIR: abs })).toBe(abs);
   });
 
   it('環境変数が相対パスなら絶対パスに解決する', () => {
-    const result = stateDir({ SLACK_CHANNEL_STATE_DIR: 'rel/state' } as NodeJS.ProcessEnv);
+    const result = stateDir({ SLACK_CHANNEL_STATE_DIR: 'rel/state' });
     expect(path.isAbsolute(result)).toBe(true);
     expect(result).toBe(path.resolve('rel/state'));
   });
 
   it('環境変数がなければ既定パスを使う', () => {
-    const result = stateDir({} as NodeJS.ProcessEnv);
+    const result = stateDir({});
     expect(result).toBe(path.join(os.homedir(), '.claude', 'channels', 'slack'));
   });
 });

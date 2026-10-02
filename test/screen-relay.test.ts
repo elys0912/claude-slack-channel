@@ -18,6 +18,7 @@ function setup(screens: string[]) {
   const console: ConsoleAccess = {
     read: async () => reads.shift() ?? screens[screens.length - 1] ?? '',
     sendKeys: async (keys) => void sent.push(keys),
+    sendCommand: async () => undefined,
   };
   const relay = new ScreenRelay({
     console,
