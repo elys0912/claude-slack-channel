@@ -4,11 +4,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
 import { errMessage } from './errors.js';
+import { stripBom } from './text.js';
 
-/** 先頭の BOM（メモ帳などが付ける U+FEFF）を取り除く */
-function stripBom(text: string): string {
-  return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
-}
+/** 状態ディレクトリの既定の場所（ホームからの相対。scripts/start.ps1 の $DefaultStateDirRelative と同じ値にすること） */
+const DEFAULT_STATE_DIR_RELATIVE = ['.claude', 'channels', 'slack'];
 
 /**
  * 状態ディレクトリ（.env / access.json / logs / instance.lock の置き場所）を返す。
@@ -18,7 +17,7 @@ function stripBom(text: string): string {
 export function stateDir(env: NodeJS.ProcessEnv = process.env): string {
   const dir = env.SLACK_CHANNEL_STATE_DIR;
   if (dir) return path.resolve(dir);
-  return path.join(os.homedir(), '.claude', 'channels', 'slack');
+  return path.join(os.homedir(), ...DEFAULT_STATE_DIR_RELATIVE);
 }
 
 // `=` より右側を値として解釈する。引用符で囲まれていれば中身を返し、閉じ引用符の後ろの ` # ...` は捨てる。
@@ -84,30 +83,16 @@ export function loadTokens(dir: string): Tokens {
   let text: string;
   try {
     text = fs.readFileSync(file, 'utf8');
-  } catch {
-    throw new Error(`.env が見つからない: ${file}`);
+  } catch (e) {
+    throw new Error(`.env が見つからない: ${file}`, { cause: e });
   }
 
   const parsed = parseDotenv(text);
-
-  const botToken = parsed.SLACK_BOT_TOKEN;
-  if (!botToken) {
-    throw new Error('SLACK_BOT_TOKEN が設定されていない');
-  }
-  if (!botToken.startsWith('xoxb-')) {
-    throw new Error('SLACK_BOT_TOKEN の接頭辞が不正（xoxb- で始まる必要がある）');
-  }
-
-  const appToken = parsed.SLACK_APP_TOKEN;
-  if (!appToken) {
-    throw new Error('SLACK_APP_TOKEN が設定されていない');
-  }
-  if (!appToken.startsWith('xapp-')) {
-    throw new Error('SLACK_APP_TOKEN の接頭辞が不正（xapp- で始まる必要がある）');
-  }
-
   // process.env には書き込まない（子プロセスへ引き継がれるため）
-  const tokens: Tokens = { botToken, appToken };
+  const tokens: Tokens = {
+    botToken: requireToken(parsed, 'SLACK_BOT_TOKEN', 'xoxb-'),
+    appToken: requireToken(parsed, 'SLACK_APP_TOKEN', 'xapp-'),
+  };
   const downloadDir = parsed.DOWNLOAD_DIR;
   if (downloadDir) {
     // 相対パスはカレントディレクトリ（起動したプロジェクト）次第で保存先が変わるので受け付けない
@@ -115,6 +100,14 @@ export function loadTokens(dir: string): Tokens {
     tokens.downloadDir = path.resolve(downloadDir);
   }
   return tokens;
+}
+
+/** .env の値のうち、key が設定されていて prefix で始まるものを返す。無い・接頭辞が違えば投げる（値は含めない） */
+function requireToken(parsed: Record<string, string>, key: string, prefix: string): string {
+  const value = parsed[key];
+  if (!value) throw new Error(`${key} が設定されていない`);
+  if (!value.startsWith(prefix)) throw new Error(`${key} の接頭辞が不正（${prefix} で始まる必要がある）`);
+  return value;
 }
 
 /**
@@ -181,15 +174,15 @@ export function loadAccess(dir: string): ParsedAccess {
   let text: string;
   try {
     text = fs.readFileSync(file, 'utf8');
-  } catch {
-    throw new Error(`access.json が見つからない: ${file}`);
+  } catch (e) {
+    throw new Error(`access.json が見つからない: ${file}`, { cause: e });
   }
 
   let json: unknown;
   try {
     json = JSON.parse(stripBom(text));
   } catch (e) {
-    throw new Error(`access.json の JSON 構文が不正: ${errMessage(e)}`);
+    throw new Error(`access.json の JSON 構文が不正: ${errMessage(e)}`, { cause: e });
   }
 
   const result = AccessSchema.safeParse(json);

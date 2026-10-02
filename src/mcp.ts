@@ -10,12 +10,20 @@ import { isValidRequestId } from './permission.js';
 import type { PermissionRequest } from './permission.js';
 import { sanitizeMeta } from './format.js';
 import { errMessage } from './errors.js';
+import { clip } from './text.js';
 
+/** 不正な request_id をログに残すときの長さ */
+const LOGGED_ID_MAX = 40;
+
+/**
+ * MCP サーバーの名前。scripts/start.ps1 の $ServerName（--mcp-config と --dangerously-load-development-channels）と
+ * config/channel-settings.json の `mcp__slackbridge__*` も同じ名前にすること
+ */
 export const SERVER_NAME = 'slackbridge';
 export const SERVER_VERSION = '0.1.0';
 
 export const INSTRUCTIONS = [
-  'このチャンネルは Slack の DM と許可されたチャンネルを中継する。メッセージは <channel source="slackbridge" ...> の形で届く。',
+  `このチャンネルは Slack の DM と許可されたチャンネルを中継する。メッセージは <channel source="${SERVER_NAME}" ...> の形で届く。`,
   '',
   '返信の仕方:',
   '- 返事は必ず reply ツールで送る。ターミナルに書いた文章は相手には届かない。',
@@ -216,7 +224,7 @@ export class ChannelServer {
         // 想定外の形の request_id は Slack に出さず（ボタンの value や "yes xxxxx" で扱えない）、
         // Claude Code 側で待たせ続けないよう、その場で deny を返す
         if (!isValidRequestId(params.request_id)) {
-          this.logger.warn(`permission_request の request_id が不正なので deny を返す: ${JSON.stringify(params.request_id.slice(0, 40))}`);
+          this.logger.warn(`permission_request の request_id が不正なので deny を返す: ${JSON.stringify(clip(params.request_id, LOGGED_ID_MAX))}`);
           await this.sendVerdict({ requestId: params.request_id, behavior: 'deny' });
           return;
         }

@@ -1,6 +1,12 @@
 // 長文を Slack のメッセージ文字数制限に合わせて分割する純関数（I/O なし）
 
 const CLOSE_FENCE = '\n```';
+/** limit の下限。フェンスの開き直し・閉じ直しを入れても本文が残るだけの余裕 */
+const MIN_LIMIT = 64;
+/** maxFeasibleCut で cut を詰め直す回数の上限（通常は 1〜2 回で収束する） */
+const MAX_CUT_ADJUSTMENTS = 64;
+/** 区切り位置を探す範囲（チャンクの後ろ側の何分の 1 か） */
+const BREAK_SEARCH_FRACTION = 2;
 
 function isHighSurrogate(code: number): boolean {
   return code >= 0xd800 && code <= 0xdbff;
@@ -45,7 +51,7 @@ function closeFenceLenAt(s: string, cut: number, fenceLangOpen: string | undefin
 /** 内容量 + 閉じ直し分が budget に収まる最大の cut を求める（1 以上 s.length 以下） */
 function maxFeasibleCut(s: string, budget: number, fenceLangOpen: string | undefined): number {
   let cut = Math.min(budget, s.length);
-  for (let guard = 0; guard < 64; guard++) {
+  for (let guard = 0; guard < MAX_CUT_ADJUSTMENTS; guard++) {
     const suf = closeFenceLenAt(s, cut, fenceLangOpen);
     if (cut + suf <= budget) break;
     const next = budget - suf;
@@ -62,24 +68,16 @@ function maxFeasibleCut(s: string, budget: number, fenceLangOpen: string | undef
 
 /** 段落区切り(\n\n) > 改行(\n) > 空白の優先順で、後ろ半分の範囲だけを探して区切り位置を返す */
 function findBreak(s: string, maxCut: number): number {
-  const searchStart = Math.floor(maxCut / 2);
+  const searchStart = Math.floor(maxCut / BREAK_SEARCH_FRACTION);
   const segment = s.slice(searchStart, maxCut);
 
-  let cut: number;
-  const paraIdx = segment.lastIndexOf('\n\n');
-  if (paraIdx !== -1) {
-    cut = searchStart + paraIdx + 2;
-  } else {
-    const nlIdx = segment.lastIndexOf('\n');
-    if (nlIdx !== -1) {
-      cut = searchStart + nlIdx + 1;
-    } else {
-      const spIdx = segment.lastIndexOf(' ');
-      if (spIdx !== -1) {
-        cut = searchStart + spIdx + 1;
-      } else {
-        cut = maxCut;
-      }
+  let cut = maxCut;
+  for (const separator of ['\n\n', '\n', ' ']) {
+    const idx = segment.lastIndexOf(separator);
+    if (idx !== -1) {
+      // 区切りの直後で切る（区切りは前のチャンクに残す）
+      cut = searchStart + idx + separator.length;
+      break;
     }
   }
   return cut <= 0 ? maxCut : cut;
@@ -129,8 +127,8 @@ function shrinkToLimit(
  * 各 Piece の content を連結すると text に戻る。
  */
 export function splitPieces(text: string, limit: number): Piece[] {
-  if (limit < 64) {
-    throw new Error(`chunkText: limit must be >= 64 (got ${limit})`);
+  if (limit < MIN_LIMIT) {
+    throw new Error(`chunkText: limit must be >= ${MIN_LIMIT} (got ${limit})`);
   }
   if (text === '') return [];
   if (text.length <= limit) return [{ prefix: '', content: text, suffix: '' }];

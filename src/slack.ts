@@ -23,6 +23,11 @@ const ACTIVE_THREAD_CAPACITY = 1000;
 
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 60000;
+/** 再接続に失敗するたびに待ち時間に掛ける倍率 */
+const RECONNECT_BACKOFF_FACTOR = 2;
+
+/** Web API 1 回あたりのタイムアウト */
+const WEB_API_TIMEOUT_MS = 15000;
 
 // 長時間ブロックしないよう、Web API のリトライは控えめにする
 // （Socket Mode 側の apps.connections.open は SDK の既定に任せる）
@@ -250,12 +255,14 @@ export class SlackBridge {
     this.fetchFn = deps.fetch ?? fetch;
     this.injectedSocket = deps.socket;
     for (const channel of deps.access.channels ?? []) this.allowedChannelIds.add(channel);
+    // SDK のクライアントは引数の型が SlackWebApiLike / SocketClientLike より狭く（各 API 固有の型）、そのままでは代入できない。
+    // 使うメソッドだけに絞った interface で扱うため、ここでだけ型を付け替える（テストはこの interface の偽物を注入する）
     this.web =
       deps.web ??
       (new WebClient(deps.botToken, {
         logger: toSlackLogger(deps.logger, 'slack-web'),
         retryConfig: RETRY_CONFIG,
-        timeout: 15000,
+        timeout: WEB_API_TIMEOUT_MS,
       }) as unknown as SlackWebApiLike);
   }
 
@@ -276,6 +283,11 @@ export class SlackBridge {
   /** 送信先として分かっている許可ユーザーの DM チャンネル（access.channels は含まない） */
   get allowedDmChannels(): ReadonlySet<string> {
     return new Set(this.dmChannels.values());
+  }
+
+  /** Socket Mode がつながっている（!status 用） */
+  get isConnected(): boolean {
+    return this.connected;
   }
 
   // --- 初期化 ---------------------------------------------------------------
@@ -355,7 +367,7 @@ export class SlackBridge {
 
   private bindListeners(): void {
     const on = (event: string, fn: (arg: RawEvent) => void): void => {
-      this.socket().on(event, ((arg: RawEvent) => fn(arg ?? {})) as (...a: never[]) => void);
+      this.socket().on(event, (arg: RawEvent) => fn(arg ?? {}));
     };
 
     on('connecting', () => this.logger.info('socket: connecting'));
@@ -396,7 +408,7 @@ export class SlackBridge {
   private scheduleReconnect(): void {
     if (this.stopping || this.reconnectTimer) return;
     const delay = this.backoffMs;
-    this.backoffMs = Math.min(this.backoffMs * 2, RECONNECT_MAX_MS);
+    this.backoffMs = Math.min(this.backoffMs * RECONNECT_BACKOFF_FACTOR, RECONNECT_MAX_MS);
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = undefined;
       void this.reconnect();
@@ -454,12 +466,7 @@ export class SlackBridge {
       const result = gate(msg, this.access, this.botUserId, this.dedupe, this.handlers?.isKnownRequest, (c, t) =>
         this.isActiveThread(c, t)
       );
-      if (result.kind !== 'drop' && msg.channelType === 'im') this.learnDmChannel(msg.user, msg.channel);
-      // チャンネルでメンションされたら、そのスレッドの続きはメンション無しでも受け付ける
-      if (result.kind !== 'drop' && msg.channelType !== 'im' && msg.channel) {
-        const threadTs = msg.threadTs ?? msg.ts;
-        if (threadTs) this.markActiveThread(msg.channel, threadTs);
-      }
+      if (result.kind !== 'drop') this.rememberSender(msg);
       await this.handlers?.onMessage(result, {
         channel: msg.channel,
         ts: msg.ts,
@@ -469,6 +476,19 @@ export class SlackBridge {
     } catch (e) {
       this.logger.error('slack_event の処理で例外', e);
     }
+  }
+
+  /**
+   * gate を通った受信から送信先を覚える。DM なら送信者の DM チャンネルを、
+   * チャンネルならそのスレッド（メンションされたら続きはメンション無しでも受け付ける）を覚える
+   */
+  private rememberSender(msg: InboundMessage): void {
+    if (msg.channelType === 'im') {
+      this.learnDmChannel(msg.user, msg.channel);
+      return;
+    }
+    const threadTs = msg.threadTs ?? msg.ts;
+    if (msg.channel && threadTs) this.markActiveThread(msg.channel, threadTs);
   }
 
   /**

@@ -163,6 +163,8 @@ Claude Code を起動したいプロジェクトを並べる（`projects.json` �
 - 起動時に experimental channels の警告ダイアログが出たら、**「1」（I am using this for local development）** を選ぶ（起動スクリプトもその旨を表示する。ダイアログ自体は Claude Code 側の挙動で未確認）。
 - `dist` が無いときだけ自動でビルドする。**`git pull` で更新したあとは `npm run build` を手で実行すること**（古い `dist` のまま起動しちゃうから）。
 - 起動したら、Slack でこのボットに DM を送るか、`channels` に書いたチャンネルでボットにメンションして話しかければいいわ。
+- Slack から `!restart` されると、claude.exe の終了後に `--continue` を付けて起動し直す（[セッションの再起動と圧縮](#セッションの再起動と圧縮)）。
+  その起動の警告ダイアログは `scripts\dialog-answer.ps1` が画面を見張って自動で答える。
 
 ### セッションを並べる
 
@@ -199,7 +201,8 @@ Claude Code を起動したいプロジェクトを並べる（`projects.json` �
   セッションの停止なんかで止まっているのに、Slack からは気付けない……なんてことを防ぐためよ。見張るのは最後に渡したメッセージ1件だけで、
   待ち時間は `SLACK_CHANNEL_REPLY_TIMEOUT_MIN` で変えられる。警告には「🖥 画面を確認」ボタンが付く（[ターミナル画面の確認と解除](#ターミナル画面の確認と解除)）。
 - セッションは1つだけで、Slack 側の会話はすべて同じ文脈を共有する。
-- Slack のメッセージは本文として Claude に届くだけ。`/clear` などの Claude Code のコマンドを Slack から実行する機能は無いわ（ローカルのターミナルで操作して）。
+- Slack のメッセージは本文として Claude に届くだけ。Claude Code のコマンドを Slack から実行する機能は、`!restart` と `!compact` を除いて無いわ。
+- `!` で始まる次のコマンドは Claude に渡さず、ブリッジが処理する: `!screen` `!rules` `!status` `!restart` `!restart force` `!compact`。
 
 ### 添付ファイルの保存と展開
 
@@ -241,8 +244,11 @@ Claude Code を起動したいプロジェクトを並べる（`projects.json` �
   間に `…（途中 N 文字省略）…` を入れ、その下に「See more で全文を確認すること」という警告行を出す（省略しないときは警告行も出ない）。
 - ツール名・説明・入力内容のどれかを省略したときだけ **See more** ボタンが付く。押すと入力内容の全文をコードブロックでスレッドに送る
   （長ければ複数メッセージに分割。期限切れならその旨だけ送る）。
-- 文字の向きを変える制御文字（U+202A〜202E、U+2066〜2069）、ゼロ幅文字（U+200B〜200D）、BOM（U+FEFF）は、
+- 文字の向きを変える制御文字（U+202A〜202E、U+2066〜2069、U+200E〜200F）、ゼロ幅文字（U+200B〜200D、U+2060〜2064 など）、
+  BOM（U+FEFF）、ソフトハイフンや空白に見える埋め文字、タブ・改行以外の C0/C1 制御文字は、
   見えない形で紛れ込まないよう `\u{202E}` のような表記に置き換えて表示する（See more の全文でも同じ）。ブービートラップ対策よ。
+- Allow / Deny を Claude に送れなかったとき（MCP の切断など）は、そのメッセージを「送れなかった」表示に書き換える。
+  同じ ID の確認が重ねて届いても出し直さず、最初に出したボタンで答えられる。
 - Claude から届いた確認の ID が想定外の形（`l` を除く英小文字5文字でない）のときは、Slack には出さずにログに警告を残して、自動で deny を返す。
 - ターミナル側にも同じ確認が出ていて、どちらで答えてもいい（Claude Code 側の挙動で未確認）。
 
@@ -320,6 +326,43 @@ Slack でボットのアプリを開くと、ホームタブにブリッジの�
     "footer": "最終更新の前に出す一言"
   }
   ```
+
+### 状態の確認（`!status`）
+
+`!status` と送ると、スレッドに次を返す（Claude には渡さない）: 稼働開始時刻と経過時間、作業フォルダー、Slack の接続状態、
+Claude への返事を待ち始めた時刻、回答待ちの実行許可の件数、直近の hook 5 件。「返事が来ない」ときにまず見るもの。
+
+### セッションの再起動と圧縮（`!restart` / `!compact`）
+
+手元に行かずにセッションを立て直すための経路。channel プロトコルには Claude Code にコマンドを送る手段が無いので、
+ターミナルの入力欄に **固定のコマンドだけ** を打ち込む（`!screen` と同じ `scripts\console.ps1` 経由。自由な文字入力はできない）。
+
+- `!restart`: 状態ディレクトリに `restart.flag` を置き、入力欄に `/exit` + Enter を送る。claude.exe が終わるとブリッジも終わり、
+  `start.ps1` が印を見て `--continue` を付けて起動し直す（会話は引き継ぐ）。起動の警告ダイアログは `dialog-answer.ps1` が答える。
+  新しいセッションの hook が「🟢 セッションを開始した」を Slack に出すまで待つこと。20 秒たっても終わらなければその旨を知らせる。
+- `!restart force`: `/exit` を送らず claude.exe を強制終了する（ターミナルが応答中・画面が読めないとき用）。
+  会話の記録は逐次保存されているので `--continue` で引き継げるが、直前の応答は失われる。
+- `!compact`: 入力欄に `/compact` + Enter を送る。終わると hook が「🧹 会話を圧縮した」を出す。
+- `/exit` と `/compact` は、画面が **空の入力欄で待っているときだけ** 送る（応答中・選択画面・打ちかけの文字があるときは送らず、その旨を返す）。
+- 起動し直したあとの `--continue` と development channels の組み合わせ、ダイアログの自動応答（`development channel` という文字列を画面で探す）は
+  Claude Code の版によって変わりうる。動かなくなったら `start.ps1` の `$DevChannelDialogPattern` を直す。
+
+### Claude Code 側の出来事の知らせ（hook）
+
+Slack からは見えない Claude Code 側の出来事を、Claude Code の hook 経由で Slack に知らせるわ。使用量の上限とターミナル側の入力待ちが主な狙い。
+
+- 起動スクリプトが `--settings` に渡す設定へ hook を注入する。hook は `dist\src\hook.js` を実行して、状態ディレクトリの `hooks.jsonl` に 1 行追記するだけ。
+  ブリッジが 1.5 秒ごとにその増えた分を読んで Slack に出す（stdout は MCP 専用なので、hook はブリッジと直接は話さない）。
+- 宛先は、最後に話しかけられたスレッド。まだ話しかけられていなければ許可ユーザー全員の DM。
+- 知らせるもの:
+  - ターミナル側の入力待ち（Slack に中継されない許可の確認・elicitation・サブエージェントの質問）: **🖥 画面を確認** ボタン付き。Slack に中継中の許可があるときは重ねて出さない
+  - Claude が Slack に返事をしないまま応答を終えた（`Stop`）、または入力待ちのまま止まっている（`idle_prompt`）: Slack への返事を待っているときだけ
+  - 応答が失敗した（`StopFailure`）: 使用量の上限（rate limit）・混雑・認証・請求などの種別と、あれば詳細
+  - 使用量の上限からの自動再開の案内（`quota_auto_resume_*`）
+  - セッションの開始（作業フォルダー付き）・終了・会話のクリア・圧縮
+- 使用量の上限で止まったあとの自動再開（`autoContinueAtUsageLimit`）は、Claude Code の managed settings かデスクトップアプリでしか設定できない（CLI の設定や `--settings` では効かない）。
+  上限に達したらここで知らせるので、再開の操作は手元でやること。
+- `node` が PATH に無いと hook は注入されない（起動スクリプトが警告を出す）。hook のイベント名や欄は Claude Code の版で変わりうるので、知らせが出ないときは `hooks.jsonl` に何が記録されているかを見ること。
 
 ## 権限の設計
 
@@ -442,13 +485,15 @@ deny は allow より必ず優先される（評価順は deny → ask → allow
 | `access.json` | 状態ディレクトリ | `teamId`（`T...`）、`allowFrom`（`U...` の配列）、`channels`（`C...` / `G...` の配列、省略可）。これ以外のキーはエラー |
 | `home.json` | 状態ディレクトリ（省略可） | ホームタブの文面の差し替え（[アプリのホームタブ](#アプリのホームタブ)） |
 | `allow-extra.json` | 状態ディレクトリ | Slack の「今後も許可」で足したルール（`{"allow": [...]}`）。ブリッジが書き、起動スクリプトが allow に足す |
+| `restart.flag` | 状態ディレクトリ | `!restart` が置く印。`start.ps1` が終了時に見て、あれば消して `--continue` で起動し直す |
+| `hooks.jsonl` | 状態ディレクトリ | Claude Code の hook が追記する出来事の記録（1 行 1 JSON）。ブリッジが読んで Slack に知らせる。1MB を超えると `hooks.jsonl.1` に退避 |
 | `logs\bridge.log` | 状態ディレクトリ | ログ（下記） |
 | `instance.lock` | 状態ディレクトリ | 多重起動防止のロック（自動で作られ、終了時に消える） |
 | `projects.json` | `config\`（git 管理外） | `projects`: `{ name, path }` の配列。起動時の選択肢 |
 | `extra-mcp.json` | `config\`（git 管理外） | Slack セッションで一緒に使う MCP サーバー（`.mcp.json` と同じ `mcpServers` の形。ひな形: `extra-mcp.example.json`）。登録したサーバーのツールは確認なしで実行される |
 | `channel-settings.json` | `config\` | channel セッション専用の Claude Code 設定 |
 | `mcp.json` | `%TEMP%\claude-slack-channel\<状態ディレクトリ名>\` | 起動スクリプトが毎回生成する MCP 設定 |
-| `channel-settings.merged.json` | `%TEMP%\claude-slack-channel\<状態ディレクトリ名>\` | 追加の allow を足した設定。足すものがあるときだけ起動スクリプトが生成する |
+| `channel-settings.merged.json` | `%TEMP%\claude-slack-channel\<状態ディレクトリ名>\` | `channel-settings.json` に追加の allow と hook を足した設定。起動スクリプトが毎回生成する |
 
 ### 環境変数
 
@@ -477,6 +522,9 @@ deny は allow より必ず優先される（評価順は deny → ask → allow
 | 覚えておくチャンネルのスレッド | 1000件まで（古いものから忘れる。起動中だけ） |
 | ロックのハートビート / 失効 | 10秒ごとに更新 / 30秒更新が無ければ失効。ハートビートが現在時刻より5秒を超えて未来でも失効扱い（プロセスが生きているかは見ない） |
 | 再接続の待ち時間 | 1秒から倍々で最大60秒 |
+| `hooks.jsonl` を読む間隔 / 起動時に読み直す範囲 | 1.5秒 / 起動の30秒前まで |
+| `!restart` で /exit を送ってから「まだ終了していない」と知らせるまで | 20秒 |
+| 起動し直すときの警告ダイアログの待ち時間 | 90秒（`start.ps1` の `$DevChannelDialogTimeoutSec`） |
 
 ## トラブルシューティング
 
@@ -504,6 +552,8 @@ deny は allow より必ず優先される（評価順は deny → ask → allow
 | 実行許可が勝手に拒否された | 30分答えが無かった（期限切れ）、どの DM にも投稿できなかった（ログに `permission_request をどの DM にも配信できなかった`）、またはブリッジが終了した、のいずれかで自動 deny している。投稿失敗なら直前の `DM への送信に失敗` の理由（スコープ・DM チャンネル）を確認する |
 | スリープ復帰後に反応しない | 自動で再接続する（最大60秒間隔で繰り返す）。しばらく経っても駄目ならログを確認して起動し直す |
 | 更新したのに挙動が変わらない | `npm run build` を実行してから起動し直す |
+| `!restart` したのに戻ってこない | `!status` で確認。/exit が効かなければ `!restart force`。起動し直しの警告ダイアログで止まっているなら、`dialog-answer.ps1` が探す文字列（`$DevChannelDialogPattern`）が画面の文言と合っていない可能性があるので、手元で画面を見て直す |
+| 使用量の上限や入力待ちの知らせが Slack に来ない | 状態ディレクトリの `hooks.jsonl` が増えているか見る。増えていなければ hook が動いていない（`%TEMP%\claude-slack-channel\channel-settings.merged.json` に `hooks` があるか、`node` に PATH が通っているか）。増えているのに来なければ、記録された `hook_event_name` / `notification_type` が対応表に無い可能性があるので、ログの `hooks.jsonl に読めない行がある` と合わせて確認する |
 
 ## 開発
 
@@ -512,6 +562,7 @@ deny は allow より必ず優先される（評価順は deny → ask → allow
 ```powershell
 npm test             # vitest run
 npm run typecheck    # tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json（本体とテストの両方）
+npm run lint         # eslint .（typescript-eslint の型情報付き推奨ルール。設定は eslint.config.js）
 npm run build        # tsc -p tsconfig.json で dist へ出力
 npm run check        # precheck（npm run build）のあと dist/scripts/check.js を実行
 ```
@@ -528,6 +579,13 @@ npm run check        # precheck（npm run build）のあと dist/scripts/check.j
 | `src/permission.ts` | 実行許可メッセージのブロック組み立てと、ボタン操作の検証（純関数） |
 | `src/gate.ts` | 受信メッセージを中継すべきかの判定（純関数） |
 | `src/watchdog.ts` | Claude の無応答の見張り |
+| `src/hook.ts` | Claude Code の hook として起動され、`hooks.jsonl` に 1 行追記するコマンド |
+| `src/hook-event.ts` | `hooks.jsonl` の 1 行の型と欄 |
+| `src/hook-inbox.ts` | `hooks.jsonl` の増えた分を読んでイベントとして渡す |
+| `src/hook-notices.ts` | hook のイベントを Slack の文言にする（純関数） |
+| `src/notice.ts` | ブリッジからの知らせの投稿（最後のスレッド、無ければ DM） |
+| `src/status.ts` | `!status` の文面（純関数） |
+| `src/session-control.ts` | `!restart` / `!compact`（restart.flag と、ターミナルへの固定コマンドの送信） |
 | `src/console.ts` | ターミナル画面の読み取り・選択キーの送信（`scripts/console.ps1` の呼び出し） |
 | `src/screen.ts` | 画面テキストから選択画面を取り出す（純関数） |
 | `src/screen-relay.ts` | `!screen` と選択肢ボタンの処理 |
@@ -542,11 +600,13 @@ npm run check        # precheck（npm run build）のあと dist/scripts/check.j
 | `src/log.ts` | ログ出力（トークンのマスク込み） |
 | `src/errors.ts` | エラー値の文字列化 helper |
 | `src/stdio-guard.ts` | stdout を MCP 専用に保つガード |
+| `src/text.ts` | 文字列の小さな整形（BOM 除去・切り詰め・ID の生成） |
 | `src/types.ts` | 共有型 |
 | `scripts/check.ts` | `npm run check` の実体（Slack への疎通確認） |
 | `scripts/start.cmd` / `start.ps1` | 起動スクリプト |
 | `scripts/common.ps1` | 起動スクリプトの共通関数（claude.exe の探索、mcp.json の生成） |
-| `scripts/console.ps1` | ターミナル画面の読み取りとキー送信（ブリッジが子プロセスで実行） |
+| `scripts/console.ps1` | ターミナル画面の読み取り・キー送信・固定コマンド（/exit・/compact）の送信（ブリッジが子プロセスで実行） |
+| `scripts/dialog-answer.ps1` | 起動し直すときの警告ダイアログを画面を見張って自動で答える（`start.ps1` が起動） |
 | `config/channel-settings.json` | channel セッション専用の権限設定 |
 | `config/*.example*` | `projects.json` / `access.json` / `.env` / `extra-mcp.json` のひな形 |
 | `slack-app-manifest.yaml` | Slack アプリの manifest |
@@ -556,6 +616,7 @@ npm run check        # precheck（npm run build）のあと dist/scripts/check.j
 | `tsconfig.json` | 本体（`src` / `scripts`）のビルド設定 |
 | `tsconfig.test.json` | テストを含めた型検査用の設定（出力なし） |
 | `vitest.config.ts` | vitest の設定 |
+| `eslint.config.js` | eslint の設定（flat config） |
 
 ## ライセンス
 
