@@ -21,6 +21,7 @@ describe('slack-app-manifest.yaml', () => {
     expect(botScopes().sort()).toEqual([
       'channels:history',
       'chat:write',
+      'files:read',
       'groups:history',
       'im:history',
       'im:write',

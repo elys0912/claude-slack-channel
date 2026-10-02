@@ -68,11 +68,16 @@ export function parseDotenv(text: string): Record<string, string> {
 export interface Tokens {
   botToken: string;
   appToken: string;
+  /**
+   * Slack の添付を保存するフォルダー（.env の DOWNLOAD_DIR を絶対パスにしたもの）。
+   * 設定されているときだけ download_file ツールを出す（files:read スコープが要るため、使うボットだけで有効にする）
+   */
+  downloadDir?: string;
 }
 
 /**
- * dir/.env から SLACK_BOT_TOKEN（xoxb-）と SLACK_APP_TOKEN（xapp-）を読む。環境変数は見ない。
- * ファイルが読めない・キーが無い・接頭辞が違うときは投げる（メッセージにトークンの値は含めない）。
+ * dir/.env から SLACK_BOT_TOKEN（xoxb-）と SLACK_APP_TOKEN（xapp-）、任意の DOWNLOAD_DIR を読む。環境変数は見ない。
+ * ファイルが読めない・キーが無い・接頭辞が違う・DOWNLOAD_DIR が絶対パスでないときは投げる（メッセージにトークンの値は含めない）。
  */
 export function loadTokens(dir: string): Tokens {
   const file = path.join(dir, '.env');
@@ -102,7 +107,14 @@ export function loadTokens(dir: string): Tokens {
   }
 
   // process.env には書き込まない（子プロセスへ引き継がれるため）
-  return { botToken, appToken };
+  const tokens: Tokens = { botToken, appToken };
+  const downloadDir = parsed.DOWNLOAD_DIR;
+  if (downloadDir) {
+    // 相対パスはカレントディレクトリ（起動したプロジェクト）次第で保存先が変わるので受け付けない
+    if (!path.isAbsolute(downloadDir)) throw new Error('DOWNLOAD_DIR は絶対パスで指定する');
+    tokens.downloadDir = path.resolve(downloadDir);
+  }
+  return tokens;
 }
 
 /**

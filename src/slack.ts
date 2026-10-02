@@ -59,6 +59,22 @@ export interface SlackWebApiLike {
   views: {
     publish(args: Record<string, unknown>): Promise<{ ok?: boolean }>;
   };
+  files: {
+    info(args: Record<string, unknown>): Promise<{ ok?: boolean; file?: Record<string, unknown> }>;
+  };
+}
+
+/** Slack のファイル ID（F...） */
+export const FILE_ID_RE = /^F[A-Z0-9]{2,}$/;
+
+/** download_file が使うファイルの情報（files.info の file から必要なものだけ） */
+export interface SlackFile {
+  id: string;
+  name: string;
+  size: number | undefined;
+  mimetype: string | undefined;
+  /** ボットトークン付きで取得するダウンロード用 URL */
+  url: string;
 }
 
 /** テストで差し替えられるよう、実際に使う Socket Mode のメソッドだけを型にする */
@@ -77,6 +93,8 @@ export interface SlackDeps {
   web?: SlackWebApiLike;
   /** テスト用の差し替え口（省略時は実際の SocketModeClient を作る） */
   socket?: SocketClientLike;
+  /** テスト用の差し替え口（省略時はグローバルの fetch。添付のダウンロードに使う） */
+  fetch?: typeof fetch;
 }
 
 /** 受信メッセージの位置情報（リアクションやスレッド返信の宛先に使う） */
@@ -142,7 +160,9 @@ export function toInboundMessage(body: RawEvent): InboundMessage {
   const files = rawFiles?.map((f) => {
     const o = obj(f) ?? {};
     const size = typeof o.size === 'number' ? o.size : undefined;
-    return { name: str(o.name), mimetype: str(o.mimetype), size };
+    // ID は meta に載せるので、Slack のファイル ID の形のものだけ通す
+    const id = str(o.id);
+    return { id: id !== undefined && FILE_ID_RE.test(id) ? id : undefined, name: str(o.name), mimetype: str(o.mimetype), size };
   });
 
   return {
@@ -196,6 +216,9 @@ export class SlackBridge {
   private readonly logger: Logger;
   private readonly web: SlackWebApiLike;
   private readonly appToken: string;
+  /** 添付のダウンロードに付ける（Web API 以外で使うのはここだけ） */
+  private readonly botToken: string;
+  private readonly fetchFn: typeof fetch;
   private readonly injectedSocket: SocketClientLike | undefined;
   // SocketModeClient はコンストラクタの時点で undici のハンドルを掴むので、
   // init() が失敗しただけで終了する場合に備えて start() まで作らない。
@@ -223,6 +246,8 @@ export class SlackBridge {
     this.access = deps.access;
     this.logger = deps.logger;
     this.appToken = deps.appToken;
+    this.botToken = deps.botToken;
+    this.fetchFn = deps.fetch ?? fetch;
     this.injectedSocket = deps.socket;
     for (const channel of deps.access.channels ?? []) this.allowedChannelIds.add(channel);
     this.web =
@@ -584,6 +609,40 @@ export class SlackBridge {
     const root = threadTs ?? res.ts;
     if (root) this.markActiveThread(channel, root);
     return { ts: res.ts ?? '' };
+  }
+
+  /** files.info でファイルの名前・サイズ・ダウンロード URL を引く（download_file ツール用） */
+  async fileInfo(fileId: string): Promise<SlackFile> {
+    if (!FILE_ID_RE.test(fileId)) throw new Error(`file_id の形式が不正: ${JSON.stringify(fileId.slice(0, 40))}`);
+    const res = await this.web.files.info({ file: fileId });
+    const file = res.file ?? {};
+    const url = str(file.url_private_download) ?? str(file.url_private);
+    if (!url) throw new Error('ダウンロード用の URL が無いファイル（外部ファイルや削除済みなど）');
+    return {
+      id: fileId,
+      name: str(file.name) ?? fileId,
+      size: typeof file.size === 'number' ? file.size : undefined,
+      mimetype: str(file.mimetype),
+      url,
+    };
+  }
+
+  /**
+   * fileInfo のファイルをボットトークン付きで取得する。トークンを他所へ送らないよう、https の slack.com 配下以外は断る。
+   * 権限が足りないと Slack はログイン画面の HTML を 200 で返すので、HTML ではないはずのファイルに HTML が返ったらエラーにする
+   */
+  async fetchFile(file: SlackFile, signal?: AbortSignal): Promise<Response> {
+    const target = new URL(file.url);
+    if (target.protocol !== 'https:' || !(target.hostname === 'slack.com' || target.hostname.endsWith('.slack.com'))) {
+      throw new Error(`Slack 以外の URL には取りに行かない: ${target.hostname}`);
+    }
+    const res = await this.fetchFn(target, { headers: { Authorization: `Bearer ${this.botToken}` }, signal: signal ?? null });
+    if (!res.ok) throw new Error(`ダウンロードに失敗 status=${res.status}`);
+    if (file.mimetype !== 'text/html' && (res.headers.get('content-type') ?? '').startsWith('text/html')) {
+      await res.body?.cancel();
+      throw new Error('ファイルの代わりに HTML が返ってきた（files:read スコープが無い可能性）');
+    }
+    return res;
   }
 
   /** ブロックを外してテキストだけに書き換える（edit_message ツール用） */
