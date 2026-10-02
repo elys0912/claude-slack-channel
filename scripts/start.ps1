@@ -329,7 +329,8 @@ try {
             Start-Process -FilePath 'powershell.exe' -NoNewWindow -ArgumentList @(
                 '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
                 '-File', (Join-Path $PSScriptRoot 'dialog-answer.ps1'),
-                '-Pattern', $DevChannelDialogPattern, '-TimeoutSec', $DevChannelDialogTimeoutSec
+                '-Pattern', $DevChannelDialogPattern, '-TimeoutSec', $DevChannelDialogTimeoutSec,
+                '-LogFile', (Join-Path $stateDir 'logs\dialog-answer.log')
             ) | Out-Null
         }
         & $claude @args
