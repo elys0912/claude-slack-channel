@@ -17,7 +17,8 @@ import { MS_PER_MINUTE, ResponseWatchdog, buildNoResponseText } from './watchdog
 import type { ConsoleAccess } from './console.js';
 import { ScreenRelay, screenShowButton } from './screen-relay.js';
 import { RuleRelay } from './rule-relay.js';
-import { AllowRuleStore, readDeny } from './allow-rules.js';
+import { AllowRuleStore, readAsk, readDeny } from './allow-rules.js';
+import { SessionAllowAll } from './session-allow.js';
 import { buildForbiddenHomeView, buildHomeView } from './home.js';
 import type { HomeCustom } from './home.js';
 import { downloadSlackFile } from './download.js';
@@ -71,10 +72,12 @@ export interface Wiring {
   status?: (() => string) | undefined;
   /** `!restart` / `!compact` / `!clear`。無ければ使えない */
   session?: AppSession | undefined;
+  /** 「このセッション中は全部許可」（.env で有効にしたボットだけ）。無ければボタンも !lock も使えない */
+  sessionAllow?: SessionAllowAll | undefined;
 }
 
 /** Claude に渡さず、ブリッジ自身が処理するコマンド（`!restart force` だけ引数を取る） */
-const COMMAND_RE = /^\s*!(help|screen|rules|status|restart(?:\s+force)?|compact|clear)\s*$/i;
+const COMMAND_RE = /^\s*!(help|screen|rules|status|restart(?:\s+force)?|compact|clear|lock)\s*$/i;
 
 /** `!help` の文面。Slack では `/` で始まる文は Slack のコマンドとして扱われ Claude Code まで届かないので、その案内も添える */
 export const HELP_TEXT = [
@@ -85,6 +88,7 @@ export const HELP_TEXT = [
   '• `!rules` … Slack から足した許可ルールの一覧と削除',
   '• `!compact` … /compact を送る（会話を要約して縮める）',
   '• `!clear` … /clear を送る（会話を捨てて新しい会話にする）',
+  '• `!lock` … 「このセッション中は全部許可」を解除する（使えるボットだけ）',
   '• `!restart` … /exit を送って起動し直す（会話は --continue で引き継ぐ）',
   '• `!restart force` … Claude Code を強制終了して起動し直す（応答しないとき用）',
   '',
@@ -213,7 +217,7 @@ export async function handleMessage(wiring: Wiring, result: GateResult, raw: Inb
 }
 
 /** ブリッジ自身のコマンド。使えない環境ではその旨をスレッドに返す */
-async function handleCommand({ bridge, screen, rules, status, session }: Wiring, command: string, at: ThreadRef, byUserId: string): Promise<void> {
+async function handleCommand({ bridge, screen, rules, status, session, sessionAllow, logger }: Wiring, command: string, at: ThreadRef, byUserId: string): Promise<void> {
   const unavailable = (name: string): Promise<unknown> => bridge.postText(at.channel, `⚠️ このブリッジでは ${name} を使えない`, at.threadTs);
   switch (command) {
     case 'help':
@@ -243,6 +247,18 @@ async function handleCommand({ bridge, screen, rules, status, session }: Wiring,
     case 'clear':
       if (session) await session.clear(at, byUserId);
       else await unavailable('!clear');
+      return;
+    case 'lock':
+      if (!sessionAllow) {
+        await unavailable('!lock');
+        return;
+      }
+      if (sessionAllow.disable()) {
+        logger.info(`全部許可を解除 by=${byUserId}（!lock）`);
+        await bridge.postText(at.channel, '🔒 「このセッション中は全部許可」を解除した。次からはまたボタンで確認する', at.threadTs);
+      } else {
+        await bridge.postText(at.channel, '「このセッション中は全部許可」は有効になっていない', at.threadTs);
+      }
       return;
     default:
       return;
@@ -276,6 +292,22 @@ export async function handleAction(wiring: Wiring, parsed: ActionParse, ctx: Act
       if (req && at && wiring.rules) await wiring.rules.propose(req, at.channel, at.threadTs);
       return;
     }
+
+    case 'allow_session':
+      // 期限切れのボタンでは有効にしない（answerByButton が期限切れ表示に書き換える）
+      if (wiring.sessionAllow && wiring.relay.lookup(parsed.requestId)) {
+        wiring.sessionAllow.enable(byUserId);
+        wiring.logger.info(`全部許可を開始 by=${byUserId}`);
+        if (at) {
+          await wiring.bridge.postText(
+            at.channel,
+            '🔓 このセッション中は、settings の ask / deny に当たるもの以外を自動で許可する。自動で許可した操作はスレッドに残す。!lock で解除、!clear か起動し直しでも解除される',
+            at.threadTs
+          );
+        }
+      }
+      await wiring.relay.answerByButton({ requestId: parsed.requestId, behavior: 'allow' }, byUserId, pressed);
+      return;
 
     case 'screen_show':
       if (at && wiring.screen) await wiring.screen.show(at.channel, at.threadTs);
@@ -393,6 +425,8 @@ export interface BridgeAppOptions {
   restartFlagFile?: string | undefined;
   /** `!restart force` で claude.exe を止める手段（テスト用。省略時は親プロセスに process.kill） */
   killParent?: (() => void) | undefined;
+  /** 実行許可に「このセッション中は全部許可」ボタンを出すか（.env の SESSION_ALLOW_ALL）。ask / deny は denyFiles から読む */
+  sessionAllowAll?: boolean | undefined;
 }
 
 /**
@@ -434,7 +468,10 @@ export async function startBridgeApp(opts: BridgeAppOptions): Promise<RunningApp
       return relay.request(req);
     },
   });
-  const relay: PermissionRelay = new PermissionRelay(bridge, server, logger);
+  const sessionAllow = opts.sessionAllowAll
+    ? new SessionAllowAll(() => (opts.denyFiles ?? []).flatMap((f) => [...readAsk(f), ...readDeny(f)]))
+    : undefined;
+  const relay: PermissionRelay = new PermissionRelay(bridge, server, logger, undefined, sessionAllow);
   const startedAt = new Date();
 
   // --- hook の記録 → Slack への知らせ -------------------------------------------
@@ -445,6 +482,13 @@ export async function startBridgeApp(opts: BridgeAppOptions): Promise<RunningApp
         logger,
         pollMs: opts.hookPollMs,
         onEvent: async (event) => {
+          // !clear などで新しい会話になったら、「全部許可」を解除する（会話ごとに許可し直す）
+          if (event.hook_event_name === 'SessionStart' && event.source === 'clear' && sessionAllow?.disable()) {
+            logger.info('全部許可を解除（新しい会話）');
+            await notice.post('🔒 新しい会話になったので「このセッション中は全部許可」を解除した', [
+              { type: 'section', text: { type: 'plain_text', text: '🔒 新しい会話になったので「このセッション中は全部許可」を解除した' } },
+            ]);
+          }
           const found = hookToNotice(event, { waiting: watchdog.isWaiting(), pending: relay.pendingCount() });
           if (!found) return;
           logger.info(`hook を知らせる event=${event.hook_event_name} type=${event.notification_type ?? '-'}`);
@@ -467,13 +511,14 @@ export async function startBridgeApp(opts: BridgeAppOptions): Promise<RunningApp
       waitingSince: waiting === undefined ? undefined : new Date(waiting),
       pendingPermissions: relay.pendingCount(),
       lastHooks: inbox?.lastEvents(5) ?? [],
+      sessionAllowSince: sessionAllow ? (sessionAllow.current?.since ?? null) : undefined,
       now: new Date(),
     });
   };
   const session = opts.restartFlagFile
     ? new SessionControl({ console: opts.console, restartFlagFile: opts.restartFlagFile, slack: bridge, logger, killParent: opts.killParent })
     : undefined;
-  const wiring: Wiring = { bridge, server, relay, logger, watchdog, screen, rules, status, session };
+  const wiring: Wiring = { bridge, server, relay, logger, watchdog, screen, rules, status, session, sessionAllow };
 
   // --- ホームタブ -------------------------------------------------------------
   const homeView = (running: boolean, since: Date): unknown =>

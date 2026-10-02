@@ -327,6 +327,11 @@ export function readDeny(file: string): string[] {
   return stringsOf((readJson(file) as { permissions?: { deny?: unknown } } | undefined)?.permissions?.deny);
 }
 
+/** 設定ファイルの permissions.ask を読む。ファイルが無ければ空、読めない・JSON でなければ投げる */
+export function readAsk(file: string): string[] {
+  return stringsOf((readJson(file) as { permissions?: { ask?: unknown } } | undefined)?.permissions?.ask);
+}
+
 /** 追加分のルール（状態ディレクトリの allow-extra.json）。start.ps1 が起動時に channel-settings.json の allow へ足す */
 export class AllowRuleStore {
   private readonly file: string;

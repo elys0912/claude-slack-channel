@@ -13,6 +13,8 @@ export interface StatusState {
   pendingPermissions: number;
   /** 直近の hook（古い順） */
   lastHooks: HookEvent[];
+  /** 「全部許可」。機能が無ければ undefined、無効なら null、有効なら開始時刻 */
+  sessionAllowSince?: Date | null | undefined;
   now: Date;
 }
 
@@ -35,6 +37,13 @@ export function buildStatusText(state: StatusState): string {
     `Slack 接続: ${state.slackConnected === undefined ? '(不明)' : state.slackConnected ? '接続中' : '切断中（再接続待ち）'}`,
     `Claude への返事待ち: ${state.waitingSince ? `${formatTime(state.waitingSince)} から（${elapsed(state.waitingSince, state.now)}）` : '無し'}`,
     `回答待ちの実行許可: ${state.pendingPermissions} 件`,
+    ...(state.sessionAllowSince === undefined
+      ? []
+      : [
+          state.sessionAllowSince === null
+            ? '全部許可: 無効'
+            : `全部許可: 有効（${formatTime(state.sessionAllowSince)} から。!lock で解除）`,
+        ]),
     state.lastHooks.length > 0 ? `直近の hook:\n${state.lastHooks.map((e) => `  ${hookLine(e)}`).join('\n')}` : '直近の hook: 無し',
   ];
   return lines.join('\n');
