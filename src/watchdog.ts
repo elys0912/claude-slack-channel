@@ -2,15 +2,14 @@
 // ターミナル側の選択画面（Slack に中継されない）・使用量の上限・セッションの停止などで Claude が黙ると、
 // Slack からは「👀 は付いたのに何も返ってこない」ようにしか見えないため、一定時間で警告を出す。
 import type { Logger } from './log.js';
+import type { ThreadRef } from './types.js';
 
 /** 既定の待ち時間（分） */
 export const DEFAULT_REPLY_TIMEOUT_MIN = 5;
 export const MS_PER_MINUTE = 60000;
 
-export interface WatchdogTarget {
-  channel: string;
-  threadTs: string;
-}
+/** 見張るスレッド */
+export type WatchdogTarget = ThreadRef;
 
 export interface WatchdogOptions {
   /** 待ち時間（ミリ秒）。0 以下なら見張らない */
