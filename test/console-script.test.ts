@@ -15,7 +15,8 @@ function run(...args: string[]): { status: number | null; stdout: string; stderr
 
 // キーを実際に送るとテストを動かしているコンソールに入力が入るので、ここでは送らずに終わる経路だけを確かめる。
 // 送れることは README の「テスト」にあるシステムテスト（別のコンソールで受け取って確かめる）で見る
-describe.runIf(process.platform === 'win32')('scripts/console.ps1 の -Keys', () => {
+// powershell.exe の起動は CI の初回だと 5 秒を超えることがある
+describe.runIf(process.platform === 'win32')('scripts/console.ps1 の -Keys', { timeout: 30000 }, () => {
   it('カンマ区切りを 1 つずつ照合し、許可されていないキーが混ざれば何も送らずに終わる', () => {
     const r = run('-Mode', 'keys', '-Keys', 'Down,Bogus');
     expect(r.status).toBe(2);
@@ -35,7 +36,7 @@ describe.runIf(process.platform === 'win32')('scripts/console.ps1 の -Keys', ()
   });
 });
 
-describe.runIf(process.platform === 'win32')('scripts/console.ps1 の -TargetPid', () => {
+describe.runIf(process.platform === 'win32')('scripts/console.ps1 の -TargetPid', { timeout: 30000 }, () => {
   it('別のコンソールを持つプロセスに付け直して、その画面を読む', async () => {
     const marker = `TARGET-${process.pid}-${Date.now()}`;
     // 非表示の新しいコンソールで、マーカーを書いて待つだけの PowerShell を動かす（読み取り対象の別コンソール）
