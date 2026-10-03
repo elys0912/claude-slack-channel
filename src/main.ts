@@ -72,7 +72,7 @@ async function main(dir: string, logger: Logger): Promise<void> {
 
   logger.info(
     `起動 pid=${process.pid} node=${process.version} stateDir=${dir} ` +
-      `allowFrom=${access.allowFrom.length}人 channels=${access.channels?.length ?? 0}件 download=${tokens.downloadDir ? 'on' : 'off'} degraded=${degraded}`
+      `allowFrom=${access.allowFrom.length}人 channels=${access.channels?.length ?? 0}件 download=${tokens.downloadDir ? 'on' : 'off'} allowAll=${tokens.sessionAllowAll ? 'on' : 'off'} degraded=${degraded}`
   );
 
   if (degraded) {
@@ -120,6 +120,7 @@ async function main(dir: string, logger: Logger): Promise<void> {
     hookInboxFile: path.join(dir, HOOK_LOG_FILE),
     restartFlagFile: path.join(dir, RESTART_FLAG_FILE),
     download: tokens.downloadDir ? { bridge, dir: tokens.downloadDir } : undefined,
+    sessionAllowAll: tokens.sessionAllowAll === true,
     // 起動スクリプトは作業フォルダーで claude.exe を起動し、MCP サーバーも同じ作業フォルダーで動く。
     // channel セッションの設定ファイルは -SettingsFile で替えられるので、起動スクリプトが渡した場所を優先する
     denyFiles: [
