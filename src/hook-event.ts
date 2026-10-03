@@ -20,7 +20,12 @@ export interface HookEvent {
   /** PostCompact の起動理由（manual / auto） */
   trigger?: string | undefined;
   cwd?: string | undefined;
+  /** 起動した start.ps1 の識別子（環境変数 SLACK_CHANNEL_SESSION_TAG）。ブリッジは自分と同じ値の行だけ扱う */
+  session_tag?: string | undefined;
 }
+
+/** start.ps1 が起動ごとに一意の値を入れる環境変数。claude.exe から hook とブリッジの両方に引き継がれる */
+export const SESSION_TAG_ENV = 'SLACK_CHANNEL_SESSION_TAG';
 
 /** stdin の JSON から写す欄（文字列のものだけ） */
 export const HOOK_STRING_FIELDS = [

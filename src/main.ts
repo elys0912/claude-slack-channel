@@ -11,7 +11,7 @@ import { SlackBridge } from './slack.js';
 import { startBridgeApp, startDegradedApp } from './app.js';
 import { replyTimeoutMs } from './watchdog.js';
 import { PowerShellConsole, findConsoleScript } from './console.js';
-import { HOOK_LOG_FILE } from './hook-event.js';
+import { HOOK_LOG_FILE, SESSION_TAG_ENV } from './hook-event.js';
 import { RESTART_FLAG_FILE } from './session-control.js';
 
 /** リポジトリのルート（dist/src/main.js の 2 つ上） */
@@ -123,6 +123,8 @@ async function main(dir: string, logger: Logger): Promise<void> {
     },
     allowExtraFile: path.join(dir, 'allow-extra.json'),
     hookInboxFile: path.join(dir, HOOK_LOG_FILE),
+    // start.ps1 から起動されたときだけ値がある。無ければ（手で起動したなど）今までどおり全部の行を扱う
+    sessionTag: process.env[SESSION_TAG_ENV] || undefined,
     restartFlagFile: path.join(dir, RESTART_FLAG_FILE),
     download: tokens.downloadDir ? { bridge, dir: tokens.downloadDir } : undefined,
     sessionAllowAll: tokens.sessionAllowAll === true,

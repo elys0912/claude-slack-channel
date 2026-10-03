@@ -30,6 +30,9 @@ describe('toHookEvent', () => {
   });
 
   it('JSON でない・hook_event_name が無い・文字列でない欄は扱わない', () => {
+    expect(toHookEvent('{"hook_event_name":"Stop"}', 1, 'tag-1')).toEqual({ at: 1, hook_event_name: 'Stop', session_tag: 'tag-1' });
+    // stdin に session_tag があっても写さない（記録するのは start.ps1 が渡した環境変数の値だけ）
+    expect(toHookEvent('{"hook_event_name":"Stop","session_tag":"forged"}', 1)).toEqual({ at: 1, hook_event_name: 'Stop' });
     expect(toHookEvent('not json')).toBeUndefined();
     expect(toHookEvent('{"session_id":"s1"}')).toBeUndefined();
     expect(toHookEvent('[1,2]')).toBeUndefined();
