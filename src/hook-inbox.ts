@@ -10,7 +10,7 @@ import { errMessage } from './errors.js';
 
 /** 読みに行く間隔 */
 export const DEFAULT_POLL_MS = 1500;
-/** 起動時、この時間より新しい行は読み直して渡す（SessionStart は MCP サーバーの起動前に記録されるため） */
+/** 起動時、この時間より新しい行は読み直して渡す（SessionStart は MCP サーバーの起動前に記録されるため）。最後のセッションの開始より前は渡さない */
 export const DEFAULT_REPLAY_WINDOW_MS = 30000;
 /** 重複排除に覚えておく件数 */
 const DEDUPE_CAPACITY = 200;
@@ -74,7 +74,7 @@ export class HookInbox {
   async start(): Promise<void> {
     if (this.stopped) return;
     const since = this.now() - this.replayWindowMs;
-    await this.poll((event) => event.at >= since);
+    await this.poll((events) => fromLastSessionStart(events.filter((e) => e.at >= since)));
     if (this.stopped) return;
     this.timer = setInterval(() => void this.poll(), this.pollMs);
     this.timer.unref?.();
@@ -91,12 +91,15 @@ export class HookInbox {
     return this.history.slice(-n);
   }
 
-  /** 増えた分を読んで渡す。accept を渡すと、それを満たす行だけ渡す（残りは読み飛ばす） */
-  private async poll(accept: (event: HookEvent) => boolean = () => true): Promise<void> {
+  /** 増えた分を読んで渡す。select を渡すと、読めた行のうちそれが返したものだけ渡す（残りは読み飛ばす） */
+  private async poll(select: (events: HookEvent[]) => HookEvent[] = (events) => events): Promise<void> {
     if (this.polling) return;
     this.polling = true;
     try {
-      for (const line of this.readNewLines()) await this.handleLine(line, accept);
+      const events = this.readNewLines()
+        .map((line) => this.parseLine(line))
+        .filter((e): e is HookEvent => e !== undefined);
+      for (const event of select(events)) await this.deliver(event);
     } catch (e) {
       this.logger.warn('hooks.jsonl の読み込みに失敗', e);
     } finally {
@@ -199,15 +202,20 @@ export class HookInbox {
     return lines.filter((l) => l.trim() !== '');
   }
 
-  private async handleLine(line: string, accept: (event: HookEvent) => boolean): Promise<void> {
+  /** 1 行を読む。読めない行（警告を出す）と、別のセッションの行（session_tag が違う）は undefined */
+  private parseLine(line: string): HookEvent | undefined {
     const parsed = HookEventSchema.safeParse(safeJson(line));
     if (!parsed.success) {
       this.logger.warn(`hooks.jsonl に読めない行がある: ${line.slice(0, 120)}`);
-      return;
+      return undefined;
     }
     const event: HookEvent = parsed.data;
-    if (this.sessionTag !== undefined && event.session_tag !== this.sessionTag) return;
-    if (!accept(event)) return;
+    if (this.sessionTag !== undefined && event.session_tag !== this.sessionTag) return undefined;
+    return event;
+  }
+
+  /** 重複でなければ履歴に残して onEvent に渡す */
+  private async deliver(event: HookEvent): Promise<void> {
     const key = `${event.session_id ?? ''}:${event.hook_event_name}:${event.notification_type ?? ''}:${event.at}`;
     if (this.seen.seen(key)) return;
 
@@ -219,6 +227,19 @@ export class HookInbox {
       this.logger.warn(`hook イベントの処理で例外 event=${event.hook_event_name}: ${errMessage(e)}`);
     }
   }
+}
+
+/**
+ * 起動時に読み直す行のうち、最後のセッションの開始（SessionStart の startup / resume など）から後だけ。開始が無ければ全部。
+ * !restart で起動し直すと、前のセッションの開始・終了も読み直す範囲に入り、前のブリッジが知らせ済みのものを二重に出してしまうため。
+ * compact / clear の SessionStart は同じセッションの中の出来事なので区切りにしない
+ */
+export function fromLastSessionStart(events: HookEvent[]): HookEvent[] {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i];
+    if (e?.hook_event_name === 'SessionStart' && e.source !== 'compact' && e.source !== 'clear') return events.slice(i);
+  }
+  return events;
 }
 
 function safeJson(text: string): unknown {

@@ -53,6 +53,21 @@ describe('HookInbox', () => {
     box.stop();
   });
 
+  it('起動時は、読み直す範囲の中でも最後のセッションの開始より前（前のセッションの開始・終了）は渡さない', async () => {
+    fs.writeFileSync(
+      file,
+      line({ hook_event_name: 'SessionStart', source: 'startup', session_id: 'old', at: now - 900 }) +
+        line({ hook_event_name: 'SessionEnd', reason: 'prompt_input_exit', session_id: 'old', at: now - 600 }) +
+        line({ hook_event_name: 'SessionStart', source: 'resume', session_id: 'new', at: now - 300 }) +
+        line({ hook_event_name: 'SessionStart', source: 'compact', session_id: 'new', at: now - 200 }) +
+        line({ hook_event_name: 'Stop', session_id: 'new', at: now - 100 })
+    );
+    const box = inbox();
+    await box.start();
+    expect(events.map((e) => `${e.hook_event_name}:${e.session_id}`)).toEqual(['SessionStart:new', 'SessionStart:new', 'Stop:new']);
+    box.stop();
+  });
+
   it('sessionTag を渡すと、同じ session_tag の行だけ渡し、履歴にも残さない', async () => {
     const box = inbox({ sessionTag: 'A' });
     await box.start();
