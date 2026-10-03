@@ -399,6 +399,8 @@ export interface BridgeAppOptions {
   allowExtraFile?: string | undefined;
   /** 追加の前に照合する deny を読む設定ファイル（channel-settings.json と作業フォルダーの .claude/settings*.json） */
   denyFiles?: string[] | undefined;
+  /** 作業フォルダー（!status とホームタブに出す）。省略時は「(不明)」 */
+  workDir?: string | undefined;
   /**
    * アプリのホームタブに状態を出す。起動時に users 全員のホームを「稼働中」にし、終了時に「停止中」へ書き換え、
    * ホームが開かれたら最新の状態で出し直す。省略時はホームを更新しない
@@ -406,7 +408,6 @@ export interface BridgeAppOptions {
   home?:
     | {
         users: string[];
-        workDir: string;
         channelCount: number;
         botUserId?: string | undefined;
         /** ホームの文面の差し替え（home.json）を読む。ホームを出すたびに呼ぶので、書き換えは次に開いたときから反映される */
@@ -514,7 +515,7 @@ export async function startBridgeApp(opts: BridgeAppOptions): Promise<RunningApp
     const waiting = watchdog.waitingSince();
     return buildStatusText({
       startedAt,
-      workDir: opts.home?.workDir ?? '',
+      workDir: opts.workDir ?? '',
       slackConnected: bridge.isConnected,
       waitingSince: waiting === undefined ? undefined : new Date(waiting),
       pendingPermissions: relay.pendingCount(),
@@ -533,7 +534,7 @@ export async function startBridgeApp(opts: BridgeAppOptions): Promise<RunningApp
     buildHomeView({
       running,
       since,
-      workDir: opts.home?.workDir ?? '',
+      workDir: opts.workDir ?? '',
       channelCount: opts.home?.channelCount ?? 0,
       botUserId: opts.home?.botUserId,
       custom: opts.home?.loadCustom?.(),
