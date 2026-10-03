@@ -10,19 +10,15 @@ import type { ChoiceScreen } from './screen.js';
 import { clip, newToken } from './text.js';
 import type { PressedMessage } from './types.js';
 import { ACTION, PLAIN_TEXT_LIMIT, numberedAction } from './permission.js';
+import type { SlackBridge } from './slack.js';
+import { BUTTON_LABEL_MAX, plainSection } from './blocks.js';
 
 /** 選択肢のボタンの有効期限 */
 const SNAPSHOT_TTL_MS = 5 * 60 * 1000;
-/** Slack の button の text の上限（75）に収める */
-const BUTTON_LABEL_MAX = 70;
 /** 通知欄（text）に出す見出しの長さ */
 const NOTIFICATION_TITLE_MAX = 100;
 
-export interface ScreenSlack {
-  postText(channel: string, text: string, threadTs?: string): Promise<{ ts: string[] }>;
-  postBlocks(channel: string, text: string, blocks: unknown[], threadTs?: string): Promise<{ ts: string }>;
-  updateBlocks(channel: string, ts: string, text: string, blocks: unknown[]): Promise<void>;
-}
+export type ScreenSlack = Pick<SlackBridge, 'postText' | 'postBlocks' | 'updateBlocks'>;
 
 interface Snapshot {
   fingerprint: string;
@@ -47,6 +43,11 @@ export function screenShowButton(): unknown {
     action_id: ACTION.SCREEN_SHOW,
     value: 'show',
   };
+}
+
+/** 知らせの blocks。withScreenButton なら「🖥 画面を確認」ボタンを添える */
+export function noticeBlocks(text: string, withScreenButton: boolean): unknown[] {
+  return [plainSection(text), ...(withScreenButton ? [{ type: 'actions', elements: [screenShowButton()] }] : [])];
 }
 
 export class ScreenRelay {
@@ -133,7 +134,7 @@ export class ScreenRelay {
   private async report(pressed: PressedMessage, message: string): Promise<void> {
     if (pressed.ts) {
       await this.slack
-        .updateBlocks(pressed.channel, pressed.ts, message, [{ type: 'section', text: { type: 'plain_text', text: message } }])
+        .updateBlocks(pressed.channel, pressed.ts, message, [plainSection(message)])
         .catch((e: unknown) => this.logger.warn('選択画面の表示の書き換えに失敗', e));
     } else {
       await this.slack.postText(pressed.channel, message, pressed.threadTs).catch(() => undefined);
@@ -158,7 +159,7 @@ export function buildChoiceBlocks(id: string, choice: ChoiceScreen): { text: str
   return {
     text,
     blocks: [
-      { type: 'section', text: { type: 'plain_text', text: clip(`🖥 ターミナルの選択画面\n${heading}`, PLAIN_TEXT_LIMIT) } },
+      plainSection(clip(`🖥 ターミナルの選択画面\n${heading}`, PLAIN_TEXT_LIMIT)),
       { type: 'context', elements: [{ type: 'plain_text', text: clip(redact(details), PLAIN_TEXT_LIMIT) }] },
       {
         type: 'actions',

@@ -6,19 +6,14 @@ import type { PermissionRequest } from './permission.js';
 import { AllowRuleStore, denyOverlaps, parseRuleForCheck, proposeRule } from './allow-rules.js';
 import { clip, newToken } from './text.js';
 import type { PressedMessage } from './types.js';
+import type { SlackBridge } from './slack.js';
+import { BUTTON_LABEL_MAX, plainSection as section } from './blocks.js';
 
 /** 追加の提案の有効期限 */
 const PROPOSAL_TTL_MS = 10 * 60 * 1000;
 /** 一覧に並べる削除ボタンの上限（actions ブロックの要素数の上限 25 に収める） */
 const LIST_MAX = 20;
-/** Slack の button の text の上限（75）に収める */
-const BUTTON_LABEL_MAX = 70;
-
-export interface RuleSlack {
-  postText(channel: string, text: string, threadTs?: string): Promise<{ ts: string[] }>;
-  postBlocks(channel: string, text: string, blocks: unknown[], threadTs?: string): Promise<{ ts: string }>;
-  updateBlocks(channel: string, ts: string, text: string, blocks: unknown[]): Promise<void>;
-}
+export type RuleSlack = Pick<SlackBridge, 'postText' | 'postBlocks' | 'updateBlocks'>;
 
 export interface RuleRelayOptions {
   store: Pick<AllowRuleStore, 'list' | 'add' | 'remove'>;
@@ -28,10 +23,6 @@ export interface RuleRelayOptions {
   logger: Logger;
   now?: () => number;
   newId?: () => string;
-}
-
-function section(text: string): unknown {
-  return { type: 'section', text: { type: 'plain_text', text } };
 }
 
 export class RuleRelay {

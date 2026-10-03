@@ -16,7 +16,7 @@ import type { SessionControlOptions } from './session-control.js';
 import { buildStatusText } from './status.js';
 import { MS_PER_MINUTE, ResponseWatchdog, buildNoResponseText } from './watchdog.js';
 import type { ConsoleAccess } from './console.js';
-import { ScreenRelay, screenShowButton } from './screen-relay.js';
+import { ScreenRelay, noticeBlocks } from './screen-relay.js';
 import { RuleRelay } from './rule-relay.js';
 import { AllowRuleStore, readAsk, readDeny } from './allow-rules.js';
 import { SessionAllowAll } from './session-allow.js';
@@ -504,11 +504,7 @@ export async function startBridgeApp(opts: BridgeAppOptions): Promise<RunningApp
     logger,
     notify: async ({ channel, threadTs }, minutes) => {
       const text = buildNoResponseText(minutes);
-      const blocks = [
-        { type: 'section', text: { type: 'plain_text', text } },
-        ...(opts.console ? [{ type: 'actions', elements: [screenShowButton()] }] : []),
-      ];
-      await bridge.postBlocks(channel, text, blocks, threadTs);
+      await bridge.postBlocks(channel, text, noticeBlocks(text, opts.console !== undefined), threadTs);
     },
   });
   const screen = new ScreenRelay({ console: opts.console, slack: bridge, logger });
@@ -553,18 +549,12 @@ export async function startBridgeApp(opts: BridgeAppOptions): Promise<RunningApp
           // !clear などで新しい会話になったら、「全部許可」を解除する（会話ごとに許可し直す）
           if (event.hook_event_name === 'SessionStart' && event.source === 'clear' && sessionAllow?.disable()) {
             logger.info('全部許可を解除（新しい会話）');
-            await notice.post('🔒 新しい会話になったので「このセッション中は全部許可」を解除した', [
-              { type: 'section', text: { type: 'plain_text', text: '🔒 新しい会話になったので「このセッション中は全部許可」を解除した' } },
-            ]);
+            await notice.post('🔒 新しい会話になったので「このセッション中は全部許可」を解除した');
           }
           const found = hookToNotice(event, { waiting: watchdog.isWaiting(), pending: relay.pendingCount() });
           if (!found) return;
           logger.info(`hook を知らせる event=${event.hook_event_name} type=${event.notification_type ?? '-'}`);
-          const blocks = [
-            { type: 'section', text: { type: 'plain_text', text: found.text } },
-            ...(found.screenButton && opts.console ? [{ type: 'actions', elements: [screenShowButton()] }] : []),
-          ];
-          await notice.post(found.text, blocks);
+          await notice.post(found.text, noticeBlocks(found.text, found.screenButton && opts.console !== undefined));
         },
       })
     : undefined;
