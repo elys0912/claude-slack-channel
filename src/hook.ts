@@ -33,6 +33,12 @@ export function toHookEvent(stdinText: string, now: number = Date.now(), tag?: s
     const value = raw[field];
     if (typeof value === 'string' && field !== 'hook_event_name') event[field] = value.slice(0, FIELD_MAX);
   }
+  // error_details は版によってオブジェクト（{"status":429,"message":"..."} など）の例がある。message か JSON にして写す
+  const details = raw.error_details;
+  if (typeof details === 'object' && details !== null) {
+    const message = (details as Record<string, unknown>).message;
+    event.error_details = (typeof message === 'string' ? message : JSON.stringify(details)).slice(0, FIELD_MAX);
+  }
   if (tag) event.session_tag = tag.slice(0, FIELD_MAX);
   return event;
 }
