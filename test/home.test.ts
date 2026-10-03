@@ -47,14 +47,14 @@ describe('buildHomeView', () => {
 
   it('使い方のメンションはボット自身の ID で出し、アプリ名は埋め込まない', () => {
     const t = text(buildHomeView({ ...base, botUserId: 'U0C3MSN3MND' }));
-    expect(t).toContain('<@U0C3MSN3MND> にメンションして');
+    expect(t).toContain('<@U0C3MSN3MND> にメンションする');
     expect(t).not.toContain('fox3-local');
     expect(t).not.toContain('FOX3 Local Bridge');
   });
 
   it('ボットの ID が分からない・形が違うときは「ボット」と書く', () => {
-    expect(text(buildHomeView(base))).toContain('チャンネルで ボット にメンションして');
-    expect(text(buildHomeView({ ...base, botUserId: '<!here>' }))).toContain('チャンネルで ボット にメンションして');
+    expect(text(buildHomeView(base))).toContain('チャンネルで ボット にメンションする');
+    expect(text(buildHomeView({ ...base, botUserId: '<!here>' }))).toContain('チャンネルで ボット にメンションする');
   });
 
   it('作業フォルダーの & < > はエスケープする', () => {
@@ -64,24 +64,24 @@ describe('buildHomeView', () => {
 
 describe('buildHomeView（home.json で差し替え）', () => {
   const custom = {
-    header: '🦊 FOX3 はここにいるわ',
-    running: '{since} からずっとそばにいるわ',
-    stopped: '少し休んでるだけよ',
+    header: '📣 カスタムの見出し',
+    running: '{since} から稼働中',
+    stopped: '今は停止中',
     greetings: ['一つ目', '二つ目 {mention}', '三つ目'],
     body: ['本文の1行目', '本文の2行目'],
-    footer: 'またね',
+    footer: 'フッター',
   };
 
   it('見出し・ひと言・本文・フッターを差し替え、{since} と {mention} を置き換える', () => {
     const t = text(buildHomeView({ ...base, botUserId: 'UBOT1', custom, random: () => 0.5 }));
-    expect(t).toContain('FOX3 はここにいるわ');
-    expect(t).toContain('2026-09-30 21:05 からずっとそばにいるわ');
+    expect(t).toContain('カスタムの見出し');
+    expect(t).toContain('2026-09-30 21:05 から稼働中');
     expect(t).toContain('二つ目 <@UBOT1>');
     expect(t).toContain('本文の1行目\\n本文の2行目');
-    expect(t).toContain('またね ・ 最終更新 2026-09-30 21:10');
-    // body を書いたら既定の情報とブリーフィングは出さない
+    expect(t).toContain('フッター ・ 最終更新 2026-09-30 21:10');
+    // body を書いたら既定の情報と使い方は出さない
     expect(t).not.toContain('作業フォルダー');
-    expect(t).not.toContain('ブリーフィング');
+    expect(t).not.toContain('*使い方*');
   });
 
   it('greetings は乱数で 1 つだけ選ぶ', () => {
@@ -95,14 +95,14 @@ describe('buildHomeView（home.json で差し替え）', () => {
   it('停止中は stopped を出す', () => {
     const t = text(buildHomeView({ ...base, running: false, custom }));
     expect(t).toContain('停止中');
-    expect(t).toContain('少し休んでるだけよ');
+    expect(t).toContain('今は停止中');
   });
 
-  it('body を書かなければ既定の情報とブリーフィングを残す', () => {
-    const t = text(buildHomeView({ ...base, custom: { greetings: ['やっほー'] }, random: () => 0 }));
-    expect(t).toContain('やっほー');
+  it('body を書かなければ既定の情報と使い方を残す', () => {
+    const t = text(buildHomeView({ ...base, custom: { greetings: ['こんにちは'] }, random: () => 0 }));
+    expect(t).toContain('こんにちは');
     expect(t).toContain('作業フォルダー');
-    expect(t).toContain('ブリーフィング');
+    expect(t).toContain('*使い方*');
   });
 });
 

@@ -26,7 +26,7 @@ export interface HomeState {
 /**
  * ホームの文面の差し替え。どれも省略でき、省略した部分は既定の文面になる。
  * 文字列の中の `{since}` は起動（停止）時刻、`{mention}` はボットへのメンションに置き換える。
- * body を書くと、既定の「作業フォルダーなどの情報」と「ブリーフィング（使い方）」は出さない。
+ * body を書くと、既定の「作業フォルダーなどの情報」と「使い方」は出さない。
  */
 export interface HomeCustom {
   header?: string | undefined;
@@ -63,8 +63,8 @@ function botMention(botUserId: string | undefined): string {
 }
 
 // 見出しはアプリ名に依存しない文言にする（Slack のアプリ名はホームの上部に別に表示される）。
-// ボットは高倉クルミ（FOX3）として話すので、ホームの文面もその口調にする
-const HEADER = { type: 'header', text: { type: 'plain_text', text: '🦊 先頭は私が行くわ', emoji: true } };
+// 既定の文面は中立の常体にする。ボットごとの口調や挨拶は、状態ディレクトリの home.json で差し替える
+const HEADER = { type: 'header', text: { type: 'plain_text', text: '🤖 Claude Code ブリッジ', emoji: true } };
 
 /** home.json の文字列の `{since}` / `{mention}` を置き換える */
 function fill(text: string, state: HomeState): string {
@@ -101,28 +101,28 @@ function buildCustomHomeView(state: HomeState, custom: HomeCustom): unknown {
 export function buildHomeView(state: HomeState): unknown {
   if (state.custom) return buildCustomHomeView(state, state.custom);
   const status = state.running
-    ? `🟢 *稼働中*（${formatTime(state.since)} から）\n配置についてるわ。周辺の警戒は済ませてあるから、いつでも来なさい。`
-    : `⏸ *停止中*（${formatTime(state.since)} に停止）\n今は撤収中よ。手元でセッションを起動すれば、すぐ配置に戻るから。`;
+    ? `🟢 *稼働中*（${formatTime(state.since)} から）\nSlack からの話しかけを受け付けている。`
+    : `⏸ *停止中*（${formatTime(state.since)} に停止）\n手元でセッションを起動すると、また受け付けるようになる。`;
 
   const blocks: unknown[] = [
     HEADER,
     section(status),
     ...defaultDetailBlocks(state),
-    context(`最終更新 ${formatTime(state.now)} ・ 時刻が古すぎたら、念のため手元を確認して`),
+    context(`最終更新 ${formatTime(state.now)} ・ 時刻が古いときは、ブリッジが強制終了された可能性がある。手元を確かめること`),
   ];
   return { type: 'home', blocks };
 }
 
-/** 既定の「作業フォルダーなどの情報」と「ブリーフィング（使い方）」 */
+/** 既定の「作業フォルダーなどの情報」と「使い方」 */
 function defaultDetailBlocks(state: HomeState): unknown[] {
   return [
     section(
       [
-        `*作業フォルダー*: \`${escapeMrkdwn(state.workDir)}\`（ここが私の担当エリアよ）`,
+        `*作業フォルダー*: \`${escapeMrkdwn(state.workDir)}\``,
         `*話しかけられる場所*: DM${state.channelCount > 0 ? ` と、許可したチャンネル ${state.channelCount} 件` : ' だけ'}`,
         state.ruleCount === undefined
           ? undefined
-          : `*「今後も許可」で足したルール*: ${state.ruleCount} 件（増やしすぎないでよね）`,
+          : `*「今後も許可」で足したルール*: ${state.ruleCount} 件（要らなくなったら \`!rules\` から消せる）`,
       ]
         .filter((l): l is string => l !== undefined)
         .join('\n')
@@ -130,14 +130,15 @@ function defaultDetailBlocks(state: HomeState): unknown[] {
     { type: 'divider' },
     section(
       [
-        '*ブリーフィング ―― ちゃんと聞いてよね*',
-        `• DM で話しかけるか、許可したチャンネルで ${botMention(state.botUserId)} にメンションして。スレッドの続きはメンション無しでいいわ`,
-        '• 返事は元のメッセージのスレッドに返すわ。届いたら 👀 を付けるから、見逃さないでよね',
-        '• 確認が要る操作は、スレッドに *Allow* / *♾ 今後も許可* / *Deny* のボタンで聞くわ。撤退不能な操作もあるんだから、ちゃんと読んでから押しなさいよ',
-        '• 私が黙り込んだら `!screen` で画面を確認して。選択画面で止まってたら、ボタンで選べるわ',
-        '• `!rules` で「今後も許可」で足したルールを一覧・削除できるわ',
+        '*使い方*',
+        `• DM で話しかけるか、許可したチャンネルで ${botMention(state.botUserId)} にメンションする。スレッドの続きはメンション無しで届く`,
+        '• 返事は元のメッセージのスレッドに返る。メッセージが届くと 👀 が付く',
+        '• 確認が要る操作は、スレッドに *Allow* / *♾ 今後も許可* / *Deny* のボタンで聞く。取り消せない操作もあるので、内容を読んでから押す',
+        '• 返事が来ないときは `!screen` で画面を確かめる。選択画面で止まっていれば、ボタンで選べる',
+        '• `!rules` で、「今後も許可」で足したルールを一覧・削除できる',
+        '• `!help` で、ほかのコマンドの一覧が出る',
         state.replyTimeoutMin > 0
-          ? `• ${state.replyTimeoutMin} 分返事が無いときは、スレッドに警告を出すわ。……べ、別にサボってるわけじゃないんだから！`
+          ? `• ${state.replyTimeoutMin} 分返事が無いときは、スレッドに警告が出る`
           : undefined,
       ]
         .filter((l): l is string => l !== undefined)
@@ -152,7 +153,7 @@ export function buildForbiddenHomeView(): unknown {
     type: 'home',
     blocks: [
       HEADER,
-      section('ここは許可されたメンバーだけの作戦区域よ。関係者以外は立ち入り禁止なんだから。'),
+      section('このボットは、許可されたメンバーだけが使える。'),
     ],
   };
 }
