@@ -2,11 +2,10 @@
 // 宛先は最後に話しかけられたスレッド。まだ無ければ許可ユーザー全員の DM。投げない。
 import type { Logger } from './log.js';
 import type { ThreadRef } from './types.js';
+import type { SlackBridge } from './slack.js';
+import { plainSection } from './blocks.js';
 
-export interface NoticeSlack {
-  postBlocks(channel: string, text: string, blocks: unknown[], threadTs?: string): Promise<{ ts: string }>;
-  postToAll(text: string, blocks?: unknown[]): Promise<{ channel: string; ts: string }[]>;
-}
+export type NoticeSlack = Pick<SlackBridge, 'postBlocks' | 'postToAll'>;
 
 export class NoticePoster {
   private readonly slack: NoticeSlack;
@@ -21,7 +20,7 @@ export class NoticePoster {
 
   /** text を知らせる。blocks を省略すれば text だけの section にする */
   async post(text: string, blocks?: unknown[]): Promise<void> {
-    const view = blocks ?? [{ type: 'section', text: { type: 'plain_text', text } }];
+    const view = blocks ?? [plainSection(text)];
     const thread = this.threadOf();
     try {
       if (thread) {

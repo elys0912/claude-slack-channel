@@ -16,7 +16,7 @@ import type { SessionControlOptions } from './session-control.js';
 import { buildStatusText } from './status.js';
 import { MS_PER_MINUTE, ResponseWatchdog, buildNoResponseText } from './watchdog.js';
 import type { ConsoleAccess } from './console.js';
-import { ScreenRelay, screenShowButton } from './screen-relay.js';
+import { ScreenRelay, noticeBlocks } from './screen-relay.js';
 import { RuleRelay } from './rule-relay.js';
 import { AllowRuleStore, readAsk, readDeny } from './allow-rules.js';
 import { SessionAllowAll } from './session-allow.js';
@@ -64,13 +64,13 @@ export interface Wiring {
   server: AppServer;
   relay: AppRelay;
   logger: Logger;
-  watchdog?: AppWatchdog | undefined;
-  /** ターミナル画面の確認・選択（無ければ !screen と画面のボタンは使えない） */
-  screen?: AppScreen | undefined;
-  /** 許可リストへの追加（無ければ「今後も許可」は今回の許可だけになる） */
+  watchdog: AppWatchdog;
+  /** ターミナル画面の確認・選択（コンソールが無ければ、読めない旨を返す） */
+  screen: AppScreen;
+  /** 許可リストへの追加（無ければ「今後も許可」は今回の許可だけになり、!rules は使えない） */
   rules?: AppRules | undefined;
-  /** `!status` の文面。無ければ !status は使えない */
-  status?: (() => string) | undefined;
+  /** `!status` の文面 */
+  status: () => string;
   /** `!restart` / `!compact` / `!clear`。無ければ使えない */
   session?: AppSession | undefined;
   /** 「このセッション中は全部許可」（.env で有効にしたボットだけ）。無ければボタンも !lock も使えない */
@@ -79,6 +79,18 @@ export interface Wiring {
 
 /** Claude に渡さず、ブリッジ自身が処理するコマンド（`!restart force` だけ引数を取る） */
 const COMMAND_RE = /^\s*!(help|screen|rules|status|restart(?:\s+force)?|compact|clear|lock)\s*$/i;
+/** COMMAND_RE が受け付けるコマンド（小文字・空白 1 つに正規化した形） */
+const COMMANDS = ['help', 'screen', 'rules', 'status', 'restart', 'restart force', 'compact', 'clear', 'lock'] as const;
+export type Command = (typeof COMMANDS)[number];
+
+function isCommand(name: string): name is Command {
+  return (COMMANDS as readonly string[]).includes(name);
+}
+
+/** switch の網羅チェック。種類を足して case を書き忘れると、ここで型エラーになる */
+export function assertNever(value: never): never {
+  throw new Error(`想定外の値: ${JSON.stringify(value)}`);
+}
 
 /** `!help` の文面。Slack では `/` で始まる文は Slack のコマンドとして扱われ Claude Code まで届かないので、その案内も添える */
 export const HELP_TEXT = [
@@ -103,9 +115,10 @@ export const HELP_TEXT = [
 const APP_FOOTER_RE = /\s+\*[^*\n]+\*\s+<@U[A-Z0-9]+(?:\|[^>]*)?>\s*$/;
 
 /** 本文がブリッジのコマンドならその名前（小文字・空白 1 つに正規化）を返す。アプリの署名が付いていても同じコマンドとみなす */
-export function parseCommand(content: string): string | undefined {
+export function parseCommand(content: string): Command | undefined {
   const m = COMMAND_RE.exec(content) ?? COMMAND_RE.exec(content.replace(APP_FOOTER_RE, ''));
-  return m?.[1]?.toLowerCase().replace(/\s+/g, ' ');
+  const name = m?.[1]?.toLowerCase().replace(/\s+/g, ' ');
+  return name !== undefined && isCommand(name) ? name : undefined;
 }
 
 // --- Claude → Slack（MCP ツールの実体） ----------------------------------------
@@ -211,30 +224,36 @@ export async function handleMessage(wiring: Wiring, result: GateResult, raw: Inb
     case 'deliver':
       if (raw.channel && raw.threadTs) relay.rememberThread(raw.channel, raw.threadTs);
       await server.pushMessage(result.content, result.meta);
-      if (raw.channel && raw.threadTs) watchdog?.delivered({ channel: raw.channel, threadTs: raw.threadTs });
+      if (raw.channel && raw.threadTs) watchdog.delivered({ channel: raw.channel, threadTs: raw.threadTs });
       if (raw.channel && raw.ts) await bridge.addReaction(raw.channel, raw.ts, REACTION.SEEN);
       return;
+
+    default:
+      assertNever(result);
   }
 }
 
 /** ブリッジ自身のコマンド。使えない環境ではその旨をスレッドに返す */
-async function handleCommand({ bridge, screen, rules, status, session, sessionAllow, logger }: Wiring, command: string, at: ThreadRef, byUserId: string): Promise<void> {
+async function handleCommand(
+  { bridge, screen, rules, status, session, sessionAllow, logger }: Wiring,
+  command: Command,
+  at: ThreadRef,
+  byUserId: string
+): Promise<void> {
   const unavailable = (name: string): Promise<unknown> => bridge.postText(at.channel, `⚠️ このブリッジでは ${name} を使えない`, at.threadTs);
   switch (command) {
     case 'help':
       await bridge.postText(at.channel, HELP_TEXT, at.threadTs);
       return;
     case 'screen':
-      if (screen) await screen.show(at.channel, at.threadTs);
-      else await unavailable('!screen');
+      await screen.show(at.channel, at.threadTs);
       return;
     case 'rules':
       if (rules) await rules.list(at.channel, at.threadTs);
       else await unavailable('!rules');
       return;
     case 'status':
-      if (status) await bridge.postText(at.channel, status(), at.threadTs);
-      else await unavailable('!status');
+      await bridge.postText(at.channel, status(), at.threadTs);
       return;
     case 'restart':
     case 'restart force':
@@ -262,7 +281,7 @@ async function handleCommand({ bridge, screen, rules, status, session, sessionAl
       }
       return;
     default:
-      return;
+      assertNever(command);
   }
 }
 
@@ -311,11 +330,11 @@ export async function handleAction(wiring: Wiring, parsed: ActionParse, ctx: Act
       return;
 
     case 'screen_show':
-      if (at && wiring.screen) await wiring.screen.show(at.channel, at.threadTs);
+      if (at) await wiring.screen.show(at.channel, at.threadTs);
       return;
 
     case 'screen_pick':
-      if (at && wiring.screen) await wiring.screen.pick(parsed.snapshotId, parsed.index, at, byUserId);
+      if (at) await wiring.screen.pick(parsed.snapshotId, parsed.index, at, byUserId);
       return;
 
     case 'rule_confirm':
@@ -325,6 +344,9 @@ export async function handleAction(wiring: Wiring, parsed: ActionParse, ctx: Act
     case 'rule_remove':
       if (at && wiring.rules) await wiring.rules.remove(parsed.rule, at, byUserId);
       return;
+
+    default:
+      assertNever(parsed);
   }
 }
 
@@ -399,6 +421,8 @@ export interface BridgeAppOptions {
   allowExtraFile?: string | undefined;
   /** 追加の前に照合する deny を読む設定ファイル（channel-settings.json と作業フォルダーの .claude/settings*.json） */
   denyFiles?: string[] | undefined;
+  /** 作業フォルダー（!status とホームタブに出す）。省略時は「(不明)」 */
+  workDir?: string | undefined;
   /**
    * アプリのホームタブに状態を出す。起動時に users 全員のホームを「稼働中」にし、終了時に「停止中」へ書き換え、
    * ホームが開かれたら最新の状態で出し直す。省略時はホームを更新しない
@@ -406,7 +430,6 @@ export interface BridgeAppOptions {
   home?:
     | {
         users: string[];
-        workDir: string;
         channelCount: number;
         botUserId?: string | undefined;
         /** ホームの文面の差し替え（home.json）を読む。ホームを出すたびに呼ぶので、書き換えは次に開いたときから反映される */
@@ -436,6 +459,43 @@ export interface BridgeAppOptions {
  * 通常モード: Slack と Claude Code（MCP）をつないで中継を始める。
  * MCP の接続か Socket Mode の開始に失敗したら、後片付け（lock.release → relay.denyAll → bridge.stop → server.close）をしてから投げ直す。
  */
+/**
+ * ホームタブの更新。opts.home が無いか、bridge がホームを出せなければ何もしない。
+ * publishHomeAll: users 全員のホームを書き換える。onHomeOpened: ホームが開かれたら最新の状態で出し直す
+ */
+function wireHome(
+  opts: BridgeAppOptions,
+  ruleStore: AllowRuleStore | undefined,
+  startedAt: Date
+): {
+  publishHomeAll: (running: boolean, since: Date) => Promise<void>;
+  onHomeOpened: (user: string, allowed: boolean) => Promise<void>;
+} {
+  const { bridge, home } = opts;
+  const view = (running: boolean, since: Date): unknown =>
+    buildHomeView({
+      running,
+      since,
+      workDir: opts.workDir ?? '',
+      channelCount: home?.channelCount ?? 0,
+      botUserId: home?.botUserId,
+      custom: home?.loadCustom?.(),
+      ruleCount: ruleStore?.list().length,
+      replyTimeoutMin: Math.round((opts.replyTimeoutMs ?? 0) / MS_PER_MINUTE),
+      now: new Date(),
+    });
+  return {
+    publishHomeAll: async (running, since) => {
+      if (!home || !bridge.publishHome) return;
+      for (const user of home.users) await bridge.publishHome(user, view(running, since));
+    },
+    onHomeOpened: async (user, allowed) => {
+      if (!home || !bridge.publishHome) return;
+      await bridge.publishHome(user, allowed ? view(true, startedAt) : buildForbiddenHomeView());
+    },
+  };
+}
+
 export async function startBridgeApp(opts: BridgeAppOptions): Promise<RunningApp> {
   const { bridge, logger } = opts;
 
@@ -444,11 +504,7 @@ export async function startBridgeApp(opts: BridgeAppOptions): Promise<RunningApp
     logger,
     notify: async ({ channel, threadTs }, minutes) => {
       const text = buildNoResponseText(minutes);
-      const blocks = [
-        { type: 'section', text: { type: 'plain_text', text } },
-        ...(opts.console ? [{ type: 'actions', elements: [screenShowButton()] }] : []),
-      ];
-      await bridge.postBlocks(channel, text, blocks, threadTs);
+      await bridge.postBlocks(channel, text, noticeBlocks(text, opts.console !== undefined), threadTs);
     },
   });
   const screen = new ScreenRelay({ console: opts.console, slack: bridge, logger });
@@ -493,18 +549,12 @@ export async function startBridgeApp(opts: BridgeAppOptions): Promise<RunningApp
           // !clear などで新しい会話になったら、「全部許可」を解除する（会話ごとに許可し直す）
           if (event.hook_event_name === 'SessionStart' && event.source === 'clear' && sessionAllow?.disable()) {
             logger.info('全部許可を解除（新しい会話）');
-            await notice.post('🔒 新しい会話になったので「このセッション中は全部許可」を解除した', [
-              { type: 'section', text: { type: 'plain_text', text: '🔒 新しい会話になったので「このセッション中は全部許可」を解除した' } },
-            ]);
+            await notice.post('🔒 新しい会話になったので「このセッション中は全部許可」を解除した');
           }
           const found = hookToNotice(event, { waiting: watchdog.isWaiting(), pending: relay.pendingCount() });
           if (!found) return;
           logger.info(`hook を知らせる event=${event.hook_event_name} type=${event.notification_type ?? '-'}`);
-          const blocks = [
-            { type: 'section', text: { type: 'plain_text', text: found.text } },
-            ...(found.screenButton && opts.console ? [{ type: 'actions', elements: [screenShowButton()] }] : []),
-          ];
-          await notice.post(found.text, blocks);
+          await notice.post(found.text, noticeBlocks(found.text, found.screenButton && opts.console !== undefined));
         },
       })
     : undefined;
@@ -514,7 +564,7 @@ export async function startBridgeApp(opts: BridgeAppOptions): Promise<RunningApp
     const waiting = watchdog.waitingSince();
     return buildStatusText({
       startedAt,
-      workDir: opts.home?.workDir ?? '',
+      workDir: opts.workDir ?? '',
       slackConnected: bridge.isConnected,
       waitingSince: waiting === undefined ? undefined : new Date(waiting),
       pendingPermissions: relay.pendingCount(),
@@ -529,26 +579,7 @@ export async function startBridgeApp(opts: BridgeAppOptions): Promise<RunningApp
   const wiring: Wiring = { bridge, server, relay, logger, watchdog, screen, rules, status, session, sessionAllow };
 
   // --- ホームタブ -------------------------------------------------------------
-  const homeView = (running: boolean, since: Date): unknown =>
-    buildHomeView({
-      running,
-      since,
-      workDir: opts.home?.workDir ?? '',
-      channelCount: opts.home?.channelCount ?? 0,
-      botUserId: opts.home?.botUserId,
-      custom: opts.home?.loadCustom?.(),
-      ruleCount: ruleStore?.list().length,
-      replyTimeoutMin: Math.round((opts.replyTimeoutMs ?? 0) / MS_PER_MINUTE),
-      now: new Date(),
-    });
-  const publishHomeAll = async (running: boolean, since: Date): Promise<void> => {
-    if (!opts.home || !bridge.publishHome) return;
-    for (const user of opts.home.users) await bridge.publishHome(user, homeView(running, since));
-  };
-  const onHomeOpened = async (user: string, allowed: boolean): Promise<void> => {
-    if (!opts.home || !bridge.publishHome) return;
-    await bridge.publishHome(user, allowed ? homeView(true, startedAt) : buildForbiddenHomeView());
-  };
+  const { publishHomeAll, onHomeOpened } = wireHome(opts, ruleStore, startedAt);
 
   let stopped: Promise<void> | undefined;
   const stop = (): Promise<void> =>

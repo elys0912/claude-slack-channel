@@ -11,6 +11,7 @@ import type { Logger } from './log.js';
 import { errMessage } from './errors.js';
 import { hasEmptyPrompt } from './screen.js';
 import type { ThreadRef } from './types.js';
+import type { SlackBridge } from './slack.js';
 
 /** /exit を送ってから、まだ終了していないことを知らせるまでの時間 */
 export const EXIT_CONFIRM_MS = 20000;
@@ -22,9 +23,7 @@ const KILLABLE_PARENTS = new Set(['claude.exe', 'node.exe']);
 /** 状態ディレクトリに置く再起動の印（scripts/start.ps1 の $RestartFlagName と同じ名前にすること） */
 export const RESTART_FLAG_FILE = 'restart.flag';
 
-export interface SessionSlack {
-  postText(channel: string, text: string, threadTs?: string): Promise<{ ts: string[] }>;
-}
+export type SessionSlack = Pick<SlackBridge, 'postText'>;
 
 export interface SessionControlOptions {
   /** ターミナルを操作する手段。無ければ !restart（force 以外）・!compact・!clear は使えない */
@@ -103,6 +102,11 @@ export class SessionControl {
   }
 
   stop(): void {
+    this.clearExitCheck();
+  }
+
+  /** /exit の後の「まだ終了していない」の確認を取り消す */
+  private clearExitCheck(): void {
     if (this.confirmTimer !== undefined) clearTimeout(this.confirmTimer);
     this.confirmTimer = undefined;
   }
@@ -130,7 +134,7 @@ export class SessionControl {
   }
 
   private scheduleExitCheck(at: ThreadRef): void {
-    this.stop();
+    this.clearExitCheck();
     // このプロセスがまだ動いていれば、Claude Code は終了していない
     this.confirmTimer = setTimeout(() => {
       this.confirmTimer = undefined;
