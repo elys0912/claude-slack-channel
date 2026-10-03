@@ -38,7 +38,7 @@ describe.runIf(process.platform === 'win32')('scripts/common.ps1 の Read-Restar
     expect(read()).toBe('c2097ecd-29b0-4cee-9f3e-a9aeace64bc3');
   });
 
-  it('id が無い（古い印）・UUID の形でない・JSON でない・ファイルが無いなら null（--continue にする）', () => {
+  it('id が無い（古い印）・UUID の形でない・JSON でない・ファイルが無いなら null（新しい会話で起動する）', () => {
     fs.writeFileSync(flag, JSON.stringify({ at: '2026-10-03T00:00:00.000Z' }));
     expect(read()).toBe('<null>');
     fs.writeFileSync(flag, JSON.stringify({ sessionId: 'x --dangerously-skip-permissions' }));
@@ -49,12 +49,24 @@ describe.runIf(process.platform === 'win32')('scripts/common.ps1 の Read-Restar
     expect(read()).toBe('<null>');
   });
 
-  it('start.ps1 と同じ組み立てで、--continue も 1 つの引数として配列の先頭に付く', () => {
-    const out = ps(
-      `$claudeArgs = @('--mcp-config', 'a b.json'); $sessionId = $null; ` +
-        `$resumeArgs = @(if ($sessionId) { '--resume', $sessionId } else { '--continue' }); ` +
-        `$a = $resumeArgs + $claudeArgs; "$($a.Count)|$($a -join '|')"`
-    );
-    expect(out).toBe('3|--continue|--mcp-config|a b.json');
+  it('start.ps1 と同じ組み立てで、引き継がないときは引数を足さず、引き継ぐときは --resume <id> が先頭に付く', () => {
+    const build = (id: string) =>
+      ps(
+        `$claudeArgs = @('--mcp-config', 'a b.json'); $sessionId = '${id}'; ` +
+          `$resumeArgs = @(if ($sessionId) { '--resume', $sessionId }); ` +
+          `$a = $resumeArgs + $claudeArgs; "$($a.Count)|$($a -join '|')"`
+      );
+    expect(build('')).toBe('2|--mcp-config|a b.json');
+    expect(build('c2097ecd-29b0-4cee-9f3e-a9aeace64bc3')).toBe('4|--resume|c2097ecd-29b0-4cee-9f3e-a9aeace64bc3|--mcp-config|a b.json');
+  });
+
+  it('Test-SessionTranscript: projects 配下のどこかに <id>.jsonl があるときだけ true', () => {
+    const config = path.join(dir, 'config');
+    fs.mkdirSync(path.join(config, 'projects', 'C--dev'), { recursive: true });
+    fs.writeFileSync(path.join(config, 'projects', 'C--dev', 'c2097ecd-29b0-4cee-9f3e-a9aeace64bc3.jsonl'), '{}\n');
+    const test = (id: string) => ps(`Test-SessionTranscript -SessionId '${id}' -ConfigDir '${config}'`);
+    expect(test('c2097ecd-29b0-4cee-9f3e-a9aeace64bc3')).toBe('True');
+    expect(test('794af7ae-57b1-4a74-9ef5-89328e03a33d')).toBe('False');
+    expect(ps(`Test-SessionTranscript -SessionId 'x' -ConfigDir '${path.join(dir, 'missing')}'`)).toBe('False');
   });
 });

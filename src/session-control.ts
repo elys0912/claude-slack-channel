@@ -2,7 +2,8 @@
 // ターミナルの入力欄に固定のコマンド（/exit・/compact・/clear）を打ち込む。自由な文字入力は受け付けない。
 // 再起動は、状態ディレクトリに restart.flag を置いてから /exit を送り、start.ps1 がフラグを見て起動し直す。
 // 印には今の会話の session_id（hook の記録から分かれば）を書き、start.ps1 は --resume <id> で同じ会話を開く
-// （--continue はフォルダーで最新の会話を開くので、同じフォルダーの VS Code などの会話を開いてしまう）。
+// id が分からない・会話の記録が無いときは新しい会話で起動する（--continue はフォルダーで最新の会話を開くので、
+// 同じフォルダーの VS Code などの会話を開いてしまう。使わない）。
 import fs from 'node:fs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -34,7 +35,7 @@ export interface SessionControlOptions {
   logger: Logger;
   /** 親プロセス（claude.exe）を止める（`!restart force`）。省略時は defaultKillParent */
   killParent?: ((logger: Logger) => void | Promise<void>) | undefined;
-  /** 今の会話の session_id（hook の記録から分かったもの）。印に書く。分からなければ start.ps1 は --continue で起動し直す */
+  /** 今の会話の session_id（hook の記録から分かったもの）。印に書く。分からなければ start.ps1 は新しい会話で起動し直す */
   sessionId?: (() => string | undefined) | undefined;
   /** /exit の後に終了を確かめるまでの時間（テスト用） */
   exitConfirmMs?: number | undefined;

@@ -369,7 +369,9 @@ Claude への返事を待ち始めた時刻、回答待ちの実行許可の件�
 - `!restart`: 状態ディレクトリに `restart.flag` を置き、入力欄に `/exit` + Enter を送る。claude.exe が終わるとブリッジも終わり、
   `start.ps1` が印を見て起動し直す（会話は引き継ぐ）。起動の警告ダイアログは `dialog-answer.ps1` が答える。
   印にはブリッジが hook の記録から知った今の会話の `session_id` を書き、`start.ps1` は `--resume <session_id>` でその会話を開く。
-  id が分からなければ `--continue`（フォルダーで最新の会話）になる。`--continue` だと、同じフォルダーで VS Code などの会話が後から作られているとそちらを開いてしまうため。
+  id が分からないか、その会話の記録（`~/.claude/projects/*/<session_id>.jsonl`）が無い（起動してから一度もやりとりしていない会話は保存されない）ときは、新しい会話で起動する。
+  `--continue`（フォルダーで最新の会話）は使わない。同じフォルダーで VS Code などの会話が後から作られていると、そちらを開いてしまうため。
+  `--resume` での起動が 30 秒以内に失敗で終わったときも、新しい会話で 1 回だけ起動し直す（Slack から戻せなくならないように）。
   新しいセッションの hook が「🟢 セッションを開始した」を Slack に出すまで待つこと。20 秒たっても終わらなければその旨を知らせる。
 - `!restart force`: `/exit` を送らず claude.exe を強制終了する（ターミナルが応答中・画面が読めないとき用）。
   `taskkill /T /F` で claude.exe の子プロセス（ほかの MCP サーバー・Bash の子など）もまとめて止める。親が `claude.exe` / `node.exe` でなければ止めない（手で起動したシェルを巻き込まないため）。
@@ -379,7 +381,7 @@ Claude への返事を待ち始めた時刻、回答待ちの実行許可の件�
 - `!clear`: 入力欄に `/clear` + Enter を送る。会話は捨てられ、新しい会話になる（元に戻せない。残したい文脈があるなら `!compact`）。
   終わると hook が「🧹 会話をクリアした」を出す。
 - `/exit`・`/compact`・`/clear` は、画面が **空の入力欄で待っているときだけ** 送る（応答中・選択画面・打ちかけの文字があるときは送らず、その旨を返す）。
-- 起動し直したあとの `--resume` / `--continue` と development channels の組み合わせ、ダイアログの自動応答は Claude Code の版によって変わりうる。
+- 起動し直したあとの `--resume` と development channels の組み合わせ、ダイアログの自動応答は Claude Code の版によって変わりうる。
   自動応答は、画面にタイトルの `development channel` と選択肢の `local development` の両方が出たときだけ答える（2.1.285 では「WARNING: Loading development channels」「I am using this for local development」）。
   起動し直す前に画面を消すので、前のセッションの発言に反応することはない。動かなくなったら `start.ps1` の `$DevChannelDialogPattern` / `$DevChannelChoicePattern` を直す。
 - `/exit` などは画面に応答中の表示（`esc to interrupt`）があれば送らない（Claude Code は応答中も入力欄を描くため）。
@@ -524,7 +526,7 @@ deny は allow より必ず優先される（評価順は deny → ask → allow
 | `access.json` | 状態ディレクトリ | `teamId`（`T...`）、`allowFrom`（`U...` の配列）、`channels`（`C...` / `G...` の配列、省略可）。これ以外のキーはエラー |
 | `home.json` | 状態ディレクトリ（省略可） | ホームタブの文面の差し替え（[アプリのホームタブ](#アプリのホームタブ)） |
 | `allow-extra.json` | 状態ディレクトリ | Slack の「今後も許可」で足したルール（`{"allow": [...]}`）。ブリッジが書き、起動スクリプトが allow に足す |
-| `restart.flag` | 状態ディレクトリ | `!restart` が置く印（`{"at": ..., "sessionId": ...}`）。`start.ps1` が終了時に見て、あれば消して `--resume <sessionId>`（無ければ `--continue`）で起動し直す |
+| `restart.flag` | 状態ディレクトリ | `!restart` が置く印（`{"at": ..., "sessionId": ...}`）。`start.ps1` が終了時に見て、あれば消して `--resume <sessionId>`（会話の記録が無ければ新しい会話）で起動し直す |
 | `hooks.jsonl` | 状態ディレクトリ | Claude Code の hook が追記する出来事の記録（1 行 1 JSON）。ブリッジが読んで Slack に知らせる。1MB を超えると `hooks.jsonl.1` に退避 |
 | `logs\bridge.log` | 状態ディレクトリ | ログ（下記） |
 | `logs\dialog-answer.log` | 状態ディレクトリ | `!restart` の後、警告ダイアログに自動で答えたか（答えた・キーを送れなかった・時間切れ） |
