@@ -298,7 +298,7 @@ $mcpConfig = Write-McpConfig -FileName "$sessionName\mcp.json" -ServerName $Serv
     }
 $effectiveSettings = Get-EffectiveSettings -ExtraServers $extraServers
 
-# 各フラグの意味は README の「権限の設計」を参照
+# 各フラグの意味は docs/security.md の「権限の設計」を参照
 $claudeArgs = @(
     '--mcp-config', $mcpConfig,
     '--strict-mcp-config',
