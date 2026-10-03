@@ -2,16 +2,18 @@
 #
 # Slack からの !restart で claude.exe を起動し直すとき、手元に人がいなくてもダイアログを抜けられるようにする。
 # start.ps1 が claude.exe の起動直前に、同じコンソールで（-NoNewWindow）このスクリプトを別プロセスとして起動する。
-# 画面に Pattern が出たら Digit1 と Enter を送って終わる。TimeoutSec の間に出なければ何もせず終わる。
+# 画面に Pattern と ChoicePattern（選択肢「1」の文言）の両方が出たら Digit1 と Enter を送って終わる。TimeoutSec の間に出なければ何もせず終わる。
 # 画面の読み取りとキー送信は console.ps1 を子プロセスで呼ぶ。
 #
 # 使い方:
-#   dialog-answer.ps1 -Pattern 'development channel' -TimeoutSec 90 [-LogFile <path>]
+#   dialog-answer.ps1 -Pattern 'development channel' [-ChoicePattern 'local development'] -TimeoutSec 90 [-LogFile <path>]
 #
 # 結果（答えた・キーを送れなかった・時間切れ）は -LogFile にだけ書く。同じコンソールで動くので、画面には何も書かない
 
 param(
     [Parameter(Mandatory)][string]$Pattern,
+    # 選択肢の行の文言（正規表現）。空なら Pattern だけで判断する
+    [string]$ChoicePattern = '',
     [int]$TimeoutSec = 90,
     [int]$IntervalMs = 500,
     [string]$LogFile
@@ -50,7 +52,7 @@ while ((Get-Date) -lt $deadline) {
     } catch {
         continue
     }
-    if ($screen -match $Pattern) {
+    if ($screen -match $Pattern -and ($ChoicePattern -eq '' -or $screen -match $ChoicePattern)) {
         # TUI が描き終わるのを少し待ってから答える
         Start-Sleep -Milliseconds 500
         $output = Invoke-Console @('-Mode', 'keys', '-Keys', 'Digit1,Enter') 2>&1

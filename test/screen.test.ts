@@ -7,6 +7,11 @@ describe('hasEmptyPrompt', () => {
     expect(hasEmptyPrompt('> ')).toBe(true);
   });
 
+  it('応答中の表示（esc to interrupt）があれば、入力欄が描かれていても false', () => {
+    const screen = ['● 作業中', '✻ Thinking… (12s · ↓ 300 tokens · esc to interrupt)', '─'.repeat(20), '❯ ', '─'.repeat(20), '  ? for shortcuts'].join('\n');
+    expect(hasEmptyPrompt(screen)).toBe(false);
+  });
+
   it('起動直後の入力例（Try "…"）だけの入力欄は空とみなす', () => {
     // 2026-10-03 に !screen で取れた起動直後の画面の末尾
     const screen = ['─'.repeat(20), '>\u00a0Try "how do I log an error?"', '─'.repeat(20), '  ⏵⏵ accept edits on (shift+tab to cycle)'].join('\n');

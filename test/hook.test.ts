@@ -34,6 +34,9 @@ describe('toHookEvent', () => {
     // stdin に session_tag があっても写さない（記録するのは start.ps1 が渡した環境変数の値だけ）
     expect(toHookEvent('{"hook_event_name":"Stop","session_tag":"forged"}', 1)).toEqual({ at: 1, hook_event_name: 'Stop' });
     expect(toHookEvent('not json')).toBeUndefined();
+    // error_details がオブジェクトなら message を、message が無ければ JSON を写す
+    expect(toHookEvent('{"hook_event_name":"StopFailure","error_details":{"status":429,"message":"rate limited"}}', 1)?.error_details).toBe('rate limited');
+    expect(toHookEvent('{"hook_event_name":"StopFailure","error_details":{"status":529}}', 1)?.error_details).toBe('{"status":529}');
     expect(toHookEvent('{"session_id":"s1"}')).toBeUndefined();
     expect(toHookEvent('[1,2]')).toBeUndefined();
     expect(toHookEvent('{"hook_event_name":"Stop","error":42}', 1)).toEqual({ at: 1, hook_event_name: 'Stop' });
