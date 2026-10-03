@@ -1,6 +1,7 @@
 // hook（src/hook.ts）が状態ディレクトリの hooks.jsonl に追記した行を読み、イベントとして渡す。
 // Windows の fs.watch は取りこぼすので、一定間隔でサイズを見て増えた分だけ読む。
 import fs from 'node:fs';
+import { StringDecoder } from 'node:string_decoder';
 import { z } from 'zod';
 import type { Logger } from './log.js';
 import { EventDedupe } from './gate.js';
@@ -15,6 +16,12 @@ export const DEFAULT_REPLAY_WINDOW_MS = 30000;
 const DEDUPE_CAPACITY = 200;
 /** lastEvents で返せる上限 */
 const HISTORY_CAPACITY = 50;
+/** 1 回に読む量の上限。溜まった未読がこれを超えたら、古い分は読み飛ばして末尾のこれだけ読む */
+export const READ_CHUNK_MAX = 1024 * 1024;
+/** 改行の無い読みかけの行をこれ以上溜めない（超えたら、次の改行までまとめて捨てる） */
+export const PARTIAL_MAX = 64 * 1024;
+/** hook.ts が回した旧ファイルの名前（hooks.jsonl → hooks.jsonl.1） */
+const ROTATED_SUFFIX = '.1';
 
 const HookEventSchema = z.looseObject({
   at: z.number(),
@@ -59,8 +66,14 @@ export class HookInbox {
   private ino: number | undefined;
   /** 改行で終わっていない読みかけの行 */
   private partial = '';
+  /** 読みかけの行が長すぎて捨てたので、次の改行までを読み捨てる */
+  private skipToNewline = false;
+  /** チャンクの境目で割れた UTF-8 の文字を次の回につなぐ */
+  private decoder = new StringDecoder('utf8');
   private timer: ReturnType<typeof setInterval> | undefined;
   private polling = false;
+  /** stop 済み。以後 start しても何も始めない */
+  private stopped = false;
 
   constructor(opts: HookInboxOptions) {
     this.file = opts.file;
@@ -72,15 +85,18 @@ export class HookInbox {
     this.now = opts.now ?? Date.now;
   }
 
-  /** 既にある行のうち直近のものだけ渡してから、定期的に読み始める */
+  /** 既にある行のうち直近のものだけ渡してから、定期的に読み始める。stop の後（最初の読み込みの途中で stop された場合も）は何もしない */
   async start(): Promise<void> {
+    if (this.stopped) return;
     const since = this.now() - this.replayWindowMs;
     await this.poll((event) => event.at >= since);
+    if (this.stopped) return;
     this.timer = setInterval(() => void this.poll(), this.pollMs);
     this.timer.unref?.();
   }
 
   stop(): void {
+    this.stopped = true;
     if (this.timer !== undefined) clearInterval(this.timer);
     this.timer = undefined;
   }
@@ -103,38 +119,99 @@ export class HookInbox {
     }
   }
 
-  /** 前回の位置から増えた分を行に分けて返す。ファイルが無い・小さくなっていれば先頭から読み直す */
+  /**
+   * 前回の位置から増えた分を行に分けて返す。ファイルが無い・小さくなっていれば先頭から読み直す。
+   * 回されて別のファイルになったときは、旧ファイル（hooks.jsonl.1）の読み残しを読み切ってから新しいファイルに移る
+   */
   private readNewLines(): string[] {
     let stat: fs.Stats;
     try {
       stat = fs.statSync(this.file);
     } catch {
-      this.offset = 0;
-      this.partial = '';
-      this.ino = undefined;
+      this.resetPosition(undefined);
       return [];
     }
-    const size = stat.size;
-    if (stat.ino !== this.ino || size < this.offset) {
-      // 別のファイルになった（hooks.jsonl.1 へ回された）か、切り詰められた。最初から読む
-      this.offset = 0;
-      this.partial = '';
-      this.ino = stat.ino;
+    const lines: string[] = [];
+    if (stat.ino !== this.ino) {
+      if (this.ino !== undefined) lines.push(...this.drainRotated(this.ino));
+      this.resetPosition(stat.ino);
+    } else if (stat.size < this.offset) {
+      // 切り詰められた。最初から読む
+      this.resetPosition(stat.ino);
     }
-    if (size === this.offset) return [];
+    lines.push(...this.readRange(this.file, stat.size));
+    return lines;
+  }
 
-    const fd = fs.openSync(this.file, 'r');
+  /** 読む位置と読みかけを捨てて、ino のファイルの先頭から読むことにする */
+  private resetPosition(ino: number | undefined): void {
+    this.offset = 0;
+    this.partial = '';
+    this.skipToNewline = false;
+    this.decoder = new StringDecoder('utf8');
+    this.ino = ino;
+  }
+
+  /** 回された旧ファイルが読んでいたファイル（oldIno）なら、読み残しを読み切る。最後の改行の無い行は捨てる */
+  private drainRotated(oldIno: number): string[] {
+    const rotated = this.file + ROTATED_SUFFIX;
+    let stat: fs.Stats;
+    try {
+      stat = fs.statSync(rotated);
+    } catch {
+      return [];
+    }
+    if (stat.ino !== oldIno || stat.size <= this.offset) return [];
+    try {
+      return this.readRange(rotated, stat.size);
+    } catch (e) {
+      this.logger.warn('回された hooks.jsonl.1 の読み残しを読めなかった', e);
+      return [];
+    }
+  }
+
+  /** file の offset から size までを読み、改行で区切った行を返す。未読が READ_CHUNK_MAX を超えていれば古い分を読み飛ばす */
+  private readRange(file: string, size: number): string[] {
+    if (size <= this.offset) return [];
+    if (size - this.offset > READ_CHUNK_MAX) {
+      const skipped = size - READ_CHUNK_MAX - this.offset;
+      this.logger.warn(`hooks.jsonl の未読が大きすぎるので、古い ${skipped} バイトを読み飛ばす`);
+      this.offset = size - READ_CHUNK_MAX;
+      // 途中から読むので、最初の改行までは行の途中。読みかけも捨てる
+      this.partial = '';
+      this.skipToNewline = true;
+      this.decoder = new StringDecoder('utf8');
+    }
+
+    const fd = fs.openSync(file, 'r');
+    let text: string;
     try {
       const buffer = Buffer.alloc(size - this.offset);
       const read = fs.readSync(fd, buffer, 0, buffer.length, this.offset);
       this.offset += read;
-      const text = this.partial + buffer.toString('utf8', 0, read);
-      const lines = text.split('\n');
-      this.partial = lines.pop() ?? '';
-      return lines.filter((l) => l.trim() !== '');
+      text = this.decoder.write(buffer.subarray(0, read));
     } finally {
       fs.closeSync(fd);
     }
+    return this.splitLines(text);
+  }
+
+  /** 読みかけとつないで行に分ける。読みかけが PARTIAL_MAX を超えたら捨て、次の改行まで読み捨てる */
+  private splitLines(text: string): string[] {
+    if (this.skipToNewline) {
+      const newline = text.indexOf('\n');
+      if (newline < 0) return [];
+      text = text.slice(newline + 1);
+      this.skipToNewline = false;
+    }
+    const lines = (this.partial + text).split('\n');
+    this.partial = lines.pop() ?? '';
+    if (this.partial.length > PARTIAL_MAX) {
+      this.logger.warn(`hooks.jsonl に改行の無い長い行がある（${this.partial.length} 文字）。次の改行まで読み捨てる`);
+      this.partial = '';
+      this.skipToNewline = true;
+    }
+    return lines.filter((l) => l.trim() !== '');
   }
 
   private async handleLine(line: string, accept: (event: HookEvent) => boolean): Promise<void> {
