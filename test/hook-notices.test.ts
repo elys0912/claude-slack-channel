@@ -72,6 +72,8 @@ describe('hookToNotice', () => {
     expect(hookToNotice(ev({ hook_event_name: 'SessionStart', source: 'clear' }), idle)?.text).toContain('クリア');
     expect(hookToNotice(ev({ hook_event_name: 'SessionStart', source: 'compact' }), idle)).toBeUndefined();
     expect(hookToNotice(ev({ hook_event_name: 'SessionEnd', reason: 'logout' }), idle)?.text).toContain('終了した（logout）');
+    // /clear の終了は、続く SessionStart（source=clear）の「会話をクリアした」だけにする
+    expect(hookToNotice(ev({ hook_event_name: 'SessionEnd', reason: 'clear' }), idle)).toBeUndefined();
     expect(hookToNotice(ev({ hook_event_name: 'PostCompact', trigger: 'auto' }), idle)?.text).toContain('自動で圧縮');
     expect(hookToNotice(ev({ hook_event_name: 'PostCompact', trigger: 'manual' }), idle)?.text).toBe('🧹 会話を圧縮した');
   });
