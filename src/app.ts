@@ -301,7 +301,7 @@ export async function handleAction(wiring: Wiring, parsed: ActionParse, ctx: Act
         if (at) {
           await wiring.bridge.postText(
             at.channel,
-            '🔓 このセッション中は、settings の ask / deny に当たるもの以外を自動で許可する。自動で許可した操作はスレッドに残す。!lock で解除、!clear か起動し直しでも解除される',
+            '🔓 このセッション中は、settings の ask に当たるもの以外を自動で許可する（deny は今までどおり実行されない）。自動で許可した操作はスレッドに残す。!lock で解除、!clear か起動し直しでも解除される',
             at.threadTs
           );
         }
@@ -425,7 +425,7 @@ export interface BridgeAppOptions {
   restartFlagFile?: string | undefined;
   /** `!restart force` で claude.exe を止める手段（テスト用。省略時は親プロセスに process.kill） */
   killParent?: (() => void) | undefined;
-  /** 実行許可に「このセッション中は全部許可」ボタンを出すか（.env の SESSION_ALLOW_ALL）。ask / deny は denyFiles から読む */
+  /** 実行許可に「このセッション中は全部許可」ボタンを出すか（.env の SESSION_ALLOW_ALL）。除外する ask は denyFiles から読む */
   sessionAllowAll?: boolean | undefined;
 }
 
@@ -469,7 +469,8 @@ export async function startBridgeApp(opts: BridgeAppOptions): Promise<RunningApp
     },
   });
   const sessionAllow = opts.sessionAllowAll
-    ? new SessionAllowAll(() => (opts.denyFiles ?? []).flatMap((f) => [...readAsk(f), ...readDeny(f)]))
+    ? // deny に当たる操作は Claude Code が確認を出す前に止めるので、照合するのは ask だけ
+      new SessionAllowAll(() => (opts.denyFiles ?? []).flatMap((f) => readAsk(f)))
     : undefined;
   const relay: PermissionRelay = new PermissionRelay(bridge, server, logger, undefined, sessionAllow);
   const startedAt = new Date();

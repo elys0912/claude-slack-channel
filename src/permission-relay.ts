@@ -134,7 +134,7 @@ export class PermissionRelay {
   }
 
   /**
-   * 「このセッション中は全部許可」が有効で、ask / deny に当たらなければ、ボタンを出さずに allow を返し、スレッドに記録する。
+   * 「このセッション中は全部許可」が有効で、settings の ask に当たらなければ、ボタンを出さずに allow を返し、スレッドに記録する。
    * 自動で許可したら true。送れなかったら false を返し、通常どおりボタンで聞く
    */
   private async tryAutoAllow(req: PermissionRequest): Promise<boolean> {

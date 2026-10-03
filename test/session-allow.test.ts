@@ -39,8 +39,37 @@ describe('matchingRule', () => {
   });
 });
 
+describe('matchingRule（パスの ask ルール）', () => {
+  const ctx = { workDir: 'C:\\dev\\portfolio', home: 'C:\\Users\\me' };
+  // FOX3 の deny と同じ形のルールを ask に置いたとき（2026-10-03 に実機で、どの Read も当たりになった）
+  const rules = ['Read(~/.claude/channels/**)', 'Read(~/.ssh/**)', 'Read(.env)', 'Read(**/*.pem)', 'Edit(./Tool/FOX3-partner/**)'];
+
+  it('範囲の外のパスには当たらない', () => {
+    expect(matchingRule(req('Read', { file_path: 'C:\\dev\\claude-slack-channel\\package.json' }), rules, ctx)).toBeUndefined();
+    expect(matchingRule(req('Edit', { file_path: 'C:\\dev\\portfolio\\src\\a.ts' }), rules, ctx)).toBeUndefined();
+  });
+
+  it('フォルダー以下（ホーム基準・作業フォルダー基準）のパスには当たる', () => {
+    expect(matchingRule(req('Read', { file_path: 'C:\\Users\\me\\.ssh\\id_ed25519' }), rules, ctx)).toBe('Read(~/.ssh/**)');
+    expect(matchingRule(req('Write', { file_path: 'C:\\dev\\portfolio\\Tool\\FOX3-partner\\x.json' }), rules, ctx)).toBe(
+      'Edit(./Tool/FOX3-partner/**)'
+    );
+  });
+
+  it('ファイル名だけのルールは、どのフォルダーでも名前が一致すれば当たる', () => {
+    expect(matchingRule(req('Read', { file_path: 'C:\\dev\\x\\.env' }), rules, ctx)).toBe('Read(.env)');
+    expect(matchingRule(req('Read', { file_path: 'C:\\dev\\x\\server.PEM' }), rules, ctx)).toBe('Read(**/*.pem)');
+    expect(matchingRule(req('Read', { file_path: 'C:\\dev\\x\\env.txt' }), rules, ctx)).toBeUndefined();
+  });
+
+  it('パスが読めないか、複雑なパターンなら当たりにする（安全側）', () => {
+    expect(matchingRule(req('Read', '{"file_path":"C:\\\\de…'), rules, ctx)).toBe('Read(~/.claude/channels/**)');
+    expect(matchingRule(req('Read', { file_path: 'C:\\dev\\a\\b.ts' }), ['Read(src/**/secret/*)'], ctx)).toBe('Read(src/**/secret/*)');
+  });
+});
+
 describe('SessionAllowAll', () => {
-  it('有効にするまでは自動許可しない。有効なら ask / deny に当たらないものだけ許可する', () => {
+  it('有効にするまでは自動許可しない。有効なら ask に当たらないものだけ許可する', () => {
     const s = new SessionAllowAll(() => ['Bash(git push:*)']);
     expect(s.check(req('Bash', { command: 'ls' }))).toEqual({ allow: false });
 

@@ -1189,7 +1189,7 @@ describe('このセッション中は全部許可', () => {
   async function start(sessionAllowAll: boolean): Promise<void> {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'app-allowall-'));
     const settings = path.join(dir, 'settings.json');
-    fs.writeFileSync(settings, JSON.stringify({ permissions: { ask: ['Bash(git push:*)'], deny: ['Bash(rm:*)'] } }));
+    fs.writeFileSync(settings, JSON.stringify({ permissions: { ask: ['Bash(git push:*)'], deny: ['Bash(rm:*)', 'Read(.env)', 'Read(~/.ssh/**)'] } }));
     hooks = path.join(dir, 'hooks.jsonl');
     h = await startHarness(ACCESS, undefined, { denyFiles: [settings], sessionAllowAll, hookInboxFile: hooks, hookPollMs: 20 });
     // 自動許可の記録を出すスレッドを覚えさせる
@@ -1230,6 +1230,19 @@ describe('このセッション中は全部許可', () => {
     expect(String(posts()[0]?.args.text)).toContain('自動許可: Bash');
     expect(posts()[0]?.args.thread_ts).toBe('20.0');
     expect(actionIds(posts()[0])).toEqual([]);
+  });
+
+  it('deny は照合しない（Claude Code が確認の前に止めるため）。範囲付きの Read の deny があっても、別の場所の Read は自動許可する', async () => {
+    await start(true);
+    await enableByButton();
+
+    await h.client.notification({
+      method: 'notifications/claude/channel/permission_request',
+      params: { request_id: 'fghij', tool_name: 'Read', description: 'read', input_preview: JSON.stringify({ file_path: 'C:\\dev\\other\\a.ts' }) },
+    });
+    await flush();
+    expect(verdicts().at(-1)).toEqual({ request_id: 'fghij', behavior: 'allow' });
+    expect(String(posts()[0]?.args.text)).toContain('自動許可: Read');
   });
 
   it('有効でも、settings の ask に当たるものはボタンで聞く（全部許可のボタンはもう出さない）', async () => {
