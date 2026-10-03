@@ -15,11 +15,12 @@ describe('HookInbox', () => {
   const line = (event: Partial<HookEvent> & { hook_event_name: string }): string =>
     JSON.stringify({ at: now, session_id: 's1', ...event }) + '\n';
 
-  function inbox(opts: { onEvent?: (e: HookEvent) => void | Promise<void> } = {}): HookInbox {
+  function inbox(opts: { onEvent?: (e: HookEvent) => void | Promise<void>; sessionTag?: string } = {}): HookInbox {
     return new HookInbox({
       file,
       logger: new Logger({ stderr: false }),
       onEvent: opts.onEvent ?? ((e) => void events.push(e)),
+      sessionTag: opts.sessionTag,
       pollMs: 10,
       replayWindowMs: 1000,
       now: () => now,
@@ -49,6 +50,30 @@ describe('HookInbox', () => {
     await vi.advanceTimersByTimeAsync(10);
     expect(events.map((e) => e.hook_event_name)).toEqual(['SessionStart', 'Stop', 'PostCompact']);
     expect(box.lastEvents(2).map((e) => e.hook_event_name)).toEqual(['Stop', 'PostCompact']);
+    box.stop();
+  });
+
+  it('sessionTag を渡すと、同じ session_tag の行だけ渡し、履歴にも残さない', async () => {
+    const box = inbox({ sessionTag: 'A' });
+    await box.start();
+    fs.writeFileSync(
+      file,
+      line({ hook_event_name: 'Stop', session_tag: 'A', at: now + 1 }) +
+        line({ hook_event_name: 'SessionEnd', session_tag: 'B', at: now + 2 }) +
+        line({ hook_event_name: 'PostCompact', at: now + 3 })
+    );
+    await vi.advanceTimersByTimeAsync(10);
+    expect(events.map((e) => e.hook_event_name)).toEqual(['Stop']);
+    expect(box.lastEvents(5).map((e) => e.hook_event_name)).toEqual(['Stop']);
+    box.stop();
+  });
+
+  it('sessionTag を渡さなければ、タグに関係なく全部渡す', async () => {
+    const box = inbox();
+    await box.start();
+    fs.writeFileSync(file, line({ hook_event_name: 'Stop', session_tag: 'A', at: now + 1 }) + line({ hook_event_name: 'PostCompact', at: now + 2 }));
+    await vi.advanceTimersByTimeAsync(10);
+    expect(events.map((e) => e.hook_event_name)).toEqual(['Stop', 'PostCompact']);
     box.stop();
   });
 

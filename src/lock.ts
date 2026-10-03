@@ -13,6 +13,22 @@ export interface InstanceLockOptions {
   intervalMs?: number; // 既定 10000
   now?: () => number;
   pid?: number;
+  /** 記録された pid のプロセスが生きているか。死んでいれば heartbeat が新しくても取る。省略時は確認しない（常に生きている扱い） */
+  isAlive?: (pid: number) => boolean;
+}
+
+/**
+ * pid のプロセスが生きているか（シグナル 0 を送って確かめる）。存在しない（ESRCH）ときだけ false。
+ * 権限が無い（EPERM）などは生きているとみなす（取り違えて奪わないよう安全側）
+ */
+export function isProcessAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code !== 'ESRCH';
+  }
 }
 
 const DEFAULT_STALE_MS = 30000;
@@ -36,6 +52,7 @@ export class InstanceLock {
   private readonly intervalMs: number;
   private readonly now: () => number;
   private readonly pid: number;
+  private readonly isAlive: (pid: number) => boolean;
   private timer: ReturnType<typeof setInterval> | undefined;
   private startedAt: number | undefined;
 
@@ -45,6 +62,7 @@ export class InstanceLock {
     this.intervalMs = opts.intervalMs ?? DEFAULT_INTERVAL_MS;
     this.now = opts.now ?? Date.now;
     this.pid = opts.pid ?? process.pid;
+    this.isAlive = opts.isAlive ?? (() => true);
   }
 
   private readInfo(): LockInfo | undefined {
@@ -77,10 +95,10 @@ export class InstanceLock {
   }
 
   /**
-   * ロックを取る。既存のロックが次のどちらかなら上書きして取る（どちらでもなければ holder を返して諦める）:
+   * ロックを取る。既存のロックが次のどれかなら上書きして取る（どれでもなければ holder を返して諦める）:
    * - isSelf: 記録された pid が自分の pid と同じ
    * - stale: heartbeat が staleMs（既定 30 秒）より古い、または現在時刻より 5 秒を超えて未来
-   * 記録された pid のプロセスが生きているかは確認しない（heartbeat の新しさだけで判断する）。
+   * - dead: isAlive が記録された pid を死んでいると判定した（強制終了されて解放されずに残ったロック）
    * 読めない・形の違うロックファイルは無いものとして扱う。取れたら intervalMs ごとの heartbeat 更新を始める。
    */
   tryAcquire(): { acquired: true } | { acquired: false; holder: LockInfo } {
@@ -92,7 +110,7 @@ export class InstanceLock {
       // 不正として stale 扱いにする。
       const age = this.now() - existing.heartbeat;
       const isStale = age > this.staleMs || age < -FUTURE_TOLERANCE_MS;
-      if (!isSelf && !isStale) {
+      if (!isSelf && !isStale && this.isAlive(existing.pid)) {
         return { acquired: false, holder: existing };
       }
     }
@@ -154,5 +172,32 @@ export class InstanceLock {
       // release の失敗は呼び出し元へは投げない
     }
     this.startedAt = undefined;
+  }
+}
+
+export interface AcquireRetryOptions {
+  /** この時間まで取り直しを試す */
+  timeoutMs: number;
+  /** 試す間隔 */
+  intervalMs: number;
+  /** 待ち方（テスト用） */
+  sleep?: (ms: number) => Promise<void>;
+}
+
+/**
+ * 取れるまで tryAcquire を繰り返す。timeoutMs を過ぎても取れなければ最後の結果を返す。
+ * 起動し直しのとき、旧インスタンスが終了処理でロックを手放すより先に新しいインスタンスが起動することがあるため
+ */
+export async function acquireWithRetry(
+  lock: InstanceLock,
+  opts: AcquireRetryOptions
+): Promise<ReturnType<InstanceLock['tryAcquire']>> {
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  let waited = 0;
+  for (;;) {
+    const result = lock.tryAcquire();
+    if (result.acquired || waited >= opts.timeoutMs) return result;
+    await sleep(opts.intervalMs);
+    waited += opts.intervalMs;
   }
 }

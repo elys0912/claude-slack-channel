@@ -90,3 +90,18 @@ function Format-CommandLine {
     }
     return "`"$Exe`" " + ($quoted -join ' ')
 }
+
+# Slack の !restart が置いた印（restart.flag の JSON）から、会話の session_id を読む。
+# UUID の形でなければ（古い印・壊れた印・id が分からなかった）$null を返し、呼び出し側は --continue にする
+function Read-RestartSessionId {
+    param([string]$Path)
+
+    try {
+        $flag = [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+    } catch {
+        return $null
+    }
+    $id = [string]$flag.sessionId
+    if ($id -match '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') { return $id }
+    return $null
+}
