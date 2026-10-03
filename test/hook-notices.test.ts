@@ -34,6 +34,24 @@ describe('hookToNotice', () => {
     expect(hookToNotice(stop, waiting)?.text).toContain('返事をしないまま');
   });
 
+  // Stop / idle_prompt は Slack の返事待ち（waiting）のときだけ、permission_prompt は中継中（pending）でないときだけ
+  it.each([
+    ['Stop', undefined, false, 0, false],
+    ['Stop', undefined, true, 0, true],
+    ['Stop', undefined, true, 1, true],
+    ['Notification', 'idle_prompt', false, 0, false],
+    ['Notification', 'idle_prompt', true, 0, true],
+    ['Notification', 'idle_prompt', true, 1, true],
+    ['Notification', 'permission_prompt', false, 0, true],
+    ['Notification', 'permission_prompt', true, 0, true],
+    ['Notification', 'permission_prompt', false, 1, false],
+  ] as const)('%s/%s waiting=%s pending=%s → 知らせる=%s', (name, type, isWaiting, pending, expected) => {
+    const event = ev({ hook_event_name: name, ...(type ? { notification_type: type } : {}) });
+    const notice = hookToNotice(event, { waiting: isWaiting, pending });
+    expect(notice !== undefined).toBe(expected);
+    if (notice) expect(notice.screenButton).toBe(true);
+  });
+
   it('auth_success や未知の種類は知らせない', () => {
     expect(hookToNotice(ev({ hook_event_name: 'Notification', notification_type: 'auth_success' }), waiting)).toBeUndefined();
     expect(hookToNotice(ev({ hook_event_name: 'Notification', notification_type: 'something_new' }), waiting)).toBeUndefined();
