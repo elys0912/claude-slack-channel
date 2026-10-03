@@ -12,6 +12,7 @@ import type { ActionParse } from './permission.js';
 import type { GateResult } from './gate.js';
 import type { PressedMessage, ThreadRef } from './types.js';
 import { SessionControl } from './session-control.js';
+import type { SessionControlOptions } from './session-control.js';
 import { buildStatusText } from './status.js';
 import { MS_PER_MINUTE, ResponseWatchdog, buildNoResponseText } from './watchdog.js';
 import type { ConsoleAccess } from './console.js';
@@ -423,8 +424,8 @@ export interface BridgeAppOptions {
   hookPollMs?: number | undefined;
   /** `!restart` が置く印（状態ディレクトリの restart.flag。start.ps1 が見て --continue で起動し直す）。省略時は !restart・!compact・!clear を使えない */
   restartFlagFile?: string | undefined;
-  /** `!restart force` で claude.exe を止める手段（テスト用。省略時は親プロセスに process.kill） */
-  killParent?: (() => void) | undefined;
+  /** `!restart force` で claude.exe を止める手段（テスト用。省略時は taskkill でプロセスツリーごと止める） */
+  killParent?: SessionControlOptions['killParent'];
   /** 実行許可に「このセッション中は全部許可」ボタンを出すか（.env の SESSION_ALLOW_ALL）。除外する ask は denyFiles から読む */
   sessionAllowAll?: boolean | undefined;
 }

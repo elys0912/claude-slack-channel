@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { SessionControl } from '../src/session-control.js';
+import { SessionControl, parseTasklistName } from '../src/session-control.js';
 import { Logger } from '../src/log.js';
 import type { ConsoleAccess, ConsoleCommand } from '../src/console.js';
 
@@ -152,5 +152,17 @@ describe('SessionControl', () => {
     await make(fakeConsole({ fail: true })).clear(AT, 'U1');
     expect(posted[1]).toContain('送れなかった');
     expect(fs.existsSync(flag)).toBe(false);
+  });
+});
+
+describe('parseTasklistName（!restart force で親の名前を確かめる）', () => {
+  it('tasklist の CSV から pid の行のイメージ名を読む', () => {
+    const csv = '"claude.exe","4321","Console","1","250,000 K"\r\n';
+    expect(parseTasklistName(csv, 4321)).toBe('claude.exe');
+  });
+
+  it('pid が違う・見つからない（INFO: の行）なら undefined', () => {
+    expect(parseTasklistName('"claude.exe","4321","Console","1","1 K"\r\n', 1234)).toBeUndefined();
+    expect(parseTasklistName('INFO: No tasks are running which match the specified criteria.\r\n', 1234)).toBeUndefined();
   });
 });
