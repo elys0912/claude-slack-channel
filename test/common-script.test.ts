@@ -70,3 +70,47 @@ describe.runIf(process.platform === 'win32')('scripts/common.ps1 の Read-Restar
     expect(ps(`Test-SessionTranscript -SessionId 'x' -ConfigDir '${path.join(dir, 'missing')}'`)).toBe('False');
   });
 });
+
+describe.runIf(process.platform === 'win32')('scripts/common.ps1 の Test-PlaceholderServer', { timeout: 30000 }, () => {
+  let dir: string;
+  let config: string;
+  const mainJs = 'C:\\repo\\dist\\src\\main.js';
+  const entry = { type: 'stdio', command: 'node', args: [mainJs], env: { SLACK_CHANNEL_PLACEHOLDER: '1' } };
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-json-'));
+    config = path.join(dir, '.claude.json');
+  });
+
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  const write = (projects: Record<string, unknown>) => fs.writeFileSync(config, JSON.stringify({ numStartups: 1, projects }));
+  const test = (projectDir: string) =>
+    ps(`Test-PlaceholderServer -ConfigPath '${config}' -ProjectDir '${projectDir}' -ServerName 'slackbridge' -ScriptPath '${mainJs}'`);
+
+  it('作業フォルダーの local スコープに、同じ main.js を待つだけで起動する登録があれば true', () => {
+    write({ 'C:/dev': { mcpServers: { slackbridge: entry } } });
+    expect(test('C:\\dev')).toBe('True');
+    // キーのドライブ文字の大文字・小文字と、末尾の区切りは問わない
+    expect(test('c:\\dev\\')).toBe('True');
+  });
+
+  it('別のフォルダー・別の名前・中身が違う登録・ファイルが無い・読めないなら false（登録し直す）', () => {
+    write({ 'C:/dev': { mcpServers: { slackbridge: entry } } });
+    expect(test('C:\\dev\\portfolio')).toBe('False');
+    write({ 'C:/dev': { mcpServers: { other: entry } } });
+    expect(test('C:\\dev')).toBe('False');
+    write({ 'C:/dev': { mcpServers: { slackbridge: { ...entry, args: ['-e', 'process.exit(0)'] } } } });
+    expect(test('C:\\dev')).toBe('False');
+    write({ 'C:/dev': { mcpServers: { slackbridge: { ...entry, env: {} } } } });
+    expect(test('C:\\dev')).toBe('False');
+    write({ 'C:/dev': {} });
+    expect(test('C:\\dev')).toBe('False');
+    fs.writeFileSync(config, 'not json');
+    expect(test('C:\\dev')).toBe('False');
+    fs.rmSync(config);
+    expect(test('C:\\dev')).toBe('False');
+  });
+});

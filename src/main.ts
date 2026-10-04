@@ -13,6 +13,7 @@ import { replyTimeoutMs } from './watchdog.js';
 import { PowerShellConsole, findConsoleScript } from './console.js';
 import { HOOK_LOG_FILE, SESSION_TAG_ENV } from './hook-event.js';
 import { RESTART_FLAG_FILE } from './session-control.js';
+import { isPlaceholder, runPlaceholder } from './placeholder.js';
 
 /** リポジトリのルート（dist/src/main.js の 2 つ上） */
 const repoRoot = path.resolve(import.meta.dirname, '..', '..');
@@ -190,19 +191,32 @@ function installShutdown(logger: Logger, cleanup: () => Promise<void>): void {
 
 // --- 予期しない例外でもプロセスを落とさない ---------------------------------------
 
-// Logger はプロセスで 1 つ。起動前の例外も main() 内も同じものに書く
-const stateDirectory = stateDir();
-const logger = createLogger(stateDirectory);
+function startBridge(): void {
+  // Logger はプロセスで 1 つ。起動前の例外も main() 内も同じものに書く
+  const stateDirectory = stateDir();
+  const logger = createLogger(stateDirectory);
 
-process.on('unhandledRejection', (reason: unknown) => {
-  logger.error('unhandledRejection', reason);
-});
-process.on('uncaughtException', (e: unknown) => {
-  logger.error('uncaughtException', e);
-});
+  process.on('unhandledRejection', (reason: unknown) => {
+    logger.error('unhandledRejection', reason);
+  });
+  process.on('uncaughtException', (e: unknown) => {
+    logger.error('uncaughtException', e);
+  });
 
-main(stateDirectory, logger).catch((e: unknown) => {
-  process.stderr.write(`[slackbridge] 起動に失敗: ${errMessage(e)}\n`);
-  logger.error('起動に失敗', e);
-  void exitWithError(1);
-});
+  main(stateDirectory, logger).catch((e: unknown) => {
+    process.stderr.write(`[slackbridge] 起動に失敗: ${errMessage(e)}\n`);
+    logger.error('起動に失敗', e);
+    void exitWithError(1);
+  });
+}
+
+// start.ps1 が local スコープに登録した slackbridge（普段のセッションで読み込まれる）は、
+// 状態ディレクトリにもロックにも触らずに待つだけ（src/placeholder.ts）
+if (isPlaceholder()) {
+  runPlaceholder().catch((e: unknown) => {
+    process.stderr.write(`[slackbridge] 起動に失敗: ${errMessage(e)}\n`);
+    process.exit(1);
+  });
+} else {
+  startBridge();
+}
