@@ -147,7 +147,7 @@ Windows Terminal から実行する。
 | `scripts\start.cmd -DryRun` | 起動せずに、実行するコマンドラインだけを表示する。ビルドは省き、`.env` / `access.json` が無くても警告だけ出す |
 | `scripts\start.cmd C:\path\to\app -StateDir <dir> -SettingsFile <file>` | 別の Slack アプリと設定で、もう1つのセッションを起動する（[セッションを並べる](docs/usage.md#セッションを並べる)） |
 
-- 起動すると experimental channels の警告ダイアログが出る。**「1」（I am using this for local development）** を選ぶ。起動スクリプトも同じ案内を表示する。
+- 起動すると experimental channels の警告ダイアログが出る。起動スクリプトが画面を見張って、**「1」（I am using this for local development）** を自動で選ぶ。90秒たってもダイアログが残っていたら、手で「1」を選ぶ。
 - `dist` が無いときだけ自動でビルドする。`git pull` で更新したら、古い `dist` のまま起動しないよう、**`npm run build` を手で実行する**。
 - 起動したら、Slack でボットに DM を送るか、`channels` に書いたチャンネルでボットにメンションして話しかける。
 

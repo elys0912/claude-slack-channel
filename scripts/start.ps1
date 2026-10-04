@@ -34,7 +34,7 @@ $ServerName = 'slackbridge'
 $DefaultStateDirRelative = '.claude\channels\slack'
 # Slack の !restart が置く印（src/session-control.ts の RESTART_FLAG_FILE と同じ名前にすること）
 $RestartFlagName = 'restart.flag'
-# 起動し直すとき、experimental channels の警告ダイアログを自動で抜けるために画面で探す文字列（正規表現）。
+# experimental channels の警告ダイアログを自動で抜けるために画面で探す文字列（正規表現）。初回の起動でも起動し直しでも使う。
 # ダイアログの文言が変わって抜けられなくなったら、ここを直す（start.ps1 自身が表示する文には含めないこと）
 $DevChannelDialogPattern = 'development channel'
 # 同じダイアログの選択肢「1」の文言（の一部）。Pattern と両方が画面にあるときだけ答える（発言などに Pattern が出ても誤爆しない）
@@ -341,14 +341,15 @@ $claudeArgs = @(
 Write-Host "claude.exe: $claude"
 Write-Host "作業ディレクトリ: $projectDir"
 Write-Host "状態ディレクトリ: $stateDir"
-Write-Host "警告ダイアログが出たら 1（I am using this for local development）を選ぶこと"
+Write-Host "起動時の警告ダイアログには自動で 1 を選ぶ（90 秒たっても残っていたら手で 1 を選ぶ）"
 
 $restartFlag = Join-Path $stateDir $RestartFlagName
 
 if ($DryRun) {
     Write-Host "[DryRun] 実行されるコマンドライン:"
     Write-Host (Format-CommandLine -Exe $claude -Arguments $claudeArgs)
-    Write-Host "[DryRun] 終了時に $restartFlag があれば、--resume <印の session_id>（会話の記録が無ければ新しい会話）で起動し直す（ダイアログは scripts\dialog-answer.ps1 が答える）"
+    Write-Host "[DryRun] 終了時に $restartFlag があれば、--resume <印の session_id>（会話の記録が無ければ新しい会話）で起動し直す"
+    Write-Host "[DryRun] 初回も起動し直しも、警告ダイアログには scripts\dialog-answer.ps1 が答える"
     Write-Host "[DryRun] 起動前に、$projectDir の local スコープに $ServerName が無ければ登録する（DryRun では登録しない）"
     exit 0
 }
@@ -368,26 +369,27 @@ Remove-Item -LiteralPath $restartFlag -Force -ErrorAction SilentlyContinue
 
 # 起動し直すときに付ける引数（初回・引き継ぐ会話が無いときは空）
 $resumeArgs = @()
-# Slack からの指示で起動し直している（手元に人がいない前提で、警告ダイアログに自動で答える）
+# Slack からの指示で起動し直している（前のセッションの画面を消してから起動する）
 $relaunch = $false
 Push-Location $projectDir
 try {
     do {
         $launchArgs = $resumeArgs + $claudeArgs
         if ($relaunch) {
-            # 前のセッションの画面（Slack の発言など）が残っていると、dialog-answer.ps1 がそれに反応しうるので消しておく
+            # 前のセッションの画面（Slack の発言など）が残っていると、dialog-answer.ps1 がそれに反応しうるので消しておく。
+            # 初回は消さない（このスクリプトの案内や警告を残すため。案内の文には Pattern を含めていない）
             Clear-Host
-            # 手元に人がいない前提なので、警告ダイアログは画面を見張って自動で答える。
-            # Start-Process -ArgumentList は要素を空白でつなぐだけなので、空白を含みうる値は引用符で囲む
-            # （囲まないと 'development channel' が 2 つの引数に割れて、dialog-answer.ps1 が起動時に失敗する）
-            Start-Process -FilePath 'powershell.exe' -NoNewWindow -ArgumentList @(
-                '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
-                '-File', (Quote-Arg (Join-Path $PSScriptRoot 'dialog-answer.ps1')),
-                '-Pattern', (Quote-Arg $DevChannelDialogPattern), '-ChoicePattern', (Quote-Arg $DevChannelChoicePattern),
-                '-TimeoutSec', $DevChannelDialogTimeoutSec,
-                '-LogFile', (Quote-Arg (Join-Path $stateDir 'logs\dialog-answer.log'))
-            ) | Out-Null
         }
+        # 初回も起動し直しも、警告ダイアログは画面を見張って自動で答える（PC の再起動後などに手で答えなくて済むように）。
+        # Start-Process -ArgumentList は要素を空白でつなぐだけなので、空白を含みうる値は引用符で囲む
+        # （囲まないと 'development channel' が 2 つの引数に割れて、dialog-answer.ps1 が起動時に失敗する）
+        Start-Process -FilePath 'powershell.exe' -NoNewWindow -ArgumentList @(
+            '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+            '-File', (Quote-Arg (Join-Path $PSScriptRoot 'dialog-answer.ps1')),
+            '-Pattern', (Quote-Arg $DevChannelDialogPattern), '-ChoicePattern', (Quote-Arg $DevChannelChoicePattern),
+            '-TimeoutSec', $DevChannelDialogTimeoutSec,
+            '-LogFile', (Quote-Arg (Join-Path $stateDir 'logs\dialog-answer.log'))
+        ) | Out-Null
         $launchedAt = Get-Date
         & $claude @launchArgs
         $code = $LASTEXITCODE

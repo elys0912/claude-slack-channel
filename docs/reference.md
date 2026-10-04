@@ -24,7 +24,7 @@
 | `restart.flag` | 状態ディレクトリ | 再起動フラグ（`{"at": ..., "sessionId": ...}`）。`start.ps1` はこれを消してから、`--resume <sessionId>`（会話の記録が無ければ新しい会話）で再起動する |
 | `hooks.jsonl` | 状態ディレクトリ | Claude Code の hook が追記する出来事の記録（1行に1つの JSON）。ブリッジが読んで Slack に通知する。1MB を超えると `hooks.jsonl.1` に退避する |
 | `logs\bridge.log` | 状態ディレクトリ | ブリッジのログ（下記） |
-| `logs\dialog-answer.log` | 状態ディレクトリ | `!restart` のあと、警告ダイアログに自動で答えたかどうか（答えた・キーを送れなかった・時間切れ） |
+| `logs\dialog-answer.log` | 状態ディレクトリ | 起動・`!restart` のたびに、警告ダイアログに自動で答えたかどうか（答えた・キーを送れなかった・時間切れ） |
 | `instance.lock` | 状態ディレクトリ | 多重起動を防ぐロック。自動で作られ、終了時に消える |
 | `projects.json` | `config\`（git の管理外） | `projects`: `{ name, path }` の配列。起動時の選択肢になる |
 | `extra-mcp.json` | `config\`（git の管理外） | Slack のセッションで一緒に使う MCP サーバー。`.mcp.json` と同じ `mcpServers` の形で書く（ひな形: `extra-mcp.example.json`）。登録したサーバーのツールは確認なしで実行される |
@@ -67,7 +67,7 @@
 | `hooks.jsonl` を読む間隔 / 起動時に読み直す範囲 | 1.5秒 / 起動の30秒前以降（そのうち、最後のセッションが始まった後の分だけ） |
 | `hooks.jsonl` を1回に読む量 / 改行の無い行を溜める上限 | 1MB（超えた古い分は読み飛ばす）/ 64KB（超えたら次の改行まで捨てる） |
 | `!restart` で `/exit` を送ってから「まだ終了していない」と通知するまで | 20秒 |
-| 再起動するときの警告ダイアログの待ち時間 | 90秒（`start.ps1` の `$DevChannelDialogTimeoutSec`） |
+| 警告ダイアログへの自動応答の待ち時間 | 90秒（`start.ps1` の `$DevChannelDialogTimeoutSec`） |
 
 ## トラブルシューティング
 
@@ -111,7 +111,7 @@
 
 | 症状 | 対処 |
 |---|---|
-| `!restart` したのに戻ってこない | `!status` で状態を見る。`/exit` が効かなければ `!restart force` を使う。再起動の警告ダイアログで止まっているなら、`dialog-answer.ps1` が探す文字列（`start.ps1` の `$DevChannelDialogPattern` / `$DevChannelChoicePattern`）が画面の文言と合っていない可能性がある。手元で画面を見て直す |
+| `!restart` したのに戻ってこない | `!status` で状態を見る。`/exit` が効かなければ `!restart force` を使う。警告ダイアログで止まっているなら（初回の起動でも同じ）、`dialog-answer.ps1` が探す文字列（`start.ps1` の `$DevChannelDialogPattern` / `$DevChannelChoicePattern`）が画面の文言と合っていない可能性がある。手元で画面を見て直す |
 | 使用量の上限や入力待ちの通知が Slack に来ない | 状態ディレクトリの `hooks.jsonl` が増えているかを見る。増えていなければ hook が動いていない。`%TEMP%\claude-slack-channel\<状態ディレクトリ名>\channel-settings.merged.json` に `hooks` があるか、`node` に PATH が通っているかを確かめる。増えているのに通知が来なければ、記録された `hook_event_name` / `notification_type` が対応表に無い可能性がある。ログの `hooks.jsonl に読めない行がある` とあわせて確かめる |
 | `!screen` / `!restart` / `!compact` / 警告ダイアログへの自動応答がどれも動かない | PowerShell が Constrained Language Mode だと、`console.ps1` の `Add-Type` が失敗する。`powershell -NoProfile -Command '$ExecutionContext.SessionState.LanguageMode'` の結果が `FullLanguage` かを確かめる。それ以外なら、その PC ではこれらの機能を使えない |
 

@@ -1,6 +1,6 @@
 ﻿# claude-slack-channel: 起動時の experimental channels の警告ダイアログに、画面を見張って 1（Enter）で答える
 #
-# Slack からの !restart で claude.exe を起動し直すとき、手元に人がいなくてもダイアログを抜けられるようにする。
+# 初回の起動と、Slack からの !restart で claude.exe を起動し直すとき、手元で答えなくてもダイアログを抜けられるようにする。
 # start.ps1 が claude.exe の起動直前に、同じコンソールで（-NoNewWindow）このスクリプトを別プロセスとして起動する。
 # 画面に Pattern と ChoicePattern（選択肢「1」の文言）の両方が出たら Digit1 と Enter を送って終わる。TimeoutSec の間に出なければ何もせず終わる。
 # 画面の読み取りとキー送信は console.ps1 を子プロセスで呼ぶ。
