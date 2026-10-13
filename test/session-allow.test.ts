@@ -24,6 +24,45 @@ describe('matchingRule', () => {
     expect(matchingRule(req('PowerShell', { command: 'remove-item foo' }), rules)).toBe('PowerShell(Remove-Item *)');
   });
 
+  it.each([
+    'cd repo && git push origin main',
+    'git status; git push',
+    'git status || git push',
+    'git log | git push',
+    'echo a & git push',
+    'git status\ngit push',
+    'echo $(git push)',
+    'echo `git push`',
+    'git.exe push origin main',
+    'GIT.CMD push',
+  ])('複合コマンドは部分ごとに照合する: %s', (command) => {
+    expect(matchingRule(req('Bash', { command }), ['Bash(git push:*)'])).toBe('Bash(git push:*)');
+  });
+
+  it.each([
+    'FOO=1 git status',
+    'sudo git status',
+    'env git status',
+    'sh -c "git status"',
+    'powershell -Command git status',
+    'Invoke-Expression "git status"',
+    '/usr/bin/git status',
+    '"git" status',
+    '(git status)',
+    'git -C other push',
+  ])('解釈できない形は当たりにする: %s', (command) => {
+    expect(matchingRule(req('Bash', { command }), ['Bash(git push:*)'])).toBe('Bash(git push:*)');
+  });
+
+  it('途中にワイルドカードがあるシェルのルールは当たりにする', () => {
+    expect(matchingRule(req('Bash', { command: 'ls' }), ['Bash(git * --force)'])).toBe('Bash(git * --force)');
+  });
+
+  it('分けた部分のどれも当たらなければ当たらない', () => {
+    expect(matchingRule(req('Bash', { command: 'cd repo && git status | head -5' }), ['Bash(git push:*)'])).toBeUndefined();
+    expect(matchingRule(req('Bash', { command: 'git pull' }), ['Bash(git push:*)'])).toBeUndefined();
+  });
+
   it('シェルでコマンドが読めなければ、安全側に倒して当たりにする', () => {
     expect(matchingRule(req('Bash', '{"command":"git pu…'), ['Bash(git push:*)'])).toBe('Bash(git push:*)');
   });
