@@ -29,8 +29,8 @@
 | `projects.json` | `config\`（git の管理外） | `projects`: `{ name, path }` の配列。起動時の選択肢になる |
 | `extra-mcp.json` | `config\`（git の管理外） | Slack のセッションで一緒に使う MCP サーバー。`.mcp.json` と同じ `mcpServers` の形で書く（ひな形: `extra-mcp.example.json`）。登録したサーバーのツールは確認なしで実行される |
 | `channel-settings.json` | `config\` | Slack のセッション専用の Claude Code の設定 |
-| `mcp.json` | `%TEMP%\claude-slack-channel\<状態ディレクトリ名>\` | 起動スクリプトが毎回作る MCP の設定 |
-| `channel-settings.merged.json` | `%TEMP%\claude-slack-channel\<状態ディレクトリ名>\` | `channel-settings.json` に、追加の allow と hook を足した設定。起動スクリプトが毎回作る |
+| `mcp.json` | `%TEMP%\claude-slack-channel\<状態ディレクトリ名>\` | 起動スクリプトが起動のたびに作る MCP の設定（`!restart` で起動し直すときも作り直す） |
+| `channel-settings.merged.json` | `%TEMP%\claude-slack-channel\<状態ディレクトリ名>\` | `channel-settings.json` に、追加の allow と hook を足した設定。起動スクリプトが起動のたびに作る（`!restart` で起動し直すときも作り直す） |
 
 ## 環境変数
 

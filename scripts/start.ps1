@@ -318,25 +318,31 @@ $env:SLACK_CHANNEL_STATE_DIR = $stateDir
 $sessionTag = '{0}-{1}' -f (Get-Date -Format 'yyyyMMddHHmmss'), ([guid]::NewGuid().ToString('N').Substring(0, 8))
 $env:SLACK_CHANNEL_SESSION_TAG = $sessionTag
 
-$extraServers = Read-ExtraMcpServers
-# ブリッジには状態ディレクトリと設定ファイルを環境変数で明示して渡す（claude.exe の環境の引き継ぎに頼らない）
-$mcpConfig = Write-McpConfig -FileName "$sessionName\mcp.json" -ServerName $ServerName -ScriptPath $mainJs `
-    -ExtraServers $extraServers -Env @{
-        SLACK_CHANNEL_STATE_DIR = $stateDir; SLACK_CHANNEL_SETTINGS_FILE = $settingsFile; SLACK_CHANNEL_SESSION_TAG = $sessionTag
-    }
-$effectiveSettings = Get-EffectiveSettings -ExtraServers $extraServers
+# mcp.json と channel-settings.merged.json を作り、claude.exe に渡す引数を返す。
+# Slack の「今後も許可」の追加・削除（allow-extra.json）と extra-mcp.json の変更を反映するため、起動し直すたびに呼ぶ
+function New-ClaudeArgs {
+    $extraServers = Read-ExtraMcpServers
+    # ブリッジには状態ディレクトリと設定ファイルを環境変数で明示して渡す（claude.exe の環境の引き継ぎに頼らない）
+    $mcpConfig = Write-McpConfig -FileName "$sessionName\mcp.json" -ServerName $ServerName -ScriptPath $mainJs `
+        -ExtraServers $extraServers -Env @{
+            SLACK_CHANNEL_STATE_DIR = $stateDir; SLACK_CHANNEL_SETTINGS_FILE = $settingsFile; SLACK_CHANNEL_SESSION_TAG = $sessionTag
+        }
+    $effectiveSettings = Get-EffectiveSettings -ExtraServers $extraServers
 
-# 各フラグの意味は docs/security.md の「権限の設計」を参照
-$claudeArgs = @(
-    '--mcp-config', $mcpConfig,
-    '--strict-mcp-config',
-    '--no-chrome',
-    '--setting-sources', 'project,local',
-    '--settings', $effectiveSettings,
-    '--permission-mode', $PermissionMode,
-    # 他のフラグより後ろ、最後に置く
-    '--dangerously-load-development-channels', "server:$ServerName"
-)
+    # 各フラグの意味は docs/security.md の「権限の設計」を参照
+    return @(
+        '--mcp-config', $mcpConfig,
+        '--strict-mcp-config',
+        '--no-chrome',
+        '--setting-sources', 'project,local',
+        '--settings', $effectiveSettings,
+        '--permission-mode', $PermissionMode,
+        # 他のフラグより後ろ、最後に置く
+        '--dangerously-load-development-channels', "server:$ServerName"
+    )
+}
+
+$claudeArgs = New-ClaudeArgs
 
 Write-Host "claude.exe: $claude"
 Write-Host "作業ディレクトリ: $projectDir"
@@ -374,12 +380,14 @@ $relaunch = $false
 Push-Location $projectDir
 try {
     do {
-        $launchArgs = $resumeArgs + $claudeArgs
         if ($relaunch) {
             # 前のセッションの画面（Slack の発言など）が残っていると、dialog-answer.ps1 がそれに反応しうるので消しておく。
             # 初回は消さない（このスクリプトの案内や警告を残すため。案内の文には Pattern を含めていない）
             Clear-Host
+            # 前の起動の後に「今後も許可」で足した・消したルールを反映するため、mcp.json と merged.json を作り直す
+            $claudeArgs = New-ClaudeArgs
         }
+        $launchArgs = $resumeArgs + $claudeArgs
         # 初回も起動し直しも、警告ダイアログは画面を見張って自動で答える（PC の再起動後などに手で答えなくて済むように）。
         # Start-Process -ArgumentList は要素を空白でつなぐだけなので、空白を含みうる値は引用符で囲む
         # （囲まないと 'development channel' が 2 つの引数に割れて、dialog-answer.ps1 が起動時に失敗する）
