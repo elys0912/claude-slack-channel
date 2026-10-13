@@ -16,17 +16,17 @@ function Find-ClaudeExe {
     }
 
     $extensionsRoot = Join-Path $env:USERPROFILE '.vscode\extensions'
-    if (-not (Test-Path $extensionsRoot)) {
+    if (-not (Test-Path -LiteralPath $extensionsRoot)) {
         return $null
     }
 
     # ディレクトリ名は文字列ソートだとバージョン順にならない（"9" > "10"）ので、
     # 例: anthropic.claude-code-2.1.278-win32-x64 から 2.1.278 を取り出して [version] で比べる。
-    $candidates = Get-ChildItem -Path $extensionsRoot -Directory -Filter 'anthropic.claude-code-*-win32-x64' -ErrorAction SilentlyContinue |
+    $candidates = Get-ChildItem -LiteralPath $extensionsRoot -Directory -Filter 'anthropic.claude-code-*-win32-x64' -ErrorAction SilentlyContinue |
         ForEach-Object {
             if ($_.Name -match 'anthropic\.claude-code-(\d+\.\d+\.\d+)-win32-x64$') {
                 $exe = Join-Path $_.FullName 'resources\native-binary\claude.exe'
-                if (Test-Path $exe) {
+                if (Test-Path -LiteralPath $exe) {
                     [pscustomobject]@{ Version = [version]$Matches[1]; Path = $exe }
                 }
             }
@@ -63,13 +63,16 @@ function Write-McpConfig {
         # 一緒に読み込ませる MCP サーバー（名前 → 定義）。$ServerName と同名のものは無視する
         [hashtable]$ExtraServers = @{},
         # $ServerName のサーバーに渡す環境変数
-        [hashtable]$Env = @{}
+        [hashtable]$Env = @{},
+        # $ServerName のサーバーを起動する node。claude.exe は作業フォルダーで MCP サーバーを起動するので、
+        # 作業フォルダーの node.exe を拾わないよう絶対パスを渡す（start.ps1 は Get-Command node の場所を渡す）
+        [string]$NodePath = 'node'
     )
 
     $path = Join-Path (Get-TempDir) $FileName
     New-Item -ItemType Directory -Path (Split-Path -Parent $path) -Force | Out-Null
 
-    $main = @{ command = 'node'; args = @($ScriptPath) }
+    $main = @{ command = $NodePath; args = @($ScriptPath) }
     if ($Env.Count -gt 0) { $main.env = $Env }
     $servers = @{ $ServerName = $main }
     foreach ($name in $ExtraServers.Keys) {
@@ -117,6 +120,47 @@ function Test-SessionTranscript {
         Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName "$SessionId.jsonl") } |
         Select-Object -First 1
     return [bool]$found
+}
+
+# 起動し直すときに claude.exe の引数の先頭に付ける引数。session_id が分かり、その会話の記録があれば --resume <id>、無ければ空。
+# 記録が無い（起動してから一度もやりとりしていない会話は保存されない）のに --resume すると「見つからない」で終わるため。
+# 呼び出し側は @() で包んで受け取る
+function Get-ResumeArgs {
+    param([string]$SessionId, [string]$ConfigDir)
+
+    if (-not $SessionId) { return @() }
+    $transcriptArgs = @{ SessionId = $SessionId }
+    if ($ConfigDir) { $transcriptArgs.ConfigDir = $ConfigDir }
+    if (Test-SessionTranscript @transcriptArgs) { return @('--resume', $SessionId) }
+    return @()
+}
+
+# claude.exe に渡す引数。ResumeArgs を先頭に置き、ClaudeArgs（最後が --dangerously-load-development-channels）はその後ろに続ける。
+# 要素が 1 つでも配列のまま返す（呼び出し側の変数が文字列になり、+ が文字列の連結になるのを防ぐ）
+function Get-LaunchArgs {
+    param([object[]]$ResumeArgs = @(), [object[]]$ClaudeArgs = @())
+
+    return , @(@($ResumeArgs) + @($ClaudeArgs))
+}
+
+# 一時ファイル（mcp.json・合成した設定）を置くフォルダーの名前。状態ディレクトリの末尾の名前に、フルパスのハッシュの先頭 8 桁を足す
+# （例: slack-1a2b3c4d）。末尾の名前が同じ別の状態ディレクトリ（C:\a\slack と既定の ...\channels\slack など）で上書きし合わない。
+# DryRun は起動中のセッションのファイルを上書きしないよう、末尾に -dryrun を付けた別のフォルダーにする
+function Get-SessionDirName {
+    param([Parameter(Mandatory)][string]$StateDir, [switch]$DryRun)
+
+    $fullPath = [System.IO.Path]::GetFullPath($StateDir).TrimEnd('\', '/')
+    # Windows のパスは大文字小文字を区別しないので、小文字にしてからハッシュにする
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $hash = $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($fullPath.ToLowerInvariant()))
+    } finally {
+        $sha.Dispose()
+    }
+    $hex = -join ($hash[0..3] | ForEach-Object { $_.ToString('x2') })
+    $name = '{0}-{1}' -f (Split-Path -Leaf $fullPath), $hex
+    if ($DryRun) { $name += '-dryrun' }
+    return $name
 }
 
 # Claude Code の利用者ごとの設定ファイル（local スコープの MCP サーバーもここに入る）
