@@ -48,12 +48,12 @@ npm run build
 [api.slack.com/apps](https://api.slack.com/apps) で次の順に操作する。
 
 1. **Create New App** → **From an app manifest** でワークスペースを選び、[slack-app-manifest.yaml](slack-app-manifest.yaml) の中身を貼り付けて作る。
-   DM とチャンネルに対応し、Socket Mode が有効で、必要最小限のスコープを持つアプリになる。
+   DM とチャンネルに対応し、Socket Mode が有効で、次の表の8つのスコープを持つアプリになる。
 2. **Basic Information** → **App-Level Tokens** → **Generate Token and Scopes** で、スコープ `connections:write` のトークンを発行する。
    この `xapp-` で始まるトークンが **`SLACK_APP_TOKEN`** になる。
 3. **OAuth & Permissions** → **Install to Workspace** でインストールする。
    発行される `xoxb-` で始まるトークンが **`SLACK_BOT_TOKEN`** になる。
-   **Scopes** に次の7つがあるか確かめる。添付を保存するなら `files:read` も足して8つにする。既存のアプリにスコープを足したら、**Reinstall to Workspace** で入れ直す。
+   **Scopes** に次の8つがあるか確かめる。添付を保存しない（`.env` に `DOWNLOAD_DIR` を書かない）なら、`files:read` は外して7つにしてよい。`files:read` があると、ボットトークンが漏れたときにワークスペースのファイルまで読まれうる。スコープを足した・外したら、**Reinstall to Workspace** で入れ直す。
 
    | スコープ | 用途 |
    |---|---|
@@ -117,6 +117,7 @@ npm run check
 
 - 状態ディレクトリの場所
 - ワークスペース名・`team_id`・ボットのユーザー ID
+- App-Level Token（`SLACK_APP_TOKEN`）で Socket Mode の接続の URL を取れるか（接続はしない）
 - `access.json` の `teamId` が実際の `team_id` と違うときの警告
 - `allowFrom` に書いた ID の表示名
 
@@ -141,10 +142,10 @@ Windows Terminal から実行する。
 | コマンド | 動作 |
 |---|---|
 | `scripts\start.cmd` | `projects.json` の一覧から番号で選んで起動する（Enter で先頭、`q` で中止） |
-| `scripts\start.cmd my-app` | `projects.json` の name で指定して起動する |
+| `scripts\start.cmd my-app` | `projects.json` の name で指定して起動する（name を先に照合する。同じ名前のフォルダーがカレントにあっても、`projects.json` のフォルダーで起動する） |
 | `scripts\start.cmd C:\path\to\app` | パスで直接指定して起動する |
 | `scripts\start.cmd my-app -PermissionMode auto` | 実行許可のモードを変える（[権限の設計](docs/security.md#権限の設計)） |
-| `scripts\start.cmd -DryRun` | 起動せずに、実行するコマンドラインだけを表示する。ビルドは省き、`.env` / `access.json` が無くても警告だけ出す |
+| `scripts\start.cmd -DryRun` | 起動せずに、実行するコマンドラインだけを表示する。ビルドは省き、`.env` / `access.json` が無くても警告だけ出す。`mcp.json` などは DryRun 用の別のフォルダーに書くので、動いているセッションには影響しない |
 | `scripts\start.cmd C:\path\to\app -StateDir <dir> -SettingsFile <file>` | 別の Slack アプリと設定で、もう1つのセッションを起動する（[セッションを並べる](docs/usage.md#セッションを並べる)） |
 
 - 起動すると experimental channels の警告ダイアログが出る。起動スクリプトが画面を見張って、**「1」（I am using this for local development）** を自動で選ぶ。90秒たってもダイアログが残っていたら、手で「1」を選ぶ。
