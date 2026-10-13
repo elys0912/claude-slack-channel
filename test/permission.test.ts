@@ -172,9 +172,19 @@ describe('buildPermissionBlocks', () => {
   it('向きの印・ソフトハイフン・埋め文字・C0/C1 制御文字も見えるようにし、タブと改行はそのまま残す', () => {
     const { blocks } = buildPermissionBlocks({
       ...sampleReq,
-      input_preview: 'a‎b­c⁠dㅤe\u001Bf\u0000g\u009Fh\tI\nj\rk'
+      input_preview: 'a\u200Eb\u00ADc\u2060d\u3164e\u001Bf\u0000g\u009Fh\tI\nj\rk'
     });
     expect(previewOf(blocks)).toBe('a\\u{200E}b\\u{AD}c\\u{2060}d\\u{3164}e\\u{1B}f\\u{0}g\\u{9F}h\tI\nj\rk');
+  });
+
+  it('点字の空白・行と段落の区切り・異体字セレクタ・タグ文字（補助面）も見えるようにする', () => {
+    const { blocks } = buildPermissionBlocks({
+      ...sampleReq,
+      input_preview: 'a\u2800b\u2028c\u2029d\uFE0Fe\u{E0041}f\u{E0100}g\u{1D173}h\uFFF9i',
+    });
+    expect(previewOf(blocks)).toBe(
+      'a\\u{2800}b\\u{2028}c\\u{2029}d\\u{FE0F}e\\u{E0041}f\\u{E0100}g\\u{1D173}h\\u{FFF9}i'
+    );
   });
 
   it('切り詰めの境目でサロゲートペアや可視化したエスケープを割らない', () => {
