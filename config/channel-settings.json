@@ -7,8 +7,6 @@
     "disableBypassPermissionsMode": "disable",
     "allow": [
       "Read(./**)",
-      "Glob",
-      "Grep",
       "mcp__slackbridge__reply",
       "mcp__slackbridge__react",
       "mcp__slackbridge__edit_message"

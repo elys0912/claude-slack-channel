@@ -284,3 +284,15 @@ describe('loadHomeCustom', () => {
     expect(() => loadHomeCustom(dir)).toThrow();
   });
 });
+
+describe('config/channel-settings.json', () => {
+  const settings = JSON.parse(fs.readFileSync(path.join(import.meta.dirname, '..', 'config', 'channel-settings.json'), 'utf8')) as {
+    permissions: { allow: string[] };
+  };
+
+  it('Glob / Grep のツール全体を allow に入れない（path でプロジェクトの外を指せるので、Read(./**) の範囲に任せる）', () => {
+    expect(settings.permissions.allow).not.toContain('Glob');
+    expect(settings.permissions.allow).not.toContain('Grep');
+    expect(settings.permissions.allow).toContain('Read(./**)');
+  });
+});
