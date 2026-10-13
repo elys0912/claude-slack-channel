@@ -1,6 +1,7 @@
 // Slack から許可リスト（allow）にルールを恒久追加するための、ルールの生成・安全確認・保存。
 // ルールは実行許可のリクエストの中身からだけ作り、自由な入力は受け付けない。
-// 広すぎるもの・危険なもの・deny と重なるものは作らない（Slack アカウントの乗っ取りで何でも無確認実行されるのを防ぐ）。
+// 作るのは決まった一覧（SHELL_RULE_ALLOWLIST など）に当てはまるものだけで、広すぎるもの・deny と重なるものも作らない
+// （Slack アカウントの乗っ取りで何でも無確認実行されるのを防ぐ）。
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -32,45 +33,40 @@ const PATH_RULE_TOOLS = new Set(['read', 'edit']);
 const MIN_DIR_DEPTH = 2;
 /** gitignore のパターンで特別な意味を持つ文字。含むパスからは作らない（エスケープの取り違えで範囲が変わるのを避ける） */
 const GLOB_CHARS_RE = /[*?[\]!#{}\\]/;
-/** 2 語目（サブコマンド）までをプレフィックスにするコマンド */
-const SUBCOMMAND_TOOLS = new Set(['git', 'npm', 'pnpm', 'yarn', 'cargo', 'dotnet', 'go', 'uv', 'pip', 'winget']);
-
-/** 先頭の語がこれなら作らない（削除・ネットワーク・プロセス起動・任意コード実行・権限昇格など） */
-const DANGEROUS_COMMANDS = new Set([
-  // 削除・移動・書き換え
-  'rm', 'del', 'erase', 'rd', 'rmdir', 'ri', 'mv', 'move', 'ren', 'rename', 'cp', 'copy', 'xcopy', 'robocopy',
-  'format', 'diskpart', 'cipher', 'takeown', 'icacls', 'attrib', 'mklink', 'sc', 'ac',
-  // ネットワーク
-  'curl', 'wget', 'iwr', 'irm', 'ssh', 'scp', 'sftp', 'ftp', 'nc', 'ncat', 'telnet',
-  // プロセス・シェル・任意コード実行
-  'start', 'saps', 'kill', 'taskkill', 'spps', 'iex', 'powershell', 'pwsh', 'cmd', 'bash', 'sh', 'wsl',
-  'node', 'deno', 'bun', 'python', 'python3', 'py', 'ruby', 'perl', 'php', 'java', 'npx', 'pnpx', 'bunx',
-  'uvx', 'pipx', 'code',
-  // エージェントの CLI（別のエージェントに確認なしで任意の操作をさせられる）
-  'claude', 'codex', 'gemini', 'aider', 'goose', 'opencode', 'cursor-agent', 'copilot',
-  'rundll32', 'regsvr32', 'mshta', 'cscript', 'wscript', 'msiexec', 'schtasks', 'at',
-  // 権限・システム
-  'sudo', 'runas', 'reg', 'shutdown', 'bcdedit', 'net', 'netsh', 'setx',
-  // 外部サービス
-  'gh', 'docker', 'kubectl', 'az', 'aws', 'gcloud', 'terraform',
+/**
+ * 「♾ 今後も許可」でルールにしてよいシェルのコマンド（許可リスト方式。ここに無いものは作らない）。
+ * キーは先頭の語を normalizeCommandName で正規化した名前。値はサブコマンドの一覧で、undefined なら先頭の語だけのルールにする。
+ * 引数でファイルの中身を読めない・書けない・コードを実行しないものだけを置く（docs/security.md の「今後も許可で作れるルール」と揃える）
+ */
+export const SHELL_RULE_ALLOWLIST: ReadonlyMap<string, readonly string[] | undefined> = new Map<string, readonly string[] | undefined>([
+  ['ls', undefined],
+  ['dir', undefined],
+  ['pwd', undefined],
+  ['get-location', undefined],
+  ['get-childitem', undefined],
+  ['git', ['status', 'log', 'branch']],
 ]);
-/** サブコマンドまで見て作らないもの */
-const DANGEROUS_SUBCOMMANDS = new Set([
-  'git push', 'git reset', 'git clean', 'git rebase', 'git checkout', 'git restore', 'git rm', 'git stash',
-  'git filter-branch', 'git gc', 'git update-ref', 'git config', 'git remote', 'git submodule', 'git worktree',
-  // package.json などのスクリプトを実行するもの（ファイル編集が無確認なら、スクリプトを書き換えてから実行できる）
-  'npm publish', 'npm unpublish', 'npm uninstall', 'npm remove', 'npm rm', 'npm exec', 'npm x', 'npm run', 'npm install', 'npm i',
-  'npm test', 'npm t', 'npm start', 'npm restart', 'npm stop', 'npm ci',
-  'pnpm publish', 'pnpm remove', 'pnpm exec', 'pnpm dlx', 'pnpm run', 'pnpm test', 'pnpm start', 'pnpm install', 'pnpm add',
-  'yarn publish', 'yarn remove', 'yarn dlx', 'yarn run', 'yarn test', 'yarn start', 'yarn add', 'yarn install',
-  'cargo publish', 'cargo install', 'cargo run', 'cargo test', 'cargo build', 'dotnet nuget', 'dotnet run', 'dotnet test', 'dotnet build',
-  'go install', 'go run', 'go test', 'go generate', 'uv run', 'uv pip', 'uv tool', 'uv sync', 'pip install', 'pip uninstall',
-  'winget install', 'winget uninstall',
-]);
-/** PowerShell のコマンドレット（動詞-名詞）で許す動詞（読み取り系） */
-const SAFE_VERBS = new Set(['get', 'test', 'select', 'measure', 'resolve', 'compare', 'find', 'convertto', 'convertfrom', 'format', 'sort', 'group', 'where']);
+/**
+ * ツール全体のルールにしてよい MCP の個別ツールの、名前の先頭の動詞（読み取り専用と分かるもの）。
+ * `mcp__<サーバー>__<ツール>` のツール名（サーバー名の接頭辞は外す）の先頭の英小文字の並びで照合する
+ */
+export const READ_ONLY_MCP_VERBS: ReadonlySet<string> = new Set(['get', 'list', 'read', 'search', 'find', 'describe', 'view', 'show']);
+/** WebFetch のルールにする URL のスキーム */
+const WEB_FETCH_PROTOCOLS = new Set(['http:', 'https:']);
+/** 先頭の語から剥がす実行ファイルの拡張子 */
+const COMMAND_EXT_RE = /\.(exe|cmd|bat|com|ps1)$/;
+/** 先頭の語の末尾の版番号（`python3.12` の `3.12`）。英字の直後の数字だけを剥がす */
+const COMMAND_VERSION_RE = /(?<=[a-z])\d+(\.\d+)*$/;
 /** 複数のコマンドをつなぐ・リダイレクトする記号 */
 const COMPOUND_RE = /&&|\|\||[;|<>`\n\r]|\$\(|&\s*$|^\s*&/;
+
+/**
+ * コマンドの先頭の語を、判定に使う 1 つの名前にする。小文字にし、末尾の `.exe` `.cmd` `.bat` `.com` `.ps1` と版番号を剥がす
+ * （例: `Git.EXE` → `git`、`python3.12` → `python`、`npm.cmd` → `npm`）
+ */
+export function normalizeCommandName(word: string): string {
+  return word.toLowerCase().replace(COMMAND_EXT_RE, '').replace(COMMAND_VERSION_RE, '');
+}
 
 export type RuleResult =
   | { ok: true; rule: string; tool: string; prefix: string | undefined }
@@ -145,52 +141,80 @@ export function isSameOrAncestor(a: string, b: string): boolean {
   return x.length <= y.length && x.every((seg, i) => seg === y[i]);
 }
 
+/** シェルのリクエストから、SHELL_RULE_ALLOWLIST にあるコマンドだけ `Tool(prefix:*)` を作る */
+function deriveShellRule(req: PermissionRequest, tool: string): RuleResult {
+  const command = commandOf(req)?.trim();
+  if (!command) return { ok: false, reason: 'コマンドを読み取れなかった（入力が省略されている可能性）' };
+  if (COMPOUND_RE.test(command)) return { ok: false, reason: '複数のコマンドをつないだ・リダイレクトを含むコマンドからは作らない' };
+
+  const words = command.split(/\s+/);
+  const first = words[0] ?? '';
+  if (!/^[A-Za-z][\w.-]*$/.test(first)) {
+    return { ok: false, reason: `コマンド名が想定外の形: ${first}` };
+  }
+  const name = normalizeCommandName(first);
+  if (!SHELL_RULE_ALLOWLIST.has(name)) {
+    return { ok: false, reason: `許可リストに追加できるコマンドではない: ${first}` };
+  }
+  const subcommands = SHELL_RULE_ALLOWLIST.get(name);
+  if (subcommands === undefined) return { ok: true, rule: `${tool}(${first}:*)`, tool, prefix: first };
+
+  const second = words[1];
+  if (second === undefined || !subcommands.includes(second)) {
+    return { ok: false, reason: `許可リストに追加できるサブコマンドではない: ${first} ${second ?? ''}（追加できるのは ${subcommands.join(' / ')}）`.trim() };
+  }
+  const prefix = `${first} ${second}`;
+  return { ok: true, rule: `${tool}(${prefix}:*)`, tool, prefix };
+}
+
+/** WebFetch のリクエストから、URL のホストに絞った `WebFetch(domain:<ホスト>)` を作る */
+function deriveWebFetchRule(req: PermissionRequest, tool: string): RuleResult {
+  const raw = inputField(req, 'url');
+  let url: URL;
+  try {
+    url = new URL(raw ?? '');
+  } catch {
+    return { ok: false, reason: 'URL を読み取れなかった（入力が省略されている可能性）' };
+  }
+  const host = url.hostname.toLowerCase();
+  if (!WEB_FETCH_PROTOCOLS.has(url.protocol) || !/^[a-z0-9.-]+$/.test(host)) {
+    return { ok: false, reason: `URL のホストが想定外の形: ${raw ?? ''}` };
+  }
+  const prefix = `domain:${host}`;
+  return { ok: true, rule: `${tool}(${prefix})`, tool, prefix };
+}
+
+/** `mcp__<サーバー>__<ツール>` のうち、名前の先頭の動詞が READ_ONLY_MCP_VERBS にあるものか */
+export function isReadOnlyMcpTool(tool: string): boolean {
+  const m = /^mcp__(.+?)__(.+)$/.exec(tool);
+  if (!m) return false;
+  const server = m[1] ?? '';
+  const name = m[2] ?? '';
+  const withoutServer = name.toLowerCase().startsWith(`${server.toLowerCase()}_`) ? name.slice(server.length + 1) : name;
+  const verb = /^[a-z]+/.exec(withoutServer)?.[0];
+  return verb !== undefined && READ_ONLY_MCP_VERBS.has(verb);
+}
+
 /**
- * 実行許可のリクエストから、許可リストに足すルールの候補を作る。
- * - Bash / PowerShell: コマンドの先頭の語（SUBCOMMAND_TOOLS は 2 語目まで）を `Tool(prefix:*)` にする
+ * 実行許可のリクエストから、許可リストに足すルールの候補を作る（許可リスト方式。当てはまらなければ作らない）。
+ * - Bash / PowerShell: SHELL_RULE_ALLOWLIST の先頭の語（＋サブコマンド）だけ `Tool(prefix:*)` にする。複合コマンドからは作らない
  * - Read / Grep / Glob: 対象のフォルダー以下の `Read(//c/dev/foo/**)`
  * - Edit / Write / MultiEdit / NotebookEdit: 対象のフォルダー以下の `Edit(//c/dev/foo/**)`
  *   （浅すぎるフォルダー・ホームとその親・特殊な文字を含むパス・相対パスからは作らない）
- * - それ以外: ツール名だけのルール（例: `WebFetch`、`mcp__server__tool`）
- * 危険なコマンド・複合コマンド・プレフィックスが取れないものは ok: false。deny との照合はここではしない（proposeRule）。
+ * - WebFetch: URL のホストに絞った `WebFetch(domain:example.com)`
+ * - MCP の個別ツール: 名前から読み取り専用と分かるもの（isReadOnlyMcpTool）だけ、ツール名だけのルール
+ * - それ以外: 作らない
+ * 作れないものは ok: false。deny との照合はここではしない（proposeRule）。
  */
 export function deriveRule(req: PermissionRequest, home: string = os.homedir()): RuleResult {
   const tool = req.tool_name.trim();
   if (!/^[A-Za-z][\w-]*$/.test(tool)) return { ok: false, reason: `ツール名が想定外の形: ${tool}` };
   const pathSpec = PATH_TOOLS.get(tool);
   if (pathSpec) return derivePathRule(req, pathSpec, home);
-  if (!SHELL_TOOLS.has(tool)) return { ok: true, rule: tool, tool, prefix: undefined };
-
-  const command = commandOf(req)?.trim();
-  if (!command) return { ok: false, reason: 'コマンドを読み取れなかった（入力が省略されている可能性）' };
-  if (COMPOUND_RE.test(command)) return { ok: false, reason: '複数のコマンドをつないだ・リダイレクトを含むコマンドからは作らない' };
-
-  const words = command.split(/\s+/);
-  const first = (words[0] ?? '').replace(/^["']|["']$/g, '');
-  const firstLower = first.toLowerCase();
-  if (!/^[A-Za-z][\w.-]*$/.test(first) || /[\\/]/.test(first)) {
-    return { ok: false, reason: `コマンド名が想定外の形: ${first}` };
-  }
-  if (DANGEROUS_COMMANDS.has(firstLower) || DANGEROUS_COMMANDS.has(firstLower.replace(/\.exe$/, ''))) {
-    return { ok: false, reason: `危険なコマンドなので作らない: ${first}` };
-  }
-  const cmdlet = /^([A-Za-z]+)-[A-Za-z]+$/.exec(first);
-  if (cmdlet && !SAFE_VERBS.has((cmdlet[1] ?? '').toLowerCase())) {
-    return { ok: false, reason: `読み取り系でないコマンドレットなので作らない: ${first}` };
-  }
-
-  let prefix = first;
-  const second = words[1];
-  if (SUBCOMMAND_TOOLS.has(firstLower)) {
-    if (!second || !/^[a-z][a-z0-9-]*$/.test(second)) {
-      return { ok: false, reason: `${first} のサブコマンドが取れないので作らない（広すぎるため）` };
-    }
-    prefix = `${first} ${second}`;
-    if (DANGEROUS_SUBCOMMANDS.has(`${firstLower} ${second}`)) {
-      return { ok: false, reason: `危険な操作なので作らない: ${prefix}` };
-    }
-  }
-  return { ok: true, rule: `${tool}(${prefix}:*)`, tool, prefix };
+  if (SHELL_TOOLS.has(tool)) return deriveShellRule(req, tool);
+  if (tool === 'WebFetch') return deriveWebFetchRule(req, tool);
+  if (isReadOnlyMcpTool(tool)) return { ok: true, rule: tool, tool, prefix: undefined };
+  return { ok: false, reason: `このツールは許可リストに追加できない: ${tool}` };
 }
 
 interface ParsedRule {

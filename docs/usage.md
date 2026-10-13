@@ -96,20 +96,20 @@ Slack のセッションは `--strict-mcp-config` で起動する。そのため
 起動スクリプトが `channel-settings.json` の allow に足してから Claude Code に渡すので、動いているセッションには効かない。
 
 - ルールは確認の中身から作る。自由な入力は受け付けない。
-  - Bash / PowerShell: コマンドの先頭の語をプレフィックスにする。`git` / `npm` などはサブコマンドまで含める（例: `Bash(git status:*)`）。
+  作れるのは決まった一覧に当てはまるものだけ（許可リスト方式。一覧と理由は [権限の設計とセキュリティ](security.md#今後も許可で作れるルール)）。
+  当てはまらない操作の確認には **♾ 今後も許可** のボタンを出さない。その場の 1 回だけ許可する。
+  - Bash / PowerShell: 一覧にあるコマンドだけ、先頭の語（`git` はサブコマンドまで）をプレフィックスにする（例: `Bash(git status:*)`、`PowerShell(Get-ChildItem:*)`）。
+    - 一覧にあるのは、引数でファイルの中身を読めない・書けない・コードを実行しないもの（`ls` / `dir` / `pwd` / `Get-Location` / `Get-ChildItem` / `git status` / `git log` / `git branch`）。
+    - 先頭の語は、小文字にし、末尾の `.exe` / `.cmd` / `.bat` / `.com` / `.ps1` と版番号（`python3.12` の `3.12`）を剥がした名前で一覧と照らす。
+    - `cat` / `type` / `Get-Content` / `git diff` / `git show` / `npm` / `npx` / `node` / `python` などは一覧に無いので作らない。
+    - 複数のコマンドをつないだもの（`;` / `&&` / `||` / `|` / 改行 / `$(` / バッククォート）や、リダイレクトを含むものからは作らない。
   - Read / Grep / Glob: 対象のフォルダー以下の `Read` にする。例えば `C:\dev\foo\a.ts` を読んだなら `Read(//c/dev/foo/**)`。Grep / Glob は `path` のフォルダーを使う。
   - Edit / Write / MultiEdit / NotebookEdit: 対象のフォルダー以下の `Edit` にする（例: `Edit(//c/dev/foo/**)`）。
     Claude Code がパスで照合するルールは `Read(path)` と `Edit(path)` だけなので、この2つで作る。`Edit` は書き換え系のツール全部に、`Read` は Grep / Glob にも効く。
-  - それ以外のツール: ツール名だけにする（例: `WebFetch`）。
-- 次のものはルールを作らず、理由をスレッドに返す。
-  - 複数のコマンドをつないだもの、リダイレクトを含むもの。
-  - 次の操作に当たるコマンド。
-    - 削除・移動・ネットワーク・プロセスの起動・権限やシステムの変更
-    - 任意のコードの実行（`node` / `python` / `npx` / `uvx` など）
-    - エージェントの CLI（`claude` / `codex` / `gemini` など）。別のエージェントに確認なしで操作させられるため。
-    - `git push` / `reset` / `clean` などの破壊的な操作
-    - スクリプトの実行（`npm test` / `npm run` / `dotnet run` など）。ファイルの編集が確認なしだと、スクリプトを書き換えてから実行できるため。
-    - 読み取り系（`Get` / `Test` / `Select` など）以外の PowerShell コマンドレット
+  - WebFetch: URL のホストに絞った `WebFetch(domain:<ホスト>)` にする。ツール全体の `WebFetch` は作らない。
+  - MCP のツール: 名前から読み取り専用と分かる個別のツール（先頭の動詞が `get` / `list` / `read` / `search` / `find` / `describe` / `view` / `show`）だけ、ツール名のルールにする（例: `mcp__github__get_issue`）。
+  - それ以外のツールからは作らない。
+- 次のものはルールを作らない（♾ を押せたときは、理由をスレッドに返す）。
   - パスを取るツールで、範囲が広すぎるか、意図と違う範囲になりうるもの。具体的には次のどれかに当たるもの。
     - パスが読み取れない、相対パス
     - `..` や gitignore の特殊文字（`* ? [ ] ! # { }`）を含む

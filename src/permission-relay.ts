@@ -15,6 +15,7 @@ import {
 } from './permission.js';
 import type { PermissionRequest } from './permission.js';
 import type { SessionAllowAll } from './session-allow.js';
+import { deriveRule } from './allow-rules.js';
 
 /** 自動許可をスレッドに記録するとき、入力を載せる長さ */
 const AUTO_ALLOW_PREVIEW_MAX = 300;
@@ -111,7 +112,12 @@ export class PermissionRelay {
     this.pending.add(req);
     this.startExpiryTimer(req.request_id);
 
-    const { text, blocks } = buildPermissionBlocks(req, undefined, this.sessionAllow !== undefined && this.sessionAllow.current === undefined);
+    const { text, blocks } = buildPermissionBlocks(
+      req,
+      undefined,
+      this.sessionAllow !== undefined && this.sessionAllow.current === undefined,
+      deriveRule(req).ok
+    );
     if (await this.replyToLastThread(req, text, blocks)) return;
 
     let results: MessageRef[] = [];

@@ -81,11 +81,11 @@ describe('RuleRelay', () => {
     expect(posts.at(-1)?.text).toContain('deny に当たる');
   });
 
-  it('危険なコマンドは候補を作らず理由を知らせる', async () => {
+  it('許可リストに無いコマンドは候補を作らず理由を知らせる', async () => {
     const { relay, posts } = setup();
     await relay.propose(bash('rm -rf dist'), 'C1', '9.0');
     expect(posts[0]?.kind).toBe('text');
-    expect(posts[0]?.text).toContain('危険なコマンド');
+    expect(posts[0]?.text).toContain('追加できるコマンドではない');
   });
 
   it('やめる・期限切れでは保存しない', async () => {

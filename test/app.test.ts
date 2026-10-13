@@ -1375,7 +1375,8 @@ describe('このセッション中は全部許可', () => {
 
     await client_sendBash(h, 'git push origin main', 'fghij');
     expect(verdicts()).toHaveLength(1);
-    expect(actionIds(posts()[0])).toEqual(['perm_allow', 'perm_always', 'perm_deny']);
+    // git push は許可リストに足せないので、♾ も出さない
+    expect(actionIds(posts()[0])).toEqual(['perm_allow', 'perm_deny']);
   });
 
   it('!lock で解除すると、またボタンで聞く', async () => {
