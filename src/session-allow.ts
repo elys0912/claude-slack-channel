@@ -24,12 +24,13 @@ const LINE_CONTINUATION_RE = /[\\`]\r?\n/g;
  */
 const UNPARSEABLE_CHARS_RE = /["'`{}()]/;
 /**
- * 含んでいれば、コマンドの組み立てを解釈しない（当たりにする）語（小文字）。制御構文と、スクリプトブロックを取るコマンドレットとその別名。
+ * 含んでいれば、コマンドの組み立てを解釈しない（当たりにする）語（小文字）。制御構文と、スクリプトブロックを取るコマンドレットとその別名
+ * （ForEach-Object の `foreach` / `%`、Where-Object の `where` / `?`）。
  * `then git push` や `do git push` のように、部分の先頭がこれらになるものを照合から漏らさない
  */
 const CONTROL_WORDS = new Set([
   'if', 'then', 'elif', 'else', 'fi', 'for', 'foreach', 'while', 'until', 'do', 'done', 'case', 'esac', 'select',
-  'function', 'try', 'catch', 'finally', 'trap', 'switch', 'foreach-object', '%', 'where-object', '?',
+  'function', 'try', 'catch', 'finally', 'trap', 'switch', 'foreach-object', '%', 'where-object', 'where', '?',
 ]);
 /** 部分の先頭の環境変数の代入（`FOO=1 git push`） */
 const ENV_ASSIGNMENT_RE = /^[a-z_]\w*=/;
@@ -37,11 +38,15 @@ const ENV_ASSIGNMENT_RE = /^[a-z_]\w*=/;
 const PLAIN_COMMAND_RE = /^[a-z][\w.-]*$/;
 /** 展開で別の語になりうる文字（変数・ワイルドカード）。ルールのサブコマンドの位置にあれば当たりにする */
 const EXPANSION_CHARS_RE = /[$*?[\]]/;
-/** 後ろの語を別のコマンドとして実行するもの。部分の先頭がこれなら、何を実行するかを解釈しない（当たりにする） */
+/**
+ * 後ろの語を別のコマンドとして実行するもの。部分の先頭がこれなら、何を実行するかを解釈しない（当たりにする）。
+ * 先頭の語は normalizeCommandName で直してから引くので、PowerShell の別名（`start` / `saps` / `iex` / `icm` / `sajb`）は
+ * 本来のコマンドレットの名前で当たる。ここには別名を書かない
+ */
 const WRAPPER_COMMANDS = new Set([
   'env', 'sudo', 'runas', 'timeout', 'time', 'nohup', 'nice', 'xargs', 'watch', 'command', 'builtin', 'exec', 'eval', 'source',
-  'sh', 'bash', 'zsh', 'dash', 'cmd', 'powershell', 'pwsh', 'wsl', 'start', 'call', 'start-process', 'saps',
-  'invoke-expression', 'iex', 'invoke-command', 'icm', 'start-job', 'npx', 'pnpx', 'bunx', 'uvx',
+  'sh', 'bash', 'zsh', 'dash', 'cmd', 'powershell', 'pwsh', 'wsl', 'call', 'start-process',
+  'invoke-expression', 'invoke-command', 'start-job', 'npx', 'pnpx', 'bunx', 'uvx',
 ]);
 /** ファイル名だけのパターンで、正規表現に直す前にエスケープする文字（* と ? はワイルドカードとして別に扱う） */
 const REGEX_SPECIAL_RE = /[.+^$()|]/g;
