@@ -52,8 +52,8 @@ export class SessionControl {
   /**
    * 再起動する。restart.flag を置いて /exit を送る（force なら claude.exe を止める）。
    * Claude Code が終わればこの MCP サーバーも終わり、start.ps1 がフラグを見て起動し直す。投げない。
-   * 印は終了より前に置く必要があるので先に書き、/exit を送れなかった・強制終了に失敗したときは消す
-   * （残すと、後で手元で終了したときに start.ps1 が勝手に起動し直す）
+   * 印は終了より前に置く必要があるので先に書き、/exit を送れなかった・送っても EXIT_CONFIRM_MS の間に終了しなかった・
+   * 強制終了に失敗したときは消す（残すと、後で手元で終了したときに start.ps1 が勝手に起動し直す）
    */
   async restart(at: ThreadRef, byUserId: string, force: boolean): Promise<void> {
     const { logger } = this.opts;
@@ -136,10 +136,15 @@ export class SessionControl {
 
   private scheduleExitCheck(at: ThreadRef): void {
     this.clearExitCheck();
-    // このプロセスがまだ動いていれば、Claude Code は終了していない
+    // このプロセスがまだ動いていれば、Claude Code は終了していない。印を残すと、後で手元で終了したときに
+    // start.ps1 が勝手に起動し直すので消す（終了が遅れているだけなら、次の !restart でまた書く）
     this.confirmTimer = setTimeout(() => {
       this.confirmTimer = undefined;
-      void this.say(at, '⚠️ /exit を送ったが、まだ終了していない。!screen で画面を確認するか、!restart force で強制終了すること');
+      this.removeFlag();
+      void this.say(
+        at,
+        '⚠️ /exit を送ったが、まだ終了していない。再起動の印は消した（このあと終了しても起動し直さない）。!screen で画面を確認し、改めて !restart か !restart force を送ること'
+      );
     }, this.opts.exitConfirmMs ?? EXIT_CONFIRM_MS);
     this.confirmTimer.unref?.();
   }

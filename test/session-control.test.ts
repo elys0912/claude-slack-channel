@@ -54,15 +54,19 @@ describe('SessionControl', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  it('restart: 印を置き、入力待ちなら /exit を送り、時間内に終了しなければその旨を知らせる', async () => {
+  it('restart: 印を置き、入力待ちなら /exit を送り、時間内に終了しなければ印を消してその旨を知らせる', async () => {
     const s = make(fakeConsole());
     await s.restart(AT, 'U1', false);
     expect(fs.existsSync(flag)).toBe(true);
     expect(commands).toEqual(['exit']);
     expect(posted).toEqual([expect.stringContaining('/exit を送った')]);
 
-    await vi.advanceTimersByTimeAsync(50);
+    await vi.advanceTimersByTimeAsync(49);
+    expect(fs.existsSync(flag)).toBe(true);
+    await vi.advanceTimersByTimeAsync(1);
     expect(posted[1]).toContain('まだ終了していない');
+    expect(posted[1]).toContain('印は消した');
+    expect(fs.existsSync(flag)).toBe(false);
     s.stop();
   });
 
