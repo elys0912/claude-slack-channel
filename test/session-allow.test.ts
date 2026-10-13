@@ -123,6 +123,41 @@ describe('matchingRule', () => {
     }
   );
 
+  it.each([
+    ['rm -r foo', 'Remove-Item -r foo', 'PowerShell(Remove-Item:*)'],
+    ['DEL foo', 'Remove-Item foo', 'PowerShell(Remove-Item:*)'],
+    ['erase foo', 'Remove-Item foo', 'PowerShell(Remove-Item:*)'],
+    ['rd foo', 'Remove-Item foo', 'PowerShell(Remove-Item:*)'],
+    ['rmdir foo', 'Remove-Item foo', 'PowerShell(Remove-Item:*)'],
+    ['ri foo', 'Remove-Item foo', 'PowerShell(Remove-Item:*)'],
+    ['cd x; del foo', 'cd x; Remove-Item foo', 'PowerShell(Remove-Item:*)'],
+    ['mv a b', 'Move-Item a b', 'PowerShell(Move-Item:*)'],
+    ['move a b', 'Move-Item a b', 'PowerShell(Move-Item:*)'],
+    ['mi a b', 'Move-Item a b', 'PowerShell(Move-Item:*)'],
+    ['cp a b', 'Copy-Item a b', 'PowerShell(Copy-Item:*)'],
+    ['copy a b', 'Copy-Item a b', 'PowerShell(Copy-Item:*)'],
+    ['cpi a b', 'Copy-Item a b', 'PowerShell(Copy-Item:*)'],
+    ['sc a x', 'Set-Content a x', 'PowerShell(Set-Content:*)'],
+    ['ac a x', 'Add-Content a x', 'PowerShell(Add-Content:*)'],
+    ['ni a', 'New-Item a', 'PowerShell(New-Item:*)'],
+    ['ii a', 'Invoke-Item a', 'PowerShell(Invoke-Item:*)'],
+    ['icm -ComputerName a', 'Invoke-Command -ComputerName a', 'PowerShell(Invoke-Command:*)'],
+  ])('PowerShell の別名（%s）は、本来のコマンドレット（%s）と同じく ask に当たる', (aliased, canonical, rule) => {
+    expect(matchingRule(req('PowerShell', { command: canonical }), [rule])).toBe(rule);
+    expect(matchingRule(req('PowerShell', { command: aliased }), [rule])).toBe(rule);
+  });
+
+  it('ask のルールが別名で書かれていても、本来のコマンドレットのコマンドに当たる', () => {
+    expect(matchingRule(req('PowerShell', { command: 'Remove-Item foo' }), ['PowerShell(rm:*)'])).toBe('PowerShell(rm:*)');
+    expect(matchingRule(req('PowerShell', { command: 'del foo' }), ['PowerShell(rm:*)'])).toBe('PowerShell(rm:*)');
+    expect(matchingRule(req('Bash', { command: 'rm -rf foo' }), ['Bash(rm -rf:*)'])).toBe('Bash(rm -rf:*)');
+  });
+
+  it('別名の正規化で、関係ないコマンドが当たるようにはならない', () => {
+    expect(matchingRule(req('PowerShell', { command: 'Get-ChildItem foo' }), ['PowerShell(Remove-Item:*)'])).toBeUndefined();
+    expect(matchingRule(req('PowerShell', { command: 'rename-item a b' }), ['PowerShell(Remove-Item:*)'])).toBeUndefined();
+  });
+
   it('ワイルドカードを含むプレフィックスは当たりにする', () => {
     expect(matchingRule(req('Bash', { command: 'ls' }), ['Bash(git * --force)'])).toBe('Bash(git * --force)');
   });

@@ -50,6 +50,37 @@ const EXECUTABLE_EXT_RE = /\.(?:exe|cmd|bat|com|ps1)$/;
 /** 先頭の語の末尾から剥がす版番号（`python3.12` の `3.12`、`pip3` の `3`） */
 const VERSION_SUFFIX_RE = /(?<=[a-z])\d+(?:\.\d+)*$/;
 /**
+ * PowerShell の組み込みの別名（小文字）と、その本来のコマンドレット（小文字）。照合の前に本来の名前に直す。
+ * `rm x` が `PowerShell(Remove-Item:*)` の ask をすり抜けないようにするため。
+ * 両方の側（ルールとコマンド）を同じ名前に直すので、当たる範囲は広がるだけで狭まらない（Bash の `rm` も Remove-Item とみなす）。
+ * 削除・移動・書き込み・実行・プロセスの停止・通信・ファイルの読み取り・一覧に当たるものを並べる（Windows PowerShell 5.1 の別名）
+ */
+export const POWERSHELL_ALIASES: ReadonlyMap<string, string> = new Map([
+  ['rm', 'remove-item'], ['del', 'remove-item'], ['erase', 'remove-item'], ['rd', 'remove-item'], ['rmdir', 'remove-item'], ['ri', 'remove-item'],
+  ['mv', 'move-item'], ['move', 'move-item'], ['mi', 'move-item'],
+  ['cp', 'copy-item'], ['copy', 'copy-item'], ['cpi', 'copy-item'],
+  ['ren', 'rename-item'], ['rni', 'rename-item'],
+  ['ni', 'new-item'],
+  ['si', 'set-item'],
+  ['cli', 'clear-item'],
+  ['sc', 'set-content'],
+  ['ac', 'add-content'],
+  ['clc', 'clear-content'],
+  ['sp', 'set-itemproperty'],
+  ['rp', 'remove-itemproperty'],
+  ['tee', 'tee-object'],
+  ['cat', 'get-content'], ['gc', 'get-content'], ['type', 'get-content'],
+  ['ls', 'get-childitem'], ['dir', 'get-childitem'], ['gci', 'get-childitem'],
+  ['ii', 'invoke-item'],
+  ['iex', 'invoke-expression'],
+  ['icm', 'invoke-command'],
+  ['start', 'start-process'], ['saps', 'start-process'],
+  ['sajb', 'start-job'],
+  ['kill', 'stop-process'], ['spps', 'stop-process'],
+  ['iwr', 'invoke-webrequest'], ['curl', 'invoke-webrequest'], ['wget', 'invoke-webrequest'],
+  ['irm', 'invoke-restmethod'],
+]);
+/**
  * ツール全体を許すルールにしてよい MCP のツールの、名前の最初の語（読み取り専用と名前から分かるもの）。
  * MCP の個別のツール（`mcp__<サーバー>__<ツール>`）だけが対象で、名前に MCP_WRITE_WORDS を含むものは除く
  */
@@ -164,10 +195,33 @@ export function isSameOrAncestor(a: string, b: string): boolean {
 
 /**
  * シェルのコマンドの先頭の語を、照合に使う 1 つの名前にする。
- * 小文字にし、末尾の実行ファイルの拡張子（`.exe` `.cmd` `.bat` `.com` `.ps1`）と版番号を剥がす（`Python3.12.EXE` → `python`）
+ * 小文字にし、末尾の実行ファイルの拡張子（`.exe` `.cmd` `.bat` `.com` `.ps1`）と版番号を剥がす（`Python3.12.EXE` → `python`）。
+ * PowerShell の別名（POWERSHELL_ALIASES）は本来のコマンドレットにする（`DEL` → `remove-item`）
  */
 export function normalizeCommandName(word: string): string {
-  return word.toLowerCase().replace(EXECUTABLE_EXT_RE, '').replace(VERSION_SUFFIX_RE, '');
+  const name = word.toLowerCase().replace(EXECUTABLE_EXT_RE, '').replace(VERSION_SUFFIX_RE, '');
+  return POWERSHELL_ALIASES.get(name) ?? name;
+}
+
+/** シェルのプレフィックス（`rm -r`）の先頭の語を normalizeCommandName で直したもの（`remove-item -r`） */
+function normalizeShellPrefix(prefix: string): string {
+  const [first = '', ...rest] = prefix.toLowerCase().split(/\s+/);
+  return [normalizeCommandName(first), ...rest].join(' ');
+}
+
+/** 2 つのプレフィックスの一方が他方の先頭に一致するか（大文字小文字は区別しない） */
+function prefixesOverlap(a: string, b: string): boolean {
+  const x = a.toLowerCase();
+  const y = b.toLowerCase();
+  return x.startsWith(y) || y.startsWith(x);
+}
+
+/**
+ * シェルのプレフィックスどうしが重なるか。そのままの綴りか、先頭の語を正規化した綴り（`ls` と `Get-ChildItem`）のどちらかで重なれば重なる。
+ * そのままの綴りでも比べるのは、正規化で重ならなくなる組（`ls` と `l`）を落とさないため
+ */
+function shellPrefixesOverlap(a: string, b: string): boolean {
+  return prefixesOverlap(a, b) || prefixesOverlap(normalizeShellPrefix(a), normalizeShellPrefix(b));
 }
 
 /**
@@ -355,6 +409,7 @@ export function denyDirOf(body: string, ctx: DenyContext): string | undefined {
  *   または候補のフォルダーと同じか親のフォルダー以下全部を指すとき）だけ当たりにする。一部だけ重なる deny（`Read(.env)` など）は、
  *   Claude Code が allow より deny を優先するので許しても読めないままで、当たりにしない
  * - それ以外: 同じツールで、どちらかが全体（中身なし）か、シェルならプレフィックスの一方が他方の先頭に一致すれば重なるとみなす。
+ *   シェルのプレフィックスは、先頭の語を normalizeCommandName で直しても比べる（`ls` は `PowerShell(Get-ChildItem:*)` と重なる）。
  *   シェル以外で中身のある deny（例: `Read(.env)`）は、ツール全体を許すルールと重なるとみなす
  */
 export function denyOverlaps(
@@ -379,9 +434,10 @@ export function denyOverlaps(
       hits.push(d);
       continue;
     }
-    const a = candidate.prefix.toLowerCase();
-    const b = parsed.body.toLowerCase();
-    if (a.startsWith(b) || b.startsWith(a)) hits.push(d);
+    const overlaps = SHELL_TOOLS.has(candidate.tool)
+      ? shellPrefixesOverlap(candidate.prefix, parsed.body)
+      : prefixesOverlap(candidate.prefix, parsed.body);
+    if (overlaps) hits.push(d);
   }
   return hits;
 }
