@@ -16,6 +16,12 @@ import type { SlackBridge } from './slack.js';
 
 /** /exit を送ってから、まだ終了していないことを知らせるまでの時間 */
 export const EXIT_CONFIRM_MS = 20000;
+/**
+ * /exit を送ってから、終了しないものとみなして再起動の印を消すまでの時間。
+ * 会話の保存や子プロセスの終了で、終わるまでに EXIT_CONFIRM_MS より長くかかることがあるので、知らせた後もしばらく印を残す
+ */
+export const EXIT_GIVE_UP_MS = 60000;
+const MS_PER_SECOND = 1000;
 /** taskkill / tasklist を待つ上限 */
 const KILL_TIMEOUT_MS = 10000;
 /** !restart force でプロセスツリーごと止めてよい親（Claude Code 本体）。シェル等が親なら巻き込まないよう止めない */
@@ -39,6 +45,8 @@ export interface SessionControlOptions {
   sessionId?: (() => string | undefined) | undefined;
   /** /exit の後に終了を確かめるまでの時間（テスト用） */
   exitConfirmMs?: number | undefined;
+  /** /exit の後に再起動の印を消すまでの時間（テスト用） */
+  exitGiveUpMs?: number | undefined;
 }
 
 export class SessionControl {
@@ -52,7 +60,7 @@ export class SessionControl {
   /**
    * 再起動する。restart.flag を置いて /exit を送る（force なら claude.exe を止める）。
    * Claude Code が終わればこの MCP サーバーも終わり、start.ps1 がフラグを見て起動し直す。投げない。
-   * 印は終了より前に置く必要があるので先に書き、/exit を送れなかった・送っても EXIT_CONFIRM_MS の間に終了しなかった・
+   * 印は終了より前に置く必要があるので先に書き、/exit を送れなかった・送っても EXIT_GIVE_UP_MS の間に終了しなかった・
    * 強制終了に失敗したときは消す（残すと、後で手元で終了したときに start.ps1 が勝手に起動し直す）
    */
   async restart(at: ThreadRef, byUserId: string, force: boolean): Promise<void> {
@@ -134,18 +142,31 @@ export class SessionControl {
     }
   }
 
+  /**
+   * /exit の後に終了を見張る。EXIT_CONFIRM_MS でまだ動いていれば知らせ（印は残すので、遅れて終了すれば起動し直す）、
+   * EXIT_GIVE_UP_MS でもまだ動いていれば印を消す（残すと、後で手元で終了したときに start.ps1 が勝手に起動し直す）。
+   * このプロセスがまだ動いていれば、Claude Code は終了していない
+   */
   private scheduleExitCheck(at: ThreadRef): void {
     this.clearExitCheck();
-    // このプロセスがまだ動いていれば、Claude Code は終了していない。印を残すと、後で手元で終了したときに
-    // start.ps1 が勝手に起動し直すので消す（終了が遅れているだけなら、次の !restart でまた書く）
+    const confirmMs = this.opts.exitConfirmMs ?? EXIT_CONFIRM_MS;
+    const giveUpMs = Math.max(this.opts.exitGiveUpMs ?? EXIT_GIVE_UP_MS, confirmMs);
+    const giveUpSec = Math.round(giveUpMs / MS_PER_SECOND);
     this.confirmTimer = setTimeout(() => {
-      this.confirmTimer = undefined;
-      this.removeFlag();
       void this.say(
         at,
-        '⚠️ /exit を送ったが、まだ終了していない。再起動の印は消した（このあと終了しても起動し直さない）。!screen で画面を確認し、改めて !restart か !restart force を送ること'
+        `⏳ /exit を送ったが、まだ終了していない。遅れているだけなら、このまま待てば起動し直す。送ってから ${giveUpSec} 秒たっても終了しなければ、再起動の印を消す（!screen で画面を確認できる）`
       );
-    }, this.opts.exitConfirmMs ?? EXIT_CONFIRM_MS);
+      this.confirmTimer = setTimeout(() => {
+        this.confirmTimer = undefined;
+        this.removeFlag();
+        void this.say(
+          at,
+          `⚠️ /exit を送ってから ${giveUpSec} 秒たっても終了しない。再起動の印は消した（このあと終了しても起動し直さない）。!screen で画面を確認し、改めて !restart か !restart force を送ること`
+        );
+      }, giveUpMs - confirmMs);
+      this.confirmTimer.unref?.();
+    }, confirmMs);
     this.confirmTimer.unref?.();
   }
 

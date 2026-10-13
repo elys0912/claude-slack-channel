@@ -28,7 +28,7 @@ describe('SessionControl', () => {
     };
   }
 
-  function make(console: ConsoleAccess | undefined, exitConfirmMs = 50): SessionControl {
+  function make(console: ConsoleAccess | undefined, exitConfirmMs = 50, exitGiveUpMs = 150): SessionControl {
     return new SessionControl({
       console,
       restartFlagFile: flag,
@@ -36,6 +36,7 @@ describe('SessionControl', () => {
       logger: new Logger({ stderr: false }),
       killParent: () => void killed++,
       exitConfirmMs,
+      exitGiveUpMs,
     });
   }
 
@@ -54,20 +55,35 @@ describe('SessionControl', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  it('restart: 印を置き、入力待ちなら /exit を送り、時間内に終了しなければ印を消してその旨を知らせる', async () => {
+  it('restart: 印を置き、入力待ちなら /exit を送り、終了しなければ知らせる。印は 2 段目の時間まで残し、過ぎたら消す（D-SC-03）', async () => {
     const s = make(fakeConsole());
     await s.restart(AT, 'U1', false);
     expect(fs.existsSync(flag)).toBe(true);
     expect(commands).toEqual(['exit']);
     expect(posted).toEqual([expect.stringContaining('/exit を送った')]);
 
-    await vi.advanceTimersByTimeAsync(49);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(posted[1]).toContain('まだ終了していない');
+    expect(posted[1]).toContain('このまま待てば起動し直す');
+    // 遅れて終了したときに起動し直せるよう、1 段目の知らせでは印を消さない
+    expect(fs.existsSync(flag)).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(99);
     expect(fs.existsSync(flag)).toBe(true);
     await vi.advanceTimersByTimeAsync(1);
-    expect(posted[1]).toContain('まだ終了していない');
-    expect(posted[1]).toContain('印は消した');
+    expect(posted[2]).toContain('印は消した');
     expect(fs.existsSync(flag)).toBe(false);
     s.stop();
+  });
+
+  it('restart: 1 段目の知らせの後に stop すれば、印を消さない（終了したので start.ps1 が起動し直す）', async () => {
+    const s = make(fakeConsole());
+    await s.restart(AT, 'U1', false);
+    await vi.advanceTimersByTimeAsync(50);
+    s.stop();
+    await vi.advanceTimersByTimeAsync(500);
+    expect(posted).toHaveLength(2);
+    expect(fs.existsSync(flag)).toBe(true);
   });
 
   it('restart: stop すれば終了の確認を知らせない', async () => {
