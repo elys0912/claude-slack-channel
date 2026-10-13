@@ -8,9 +8,10 @@ on:
 permissions:
   contents: read
 
+# PR は新しい push で古い実行を取り消す。main への push は取り消さない（続けてマージしても、各コミットの結果を残す）
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   check:
@@ -22,8 +23,12 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      # アクションはタグの付け替えで中身が変わらないよう、コミットの SHA で固定する（コメントは対応するタグ）
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # 後続の npm ci（依存のスクリプト）から GITHUB_TOKEN を読めないよう、認証情報を残さない
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: npm

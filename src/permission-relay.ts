@@ -12,13 +12,18 @@ import {
   buildPermissionBlocks,
   buildResolvedBlocks,
   buildVerdictFailedBlocks,
+  revealInvisible,
+  truncatePlain,
 } from './permission.js';
 import type { PermissionRequest } from './permission.js';
 import type { SessionAllowAll } from './session-allow.js';
 import { deriveRule } from './allow-rules.js';
+import { clip } from './text.js';
 
 /** 自動許可をスレッドに記録するとき、入力を載せる長さ */
 const AUTO_ALLOW_PREVIEW_MAX = 300;
+/** 自動許可の記録の context ブロックの長さ（plain_text の上限 3000 より少し短く） */
+const AUTO_ALLOW_TEXT_MAX = 2900;
 
 interface MessageRef {
   channel: string;
@@ -157,11 +162,12 @@ export class PermissionRelay {
     this.logger.info(`自動許可（全部許可中） id=${req.request_id} tool=${req.tool_name}`);
     const target = this.lastThreadRef;
     if (target) {
-      const preview = req.input_preview.length > AUTO_ALLOW_PREVIEW_MAX ? `${req.input_preview.slice(0, AUTO_ALLOW_PREVIEW_MAX)}…` : req.input_preview;
-      const text = `🔓 自動許可: ${req.tool_name}\n${preview}`;
+      // 全部許可の間は、この記録が何を実行させたかの手がかりになる。実行許可のメッセージと同じく、不可視文字を見えるようにして切る
+      const preview = truncatePlain(req.input_preview, AUTO_ALLOW_PREVIEW_MAX).text;
+      const text = `🔓 自動許可: ${revealInvisible(req.tool_name)}\n${preview}`;
       try {
         await this.slack.postBlocks(target.channel, `🔓 自動許可: ${req.tool_name}`, [
-          { type: 'context', elements: [{ type: 'plain_text', text: text.slice(0, 2900) }] },
+          { type: 'context', elements: [{ type: 'plain_text', text: clip(text, AUTO_ALLOW_TEXT_MAX) }] },
         ], target.threadTs);
       } catch (e) {
         this.logger.warn('自動許可の記録の投稿に失敗', e);

@@ -1,7 +1,8 @@
 // Slack への送信前にテキストを安全な形へ整える純関数群（I/O なし）
 import { clip } from './text.js';
 
-const BROADCAST_TAG_RE = /<!(channel|here|everyone)>/g;
+/** `<!here>` と、ラベル付きの `<!here|here>`（どちらも一斉メンションになる） */
+const BROADCAST_TAG_RE = /<!(channel|here|everyone)(?:\|[^>]*)?>/g;
 const SUBTEAM_TAG_RE = /<!subteam\^([A-Za-z0-9]+)(\|[^>]*)?>/g;
 const BARE_BROADCAST_RE = /@(channel|here|everyone)\b/g;
 /** ゼロ幅スペース。`@` と語の間に挟んでメンションとして解釈されないようにする */

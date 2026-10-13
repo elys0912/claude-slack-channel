@@ -16,6 +16,30 @@ const AUTH_ERROR_HINTS: Record<string, string> = {
   missing_scope: 'ボットトークンのスコープが不足している。OAuth & Permissions を確認して',
 };
 
+const APP_TOKEN_ERROR_HINTS: Record<string, string> = {
+  invalid_auth: 'SLACK_APP_TOKEN が無効（Revoke した古いトークンなど）。Basic Information → App-Level Tokens で発行し直して',
+  not_allowed_token_type: 'SLACK_APP_TOKEN に App-Level Token（xapp-）でないトークンが入っている',
+  missing_scope: 'App-Level Token に connections:write のスコープが無い。発行し直すときにスコープを付けて',
+};
+
+/**
+ * App-Level Token（Socket Mode の接続に使う）が有効か。接続の URL を取れるかだけを見て、接続はしない（URL も表示しない）。
+ * 失敗したら理由を出して false
+ */
+async function checkAppToken(appToken: string): Promise<boolean> {
+  try {
+    await new WebClient(appToken).apps.connections.open();
+    console.log('SLACK_APP_TOKEN: apps.connections.open OK（Socket Mode に接続できる）');
+    return true;
+  } catch (e) {
+    const code = slackErrorCode(e);
+    console.error(`[check] apps.connections.open に失敗: ${code ?? errMessage(e)}`);
+    const hint = code ? APP_TOKEN_ERROR_HINTS[code] : undefined;
+    if (hint) console.error(`  ${hint}`);
+    return false;
+  }
+}
+
 async function main(): Promise<void> {
   const dir = stateDir();
   console.log(`状態ディレクトリ: ${dir}`);
@@ -58,6 +82,9 @@ async function main(): Promise<void> {
   console.log(`ワークスペース: ${auth.team ?? '(不明)'}`);
   console.log(`team_id: ${auth.team_id ?? '(不明)'}`);
   console.log(`bot user_id: ${auth.user_id ?? '(不明)'}`);
+
+  // ボットトークンが通っても、App-Level Token が無効なら起動時に Socket Mode の開始で失敗する
+  if (!(await checkAppToken(tokens.appToken))) process.exitCode = 1;
 
   if (access) {
     // ブリッジ本体（SlackBridge.init）と同じく team_id との完全一致を求める

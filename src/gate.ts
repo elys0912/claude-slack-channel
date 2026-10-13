@@ -34,6 +34,8 @@ export type GateResult =
   | { kind: 'deliver'; content: string; meta: Record<string, string> };
 
 const DEFAULT_DEDUPE_CAPACITY = 500;
+/** 普通の発言として中継するメッセージの subtype（それ以外の subtype は編集・削除・参加などなので捨てる） */
+const DELIVERED_SUBTYPES: ReadonlySet<string> = new Set(['file_share', 'thread_broadcast']);
 
 /** 直近見た eventId を憶えておき、二重配信を弾く（容量超過で古いものから破棄） */
 export class EventDedupe {
@@ -141,7 +143,8 @@ export function gate(
   if (msg.botId !== undefined || msg.user === undefined || msg.user === '' || msg.user === selfBotUserId) {
     return { kind: 'drop', reason: 'bot_or_self' };
   }
-  if (msg.subtype !== undefined && msg.subtype !== 'file_share') {
+  // 添付付き（file_share）と、スレッドへの返信を「チャンネル（DM）にも送る」で投稿したもの（thread_broadcast）は普通の発言として扱う
+  if (msg.subtype !== undefined && !DELIVERED_SUBTYPES.has(msg.subtype)) {
     return { kind: 'drop', reason: 'unsupported_subtype' };
   }
   if (!access.allowFrom.includes(msg.user)) {

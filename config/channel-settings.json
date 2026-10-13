@@ -22,6 +22,7 @@
       "Read(~/.git-credentials)",
       "Read(~/.aws/**)",
       "Read(~/.config/gh/**)",
+      "Read(~/AppData/Roaming/GitHub CLI/**)",
       "Read(~/.npmrc)",
       "Read(~/.docker/**)",
       "Edit(./.claude/**)",

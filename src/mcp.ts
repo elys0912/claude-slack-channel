@@ -30,6 +30,8 @@ export const INSTRUCTIONS = [
   '- chat_id は返信先の Slack チャンネル ID（DM またはチャンネル）。届いたタグの chat_id をそのまま渡す。',
   '- thread_ts は元メッセージのスレッド。返信は必ず元のスレッドに返す（届いたタグの thread_ts を渡す）。',
   '- message_id は個々のメッセージの ts。react / edit_message で対象を指定するのに使う。',
+  '- reply は送ったメッセージの ts を返す（ts=...）。自分の返信を edit_message で直すときは、その ts を message_id に渡す',
+  '  （届いたタグの message_id は相手の発言なので、edit_message では書き換えられない）。',
   '- 長い出力はそのまま流さず、要約してから送る。コードやログは必要な部分だけにする。',
   '- 添付ファイルのあるメッセージには attachment_ids（ファイル ID のカンマ区切り）が付く。中身が必要なときだけ',
   '  download_file ツール（使える場合）で保存する。圧縮ファイルは extract: true で展開できる。',

@@ -49,15 +49,34 @@ describe.runIf(process.platform === 'win32')('scripts/common.ps1 の Read-Restar
     expect(read()).toBe('<null>');
   });
 
-  it('start.ps1 と同じ組み立てで、引き継がないときは引数を足さず、引き継ぐときは --resume <id> が先頭に付く', () => {
+  it('Get-ResumeArgs と Get-LaunchArgs（start.ps1 の起動の引数）: 会話の記録があるときだけ --resume <id> を先頭に付ける', () => {
+    const config = path.join(dir, 'config');
+    fs.mkdirSync(path.join(config, 'projects', 'C--dev'), { recursive: true });
+    fs.writeFileSync(path.join(config, 'projects', 'C--dev', 'c2097ecd-29b0-4cee-9f3e-a9aeace64bc3.jsonl'), '{}\n');
     const build = (id: string) =>
       ps(
-        `$claudeArgs = @('--mcp-config', 'a b.json'); $sessionId = '${id}'; ` +
-          `$resumeArgs = @(if ($sessionId) { '--resume', $sessionId }); ` +
-          `$a = $resumeArgs + $claudeArgs; "$($a.Count)|$($a -join '|')"`
+        `$resumeArgs = @(Get-ResumeArgs -SessionId '${id}' -ConfigDir '${config}'); ` +
+          `$a = Get-LaunchArgs -ResumeArgs $resumeArgs -ClaudeArgs @('--mcp-config', 'a b.json'); "$($a.Count)|$($a -join '|')"`
       );
+
     expect(build('')).toBe('2|--mcp-config|a b.json');
     expect(build('c2097ecd-29b0-4cee-9f3e-a9aeace64bc3')).toBe('4|--resume|c2097ecd-29b0-4cee-9f3e-a9aeace64bc3|--mcp-config|a b.json');
+    expect(build('794af7ae-57b1-4a74-9ef5-89328e03a33d')).toBe('2|--mcp-config|a b.json');
+  });
+
+  it('Get-LaunchArgs: 要素が 1 つでも配列のまま返す（+ が文字列の連結にならない）', () => {
+    expect(ps(`$a = Get-LaunchArgs -ClaudeArgs @('--x'); $a.GetType().Name + '|' + $a.Count`)).toBe('Object[]|1');
+  });
+
+  it('Get-SessionDirName: 末尾の名前にフルパスのハッシュを足し、末尾が同じ別の状態ディレクトリと分ける。DryRun は -dryrun を付ける', () => {
+    const name = (stateDir: string, dryRun = false) => ps(`Get-SessionDirName -StateDir '${stateDir}'${dryRun ? ' -DryRun' : ''}`);
+
+    const a = name('C:\\a\\slack');
+    expect(a).toMatch(/^slack-[0-9a-f]{8}$/);
+    expect(name('C:\\b\\slack')).not.toBe(a);
+    // 大文字小文字と末尾の区切りは問わない
+    expect(name('c:\\A\\Slack\\')).toBe(a.replace(/^slack/, 'Slack'));
+    expect(name('C:\\a\\slack', true)).toBe(`${a}-dryrun`);
   });
 
   it('Test-SessionTranscript: projects 配下のどこかに <id>.jsonl があるときだけ true', () => {

@@ -155,7 +155,8 @@ export function buildChoiceBlocks(id: string, choice: ChoiceScreen): { text: str
   const details = choice.options
     .map((o, i) => `${i === choice.cursor ? '▶' : '・'} ${o.label}${o.description ? ` — ${o.description}` : ''}`)
     .join('\n');
-  const text = `🖥 ターミナルが選択画面で止まっている: ${clip(choice.title[0] ?? '', NOTIFICATION_TITLE_MAX)}`;
+  // text は通知・検索・API で読まれるので、ブロックと同じく伏せてから載せる
+  const text = `🖥 ターミナルが選択画面で止まっている: ${clip(redact(choice.title[0] ?? ''), NOTIFICATION_TITLE_MAX)}`;
   return {
     text,
     blocks: [

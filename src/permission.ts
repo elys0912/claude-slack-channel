@@ -114,13 +114,17 @@ export function numberedAction(base: typeof ACTION.SCREEN_PICK | typeof ACTION.R
  * 表示を偽装できる不可視文字。承認画面で実際と違う内容に見せられないよう、`\u{202E}` の形で見えるようにする。
  * - 双方向制御: U+202A-202E / U+2066-2069 と、向きの印 U+200E-200F / U+061C
  * - ゼロ幅・結合制御: U+200B-200D / U+2060-2064 / U+034F / U+180E、BOM U+FEFF
- * - 空白に見える埋め文字: U+00AD（ソフトハイフン）/ U+115F-1160 / U+17B4-17B5 / U+3164 / U+FFA0
+ * - 空白に見える埋め文字: U+00AD（ソフトハイフン）/ U+115F-1160 / U+17B4-17B5 / U+2800（点字の空白）/ U+3164 / U+FFA0
+ * - 行・段落の区切り: U+2028-2029
+ * - 異体字セレクタ: U+FE00-FE0F / U+E0100-E01EF、タグ文字: U+E0000-E007F
+ * - 注釈・楽譜の書式制御: U+FFF9-FFFB / U+1D173-1D17A
  * - C0・C1 制御文字（タブ・改行・復帰は除く）: U+0000-0008 / U+000B-000C / U+000E-001F / U+007F-009F
+ * 補助面の文字（U+1xxxx 以降）も 1 文字として照合するよう u フラグを付ける（toVisibleUnits はコードポイント単位で渡す）
  */
 // 制御文字・不可視文字をわざと列挙しているので、それらを禁じる lint は外す
 const INVISIBLE_RE =
-  // eslint-disable-next-line no-control-regex, no-misleading-character-class, no-irregular-whitespace
-  /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F­͏؜ᅟᅠ឴឵᠎​-‏‪-‮⁠-⁤⁦-⁩ㅤ﻿ﾠ]/;
+  // eslint-disable-next-line no-control-regex, no-misleading-character-class
+  /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u00AD\u034F\u061C\u115F\u1160\u17B4\u17B5\u180E\u200B-\u200F\u2028\u2029\u202A-\u202E\u2060-\u2064\u2066-\u2069\u2800\u3164\uFE00-\uFE0F\uFEFF\uFFA0\uFFF9-\uFFFB\u{1D173}-\u{1D17A}\u{E0000}-\u{E007F}\u{E0100}-\u{E01EF}]/u;
 
 function visibleUnit(ch: string): string {
   if (!INVISIBLE_RE.test(ch)) return ch;
@@ -154,7 +158,7 @@ function unitsLength(units: readonly string[]): number {
 }
 
 /** 不可視文字を見えるようにしたうえで、maxLen 以内に先頭だけ残して切り詰める */
-function truncatePlain(text: string, maxLen: number): { text: string; truncated: boolean } {
+export function truncatePlain(text: string, maxLen: number): { text: string; truncated: boolean } {
   const units = toVisibleUnits(text);
   if (unitsLength(units) <= maxLen) return { text: units.join(''), truncated: false };
   return { text: takeHead(units, Math.max(0, maxLen - 1)).join('') + '…', truncated: true };

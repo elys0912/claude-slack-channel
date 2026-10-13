@@ -67,14 +67,15 @@ $stateDir = if ($StateDir) {
     Join-Path $env:USERPROFILE $DefaultStateDirRelative
 }
 # 一時ファイル（mcp.json・合成した設定）は状態ディレクトリごとに分ける。複数のセッションを並べても上書きし合わず、
-# claude.exe のコマンドラインのパスでどのセッションか見分けられる（例: %TEMP%\claude-slack-channel\slack\mcp.json）
-$sessionName = Split-Path -Leaf $stateDir
+# claude.exe のコマンドラインのパスでどのセッションか見分けられる（例: %TEMP%\claude-slack-channel\slack-1a2b3c4d\mcp.json）。
+# -DryRun は動いているセッションのファイルを上書きしないよう、別のフォルダー（末尾が -dryrun）に書く
+$sessionName = Get-SessionDirName -StateDir $stateDir -DryRun:$DryRun
 
 # --- 起動前の確認 -------------------------------------------------------------
 
 # dist が無ければビルドする（clone 直後に start.cmd だけ叩いても動くように）
 function Confirm-Built {
-    if ((Test-Path $mainJs) -and (Test-Path $allowExtraCheckJs)) { return }
+    if ((Test-Path -LiteralPath $mainJs) -and (Test-Path -LiteralPath $allowExtraCheckJs)) { return }
 
     Write-Host "[start] dist/src/main.js か dist/src/allow-extra-check.js が無いので npm run build を実行する"
     if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
@@ -86,7 +87,7 @@ function Confirm-Built {
         return
     }
 
-    Push-Location $repoRoot
+    Push-Location -LiteralPath $repoRoot
     try {
         & npm run build
         if ($LASTEXITCODE -ne 0) {
@@ -100,7 +101,7 @@ function Confirm-Built {
 
 # .env と access.json が揃っているかだけ見る（トークンを扱わないよう、中身は読まない）
 function Confirm-StateFiles {
-    $missing = @('.env', 'access.json') | Where-Object { -not (Test-Path (Join-Path $stateDir $_)) }
+    $missing = @('.env', 'access.json') | Where-Object { -not (Test-Path -LiteralPath (Join-Path $stateDir $_)) }
     if (-not $missing) { return }
 
     $message = "$stateDir に $($missing -join ' と ') が無い。README のセットアップ手順に従って、" +
@@ -117,7 +118,7 @@ function Confirm-StateFiles {
 # --- 作業ディレクトリを決める -----------------------------------------------------
 
 function Read-ProjectList {
-    if (-not (Test-Path $projectList)) {
+    if (-not (Test-Path -LiteralPath $projectList)) {
         return @()
     }
     return @((Get-Content -LiteralPath $projectList -Raw -Encoding UTF8 | ConvertFrom-Json).projects)
@@ -159,19 +160,21 @@ function Select-Project {
     }
 }
 
-# -Project はパスでも projects.json の name でもよい。省略時は一覧から選ぶ。
+# -Project は projects.json の name でもパスでもよい。省略時は一覧から選ぶ。
+# name を先に照合する（カレントディレクトリに同じ名前のフォルダーがあっても、projects.json に登録したフォルダーで起動する）
 function Resolve-ProjectDir {
     if (-not $Project) {
         $dir = Select-Project -Projects (Read-ProjectList)
-    } elseif (Test-Path -LiteralPath $Project) {
-        $dir = $Project
     } else {
         $match = Read-ProjectList | Where-Object { $_.name -eq $Project } | Select-Object -First 1
-        if (-not $match) {
-            Write-Error "パスとしても projects.json の name としても見つからない: $Project"
+        if ($match) {
+            $dir = $match.path
+        } elseif (Test-Path -LiteralPath $Project) {
+            $dir = $Project
+        } else {
+            Write-Error "projects.json の name としてもパスとしても見つからない: $Project"
             exit 1
         }
-        $dir = $match.path
     }
 
     if (-not (Test-Path -LiteralPath $dir)) {
@@ -206,6 +209,14 @@ function Get-AllowExtraRules {
     $rules = @(Read-AllowExtra -Path $allowExtra -CheckerScript $allowExtraCheckJs)
     if ($rules.Count -gt 0) { Write-Host "Slack から追加した許可ルール: $($rules.Count) 件（$allowExtra）" }
     return $rules
+}
+
+# MCP サーバー（ブリッジ）を起動する node の絶対パス。claude.exe は作業フォルダーで MCP サーバーを起動するので、
+# 作業フォルダーにある node.exe を拾わないよう、PATH で見つけた場所を mcp.json に書く。見つからなければ node のまま
+function Get-NodePath {
+    $node = Get-Command node -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($node) { return $node.Source }
+    return 'node'
 }
 
 # Claude Code の hook から呼ぶ記録コマンド（dist/src/hook.js）の設定。
@@ -280,6 +291,10 @@ Confirm-Built
 Confirm-StateFiles
 $projectDir = Resolve-ProjectDir
 
+# 前の画面（同じタブで前に動かした claude の画面など）が残っていると、dialog-answer.ps1 がそれに反応しうるので、初回も消す。
+# 消すのはここまでの表示（ビルドの経過・プロジェクトの選択）だけで、この後の警告と案内は残す（案内の文には Pattern を含めていない）
+if (-not $DryRun) { Clear-Host }
+
 # claude.ai の connectors は、このプロセスから起動する claude.exe でだけ無効にする
 $env:ENABLE_CLAUDEAI_MCP_SERVERS = 'false'
 
@@ -307,7 +322,7 @@ function New-ClaudeArgs {
     $extraServers = Read-ExtraMcpServers
     # ブリッジには状態ディレクトリと設定ファイルを環境変数で明示して渡す（claude.exe の環境の引き継ぎに頼らない）
     $mcpConfig = Write-McpConfig -FileName "$sessionName\mcp.json" -ServerName $ServerName -ScriptPath $mainJs `
-        -ExtraServers $extraServers -Env @{
+        -NodePath (Get-NodePath) -ExtraServers $extraServers -Env @{
             SLACK_CHANNEL_STATE_DIR = $stateDir; SLACK_CHANNEL_SETTINGS_FILE = $settingsFile; SLACK_CHANNEL_SESSION_TAG = $sessionTag
         }
     $effectiveSettings = Get-EffectiveSettings -ExtraServers $extraServers
@@ -335,7 +350,7 @@ Write-Host "起動時の警告ダイアログには自動で 1 を選ぶ（90 �
 $restartFlag = Join-Path $stateDir $RestartFlagName
 
 if ($DryRun) {
-    Write-Host "[DryRun] 実行されるコマンドライン:"
+    Write-Host "[DryRun] 実行されるコマンドライン（mcp.json と合成した設定は DryRun 用のフォルダーに書いた。本番の起動では末尾の -dryrun が付かない）:"
     Write-Host (Format-CommandLine -Exe $claude -Arguments $claudeArgs)
     Write-Host "[DryRun] 終了時に $restartFlag があれば、--resume <印の session_id>（会話の記録が無ければ新しい会話）で起動し直す"
     Write-Host "[DryRun] 初回も起動し直しも、警告ダイアログには scripts\dialog-answer.ps1 が答える"
@@ -360,21 +375,22 @@ Remove-Item -LiteralPath $restartFlag -Force -ErrorAction SilentlyContinue
 $resumeArgs = @()
 # Slack からの指示で起動し直している（前のセッションの画面を消してから起動する）
 $relaunch = $false
-Push-Location $projectDir
+# 作業フォルダーにある powershell.exe を拾わないよう、OS 付属のものを絶対パスで起動する
+$powershellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+Push-Location -LiteralPath $projectDir
 try {
     do {
         if ($relaunch) {
-            # 前のセッションの画面（Slack の発言など）が残っていると、dialog-answer.ps1 がそれに反応しうるので消しておく。
-            # 初回は消さない（このスクリプトの案内や警告を残すため。案内の文には Pattern を含めていない）
+            # 前のセッションの画面（Slack の発言など）が残っていると、dialog-answer.ps1 がそれに反応しうるので消す
             Clear-Host
             # 前の起動の後に「今後も許可」で足した・消したルールを反映するため、mcp.json と merged.json を作り直す
             $claudeArgs = New-ClaudeArgs
         }
-        $launchArgs = $resumeArgs + $claudeArgs
+        $launchArgs = Get-LaunchArgs -ResumeArgs $resumeArgs -ClaudeArgs $claudeArgs
         # 初回も起動し直しも、警告ダイアログは画面を見張って自動で答える（PC の再起動後などに手で答えなくて済むように）。
         # Start-Process -ArgumentList は要素を空白でつなぐだけなので、空白を含みうる値は引用符で囲む
         # （囲まないと 'development channel' が 2 つの引数に割れて、dialog-answer.ps1 が起動時に失敗する）
-        Start-Process -FilePath 'powershell.exe' -NoNewWindow -ArgumentList @(
+        Start-Process -FilePath $powershellExe -NoNewWindow -ArgumentList @(
             '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
             '-File', (Quote-Arg (Join-Path $PSScriptRoot 'dialog-answer.ps1')),
             '-Pattern', (Quote-Arg $DevChannelDialogPattern), '-ChoicePattern', (Quote-Arg $DevChannelChoicePattern),
@@ -392,8 +408,8 @@ try {
             $sessionId = Read-RestartSessionId -Path $restartFlag
             Remove-Item -LiteralPath $restartFlag -Force -ErrorAction SilentlyContinue
             $relaunch = $true
-            # @() で包む（要素 1 つの配列を if の結果で代入すると文字列になり、後の + $claudeArgs が文字列の連結になる）
-            $resumeArgs = @(if ($sessionId -and (Test-SessionTranscript -SessionId $sessionId)) { '--resume', $sessionId })
+            # @() で包む（要素 1 つの配列を関数の結果で代入すると文字列になる）
+            $resumeArgs = @(Get-ResumeArgs -SessionId $sessionId)
             Write-Host ""
             if ($resumeArgs.Count -gt 0) {
                 Write-Host "[start] Slack からの指示で起動し直す（--resume $sessionId で会話を引き継ぐ）"

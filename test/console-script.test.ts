@@ -1,6 +1,8 @@
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { PowerShellConsole } from '../src/console.js';
+import { Logger } from '../src/log.js';
 
 const script = path.join(import.meta.dirname, '..', 'scripts', 'console.ps1');
 
@@ -67,5 +69,14 @@ describe.runIf(process.platform === 'win32')('scripts/console.ps1 の -TargetPid
     const r = run('-Mode', 'read', '-TargetPid', '999999');
     expect(r.status).toBe(0);
     expect(r.stderr).toContain('pid=999999 のコンソールに付けられなかった');
+  });
+});
+
+describe.runIf(process.platform === 'win32')('PowerShellConsole（console.ps1 の警告をログに残す）', { timeout: 30000 }, () => {
+  it('付け直せず console.ps1 が 0 で終わっても、stderr の警告を logger.warn に残す', async () => {
+    const logger = new Logger({ stderr: false });
+    const warn = vi.spyOn(logger, 'warn');
+    await new PowerShellConsole(script, 999999, logger).read();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('pid=999999 のコンソールに付けられなかった'));
   });
 });

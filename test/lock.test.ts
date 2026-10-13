@@ -182,13 +182,52 @@ describe('InstanceLock', () => {
     lock.release();
   });
 
-  it('タイマーが残らない（テストプロセスが終了できる）', () => {
-    const lock = new InstanceLock(file, { now, pid: 111, intervalMs: 5 });
-    expect(lock.tryAcquire().acquired).toBe(true);
-    lock.release();
-    // release 後は fs に触れず正常終了することだけ確認する（unref 済みのタイマーで
-    // プロセスがぶら下がらないことは実運用の前提。ここでは例外が出ないことを見る）
-    expect(() => lock.release()).not.toThrow();
+  describe('heartbeat', () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    const heartbeatOf = (): number => (JSON.parse(fs.readFileSync(file, 'utf8')) as { heartbeat: number }).heartbeat;
+
+    it('取っている間は intervalMs ごとに heartbeat を書き、release の後は書かない', () => {
+      const lock = new InstanceLock(file, { now, pid: 111, intervalMs: 10 });
+      expect(lock.tryAcquire().acquired).toBe(true);
+      clock += 100;
+      vi.advanceTimersByTime(10);
+      expect(heartbeatOf()).toBe(clock);
+
+      lock.release();
+      fs.writeFileSync(file, JSON.stringify({ pid: 111, heartbeat: 1, startedAt: 1 }));
+      vi.advanceTimersByTime(100);
+      expect(heartbeatOf()).toBe(1);
+    });
+
+    it('別の pid に取られていたら書き戻さず、onLost に取った側を渡して heartbeat を止める', () => {
+      const onLost = vi.fn();
+      const lockA = new InstanceLock(file, { now, pid: 111, intervalMs: 10, onLost });
+      expect(lockA.tryAcquire().acquired).toBe(true);
+
+      // スリープ明け: A の heartbeat が古くなり、B が取る
+      clock += 31_000;
+      const lockB = new InstanceLock(file, { now, pid: 222 });
+      expect(lockB.tryAcquire().acquired).toBe(true);
+      vi.advanceTimersByTime(10);
+
+      expect(onLost).toHaveBeenCalledOnce();
+      expect(onLost.mock.calls[0]?.[0]).toMatchObject({ pid: 222 });
+      expect((JSON.parse(fs.readFileSync(file, 'utf8')) as { pid: number }).pid).toBe(222);
+      vi.advanceTimersByTime(100);
+      expect(onLost).toHaveBeenCalledOnce();
+
+      // A の release は B のロックを消さない
+      lockA.release();
+      expect(fs.existsSync(file)).toBe(true);
+      lockB.release();
+    });
   });
 });
 

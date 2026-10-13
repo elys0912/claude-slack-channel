@@ -117,6 +117,26 @@ describe('loadTokens', () => {
     expect(loadTokens(dir).downloadDir).toBe(target);
   });
 
+  it.each([
+    ['on', true],
+    ['ON', true],
+    ['true', true],
+    ['1', true],
+    ['off', false],
+    ['0', false],
+    ['none', false],
+    ['only', false],
+    ['', false],
+  ])('SESSION_ALLOW_ALL=%s なら「全部許可」を使えるのは %s', (value, expected) => {
+    fs.writeFileSync(path.join(dir, '.env'), `SLACK_BOT_TOKEN=xoxb-TEST-DUMMY\nSLACK_APP_TOKEN=xapp-TEST-DUMMY\nSESSION_ALLOW_ALL=${value}\n`);
+    expect(loadTokens(dir).sessionAllowAll === true).toBe(expected);
+  });
+
+  it('SESSION_ALLOW_ALL が無ければ「全部許可」は使えない', () => {
+    fs.writeFileSync(path.join(dir, '.env'), 'SLACK_BOT_TOKEN=xoxb-TEST-DUMMY\nSLACK_APP_TOKEN=xapp-TEST-DUMMY\n');
+    expect('sessionAllowAll' in loadTokens(dir)).toBe(false);
+  });
+
   it('DOWNLOAD_DIR が無ければ downloadDir は無い', () => {
     fs.writeFileSync(path.join(dir, '.env'), 'SLACK_BOT_TOKEN=xoxb-TEST-DUMMY\nSLACK_APP_TOKEN=xapp-TEST-DUMMY\n');
     expect('downloadDir' in loadTokens(dir)).toBe(false);

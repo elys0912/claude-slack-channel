@@ -2,7 +2,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { SessionControl, parseTasklistName } from '../src/session-control.js';
+import { SessionControl, defaultKillParent, parseTasklistName } from '../src/session-control.js';
+import type { KillParentDeps } from '../src/session-control.js';
 import { Logger } from '../src/log.js';
 import type { ConsoleAccess, ConsoleCommand } from '../src/console.js';
 
@@ -209,5 +210,43 @@ describe('parseTasklistName（!restart force で親の名前を確かめる）',
   it('pid が違う・見つからない（INFO: の行）なら undefined', () => {
     expect(parseTasklistName('"claude.exe","4321","Console","1","1 K"\r\n', 1234)).toBeUndefined();
     expect(parseTasklistName('INFO: No tasks are running which match the specified criteria.\r\n', 1234)).toBeUndefined();
+  });
+});
+
+describe('defaultKillParent（!restart force で止めてよい親か）', () => {
+  const logger = new Logger({ stderr: false });
+
+  function deps(name: string | undefined, platform: NodeJS.Platform = 'win32'): KillParentDeps & { killed: number[] } {
+    const killed: number[] = [];
+    return {
+      ppid: 4321,
+      platform,
+      processName: async () => name,
+      killTree: async (pid) => {
+        killed.push(pid);
+      },
+      killProcess: (pid) => {
+        killed.push(pid);
+      },
+      killed,
+    };
+  }
+
+  it.each(['claude.exe', 'node.exe', 'Claude.EXE'])('親が Claude Code 本体（%s）なら、プロセスツリーごと止める', async (name) => {
+    const d = deps(name);
+    await defaultKillParent(logger, d);
+    expect(d.killed).toEqual([4321]);
+  });
+
+  it.each([['powershell.exe'], ['cmd.exe'], [undefined]])('親が %s（シェル・名前不明）なら止めずに投げる', async (name) => {
+    const d = deps(name);
+    await expect(defaultKillParent(logger, d)).rejects.toThrow(/Claude Code ではないので止めない/);
+    expect(d.killed).toEqual([]);
+  });
+
+  it('Windows 以外では名前を確かめずに親を止める', async () => {
+    const d = deps(undefined, 'linux');
+    await defaultKillParent(logger, d);
+    expect(d.killed).toEqual([4321]);
   });
 });

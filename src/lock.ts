@@ -15,6 +15,11 @@ export interface InstanceLockOptions {
   pid?: number;
   /** 記録された pid のプロセスが生きているか。死んでいれば heartbeat が新しくても取る。省略時は確認しない（常に生きている扱い） */
   isAlive?: (pid: number) => boolean;
+  /**
+   * heartbeat の更新の前に読み直したロックが、別の pid のものになっていたときに呼ぶ（heartbeat はそこで止め、書き戻さない）。
+   * スリープ明けなどで heartbeat が staleMs より古くなり、別のインスタンスに取られたとき
+   */
+  onLost?: (holder: LockInfo) => void;
 }
 
 /**
@@ -53,6 +58,7 @@ export class InstanceLock {
   private readonly now: () => number;
   private readonly pid: number;
   private readonly isAlive: (pid: number) => boolean;
+  private readonly onLost: ((holder: LockInfo) => void) | undefined;
   private timer: ReturnType<typeof setInterval> | undefined;
   private startedAt: number | undefined;
 
@@ -63,6 +69,7 @@ export class InstanceLock {
     this.now = opts.now ?? Date.now;
     this.pid = opts.pid ?? process.pid;
     this.isAlive = opts.isAlive ?? (() => true);
+    this.onLost = opts.onLost;
   }
 
   private readInfo(): LockInfo | undefined {
@@ -141,6 +148,14 @@ export class InstanceLock {
     this.stopHeartbeat();
     this.timer = setInterval(() => {
       if (this.startedAt === undefined) return;
+      // 別のインスタンスに取られていたら書き戻さない（書き戻すと、2 つのブリッジが両方ともロックを持ったつもりで動く）
+      const current = this.readInfo();
+      if (current && current.pid !== this.pid) {
+        this.stopHeartbeat();
+        this.startedAt = undefined;
+        this.onLost?.(current);
+        return;
+      }
       try {
         this.writeInfo({
           pid: this.pid,

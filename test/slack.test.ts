@@ -100,6 +100,16 @@ describe('SlackBridge.postText', () => {
     }
   });
 
+  it('分けた結果が空白だけになるチャンクは送らない。本文が空白だけなら何も送らない', async () => {
+    // 10998 字 + 改行 5 個は、11000 字目（改行 2 個まで）で切れて、残りが改行 3 個だけになる
+    const res = await bridge.postText(DM1, 'a'.repeat(10998) + '\n'.repeat(5));
+    expect(res.ts).toHaveLength(1);
+    expect(web.calls.filter((c) => c.method === 'chat.postMessage')).toHaveLength(1);
+
+    expect((await bridge.postText(DM1, ' \n\t ')).ts).toEqual([]);
+    expect(web.calls.filter((c) => c.method === 'chat.postMessage')).toHaveLength(1);
+  });
+
   it('短い本文は 1 通で送る', async () => {
     await bridge.postText(DM1, 'hello', '1.0');
     const posts = web.calls.filter((c) => c.method === 'chat.postMessage');

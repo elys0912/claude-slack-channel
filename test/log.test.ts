@@ -25,6 +25,17 @@ describe('redact', () => {
     expect(redact('Authorization: Bearer abc.def.ghi')).toBe('Authorization: Bearer ***');
   });
 
+  it('GitHub のトークン・AWS のアクセスキー ID・sk- の API キーを伏せる', () => {
+    expect(redact('GH_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123456789')).toBe('GH_TOKEN=ghp_***');
+    expect(redact('github_pat_11ABCDEFG0123456789_abcdefghij')).toBe('github_pat_***');
+    expect(redact('key AKIAABCDEFGHIJKLMNOP end')).toBe('key AKIA*** end');
+    expect(redact('ANTHROPIC_API_KEY=sk-ant-api03-abcdefghijklmnop')).toBe('ANTHROPIC_API_KEY=sk-***');
+  });
+
+  it('鍵の形に足りない短い語は伏せない', () => {
+    expect(redact('ghp_short sk-learn AKIA')).toBe('ghp_short sk-learn AKIA');
+  });
+
   it('トークンが無ければそのまま', () => {
     expect(redact('hello world')).toBe('hello world');
   });
