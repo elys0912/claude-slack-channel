@@ -55,6 +55,7 @@ async function startHarness(
     | 'restartFlagFile'
     | 'killParent'
     | 'sessionAllowAll'
+    | 'managedSettingsFiles'
     | 'sessionTag'
     | 'workDir'
   > = {}
@@ -858,6 +859,47 @@ describe('parseCommand', () => {
   });
 });
 
+describe('起動時の、今の方式では作れない保存済みのルールの知らせ（D-SD-03）', () => {
+  let h: Harness | undefined;
+  let dir: string;
+  let file: string;
+  const texts = (): string[] =>
+    (h?.web.calls ?? []).filter((c) => c.method === 'chat.postMessage').map((c) => String(c.args.text));
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'app-rejected-'));
+    file = path.join(dir, 'allow-extra.json');
+  });
+
+  afterEach(async () => {
+    await h?.client.close();
+    await h?.stop();
+    h = undefined;
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('前の方式で足したルールがあれば、件数と一覧を知らせる。allow-extra.json は書き換えない', async () => {
+    const saved = JSON.stringify({ allow: ['Bash(git status)', 'Bash(git log:*)', 'WebFetch'] });
+    fs.writeFileSync(file, saved);
+    h = await startHarness(ACCESS, undefined, { allowExtraFile: file });
+    await flush();
+
+    const notice = texts().find((t) => t.includes('作れないルール'));
+    expect(notice).toContain('2 件');
+    expect(notice).toContain('• Bash(git log:*)');
+    expect(notice).toContain('• WebFetch');
+    expect(notice).not.toContain('Bash(git status)');
+    expect(fs.readFileSync(file, 'utf8')).toBe(saved);
+  });
+
+  it('作れないルールが無ければ知らせない', async () => {
+    fs.writeFileSync(file, JSON.stringify({ allow: ['Bash(git status)'] }));
+    h = await startHarness(ACCESS, undefined, { allowExtraFile: file });
+    await flush();
+    expect(texts().some((t) => t.includes('作れないルール'))).toBe(false);
+  });
+});
+
 describe('ターミナル画面と許可リスト（!screen / 今後も許可 / !rules）', () => {
   const CHROME = [
     ' Claude wants to use your browser',
@@ -872,7 +914,7 @@ describe('ターミナル画面と許可リスト（!screen / 今後も許可 / 
   beforeEach(async () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'app-rules-'));
     const denyFile = path.join(dir, 'settings.json');
-    fs.writeFileSync(denyFile, JSON.stringify({ permissions: { deny: ['Bash(git log --all:*)'] } }));
+    fs.writeFileSync(denyFile, JSON.stringify({ permissions: { deny: ['Bash(pwd -P:*)'] } }));
     sent = [];
     h = await startHarness(ACCESS, undefined, {
       console: { read: async () => CHROME, sendKeys: async (keys) => void sent.push(keys), sendCommand: async () => undefined },
@@ -917,7 +959,7 @@ describe('ターミナル画面と許可リスト（!screen / 今後も許可 / 
 
     const verdict = h.notifications.find((x) => x.method === 'notifications/claude/channel/permission');
     expect(verdict?.params).toEqual({ request_id: 'abcde', behavior: 'allow' });
-    const proposal = posts().find((p) => String(p.args.text).includes('Bash(git status:*)'));
+    const proposal = posts().find((p) => String(p.args.text).includes('Bash(git status)'));
     const add = (proposal?.args.blocks as { type: string; elements?: { action_id: string; value: string }[] }[])
       .find((b) => b.type === 'actions')
       ?.elements?.find((e) => e.action_id === 'rule_add');
@@ -925,12 +967,12 @@ describe('ターミナル画面と許可リスト（!screen / 今後も許可 / 
     h.socket.emit('interactive', blockAction('rule_add', add?.value ?? '', { container: { message_ts: '100.2' } }));
     await flush();
     await flush();
-    expect(JSON.parse(fs.readFileSync(path.join(dir, 'allow-extra.json'), 'utf8'))).toEqual({ allow: ['Bash(git status:*)'] });
+    expect(JSON.parse(fs.readFileSync(path.join(dir, 'allow-extra.json'), 'utf8'))).toEqual({ allow: ['Bash(git status)'] });
   });
 
   it('今後も許可: deny に当たるなら、今回は許可したうえで追加しない旨と当たった deny を知らせる', async () => {
-    // 候補は Bash(git log:*)。deny の Bash(git log --all:*) と範囲が重なる
-    await client_sendBash(h, 'git log -1');
+    // 候補は Bash(pwd)。deny の Bash(pwd -P:*) と範囲が重なる
+    await client_sendBash(h, 'pwd');
     h.web.calls.length = 0;
 
     h.socket.emit('interactive', blockAction('perm_always', 'abcde', { container: { message_ts: '100.1' } }));
@@ -940,7 +982,7 @@ describe('ターミナル画面と許可リスト（!screen / 今後も許可 / 
     const verdict = h.notifications.find((x) => x.method === 'notifications/claude/channel/permission');
     expect(verdict?.params).toEqual({ request_id: 'abcde', behavior: 'allow' });
     const notice = posts().find((p) => String(p.args.markdown_text).includes('deny に当たる'));
-    expect(String(notice?.args.markdown_text)).toContain('Bash(git log --all:*)');
+    expect(String(notice?.args.markdown_text)).toContain('Bash(pwd -P:*)');
     expect(fs.existsSync(path.join(dir, 'allow-extra.json'))).toBe(false);
   });
 
@@ -1310,12 +1352,21 @@ describe('このセッション中は全部許可', () => {
       .find((b) => b.type === 'actions')
       ?.elements?.map((e) => e.action_id) ?? [];
 
-  async function start(sessionAllowAll: boolean): Promise<void> {
+  /** managed: managed settings のファイルの中身（省略時はファイルを置かない） */
+  async function start(sessionAllowAll: boolean, managed?: string): Promise<void> {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'app-allowall-'));
     const settings = path.join(dir, 'settings.json');
     fs.writeFileSync(settings, JSON.stringify({ permissions: { ask: ['Bash(git push:*)'], deny: ['Bash(rm:*)', 'Read(.env)', 'Read(~/.ssh/**)'] } }));
+    const managedFile = path.join(dir, 'managed-settings.json');
+    if (managed !== undefined) fs.writeFileSync(managedFile, managed);
     hooks = path.join(dir, 'hooks.jsonl');
-    h = await startHarness(ACCESS, undefined, { denyFiles: [settings], sessionAllowAll, hookInboxFile: hooks, hookPollMs: 20 });
+    h = await startHarness(ACCESS, undefined, {
+      denyFiles: [settings],
+      managedSettingsFiles: () => [managedFile],
+      sessionAllowAll,
+      hookInboxFile: hooks,
+      hookPollMs: 20,
+    });
     // 自動許可の記録を出すスレッドを覚えさせる
     h.socket.emit('slack_event', dmEnvelope('作業して', { ts: '20.0' }));
     await flush();
@@ -1377,6 +1428,21 @@ describe('このセッション中は全部許可', () => {
     expect(verdicts()).toHaveLength(1);
     // git push は許可リストに足せないので、♾ も出さない
     expect(actionIds(posts()[0])).toEqual(['perm_allow', 'perm_deny']);
+  });
+
+  it('managed settings の ask に当たるものも、ボタンで聞く', async () => {
+    await start(true, JSON.stringify({ permissions: { ask: ['Bash(npm publish:*)'] } }));
+    await enableByButton();
+
+    await client_sendBash(h, 'cd pkg && npm publish', 'fghij');
+    expect(verdicts()).toHaveLength(1);
+    expect(actionIds(posts()[0])).toContain('perm_allow');
+  });
+
+  it('managed settings が読めない（JSON でない）ときは、全部許可のボタンを出さない', async () => {
+    await start(true, '{ broken');
+    await client_sendBash(h, 'git status');
+    expect(actionIds(posts()[0])).not.toContain('perm_session');
   });
 
   it('!lock で解除すると、またボタンで聞く', async () => {

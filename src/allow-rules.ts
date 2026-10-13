@@ -1,7 +1,8 @@
-// Slack から許可リスト（allow）にルールを恒久追加するための、ルールの生成・安全確認・保存。
+// チャットから許可リスト（allow）にルールを恒久追加するための、ルールの生成・安全確認・保存。
 // ルールは実行許可のリクエストの中身からだけ作り、自由な入力は受け付けない。
-// 作るのは決まった一覧（SHELL_RULE_ALLOWLIST など）に当てはまるものだけで、広すぎるもの・deny と重なるものも作らない
-// （Slack アカウントの乗っ取りで何でも無確認実行されるのを防ぐ）。
+// 作ってよいものを許可リストで決め（シェルは SHELL_RULE_ALLOWLIST）、それ以外・広すぎるもの・deny と重なるものは作らない
+// （チャットのアカウントの乗っ取りや注入された指示で、何でも無確認実行されるのを防ぐ）。
+// このファイルは claude-slack-channel と claude-discord-channel で同じ内容にしている（直すときは両方を直す）。
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -29,44 +30,52 @@ const PATH_TOOLS: ReadonlyMap<string, { ruleTool: 'Read' | 'Edit'; field: string
 ]);
 /** パスで照合されるルールのツール */
 const PATH_RULE_TOOLS = new Set(['read', 'edit']);
+/** フォルダー以下全部を指すパスのルールの末尾 */
+const PATH_RULE_SUFFIX = '/**';
 /** フォルダーの深さ（ドライブ・ルートの下の段数）がこれ未満なら、広すぎるので作らない（例: //c/dev は 1 段） */
 const MIN_DIR_DEPTH = 2;
 /** gitignore のパターンで特別な意味を持つ文字。含むパスからは作らない（エスケープの取り違えで範囲が変わるのを避ける） */
 const GLOB_CHARS_RE = /[*?[\]!#{}\\]/;
 /**
- * 「♾ 今後も許可」でルールにしてよいシェルのコマンド（許可リスト方式。ここに無いものは作らない）。
- * キーは先頭の語を normalizeCommandName で正規化した名前。値はサブコマンドの一覧で、undefined なら先頭の語だけのルールにする。
- * 引数でファイルの中身を読めない・書けない・コードを実行しないものだけを置く（docs/security.md の「今後も許可で作れるルール」と揃える）
+ * 「♾ 今後も許可」でルールにできるシェルのコマンド（許可リスト）。引数を取らない呼び出しの完全一致だけで、
+ * ルールは `Tool(<コマンド>)`（`:*` を付けない）にする。引数付きの呼び出し（`ls C:\x` など）からは作らない。
+ * 引数を問わない形にすると、`git log --output=<ファイル>`（書き込み）・`git branch -D`（ref の削除）・
+ * `Get-ChildItem Env:`（環境変数の中身）のように、引数で読み書きできてしまう。
+ * 入力の綴りは大文字小文字を除いてこの一覧と同じときだけ当てはめ、ルールにはこの一覧の綴りを使う。
+ * 一覧は docs/security.md にも書いてある（変えるときは両方を直す）
  */
-export const SHELL_RULE_ALLOWLIST: ReadonlyMap<string, readonly string[] | undefined> = new Map<string, readonly string[] | undefined>([
-  ['ls', undefined],
-  ['dir', undefined],
-  ['pwd', undefined],
-  ['get-location', undefined],
-  ['get-childitem', undefined],
-  ['git', ['status', 'log', 'branch']],
-]);
+export const SHELL_RULE_ALLOWLIST: readonly string[] = ['git status', 'pwd', 'Get-Location', 'ls', 'dir'];
+/** 先頭の語の末尾から剥がす実行ファイルの拡張子 */
+const EXECUTABLE_EXT_RE = /\.(?:exe|cmd|bat|com|ps1)$/;
+/** 先頭の語の末尾から剥がす版番号（`python3.12` の `3.12`、`pip3` の `3`） */
+const VERSION_SUFFIX_RE = /(?<=[a-z])\d+(?:\.\d+)*$/;
 /**
- * ツール全体のルールにしてよい MCP の個別ツールの、名前の先頭の動詞（読み取り専用と分かるもの）。
- * `mcp__<サーバー>__<ツール>` のツール名（サーバー名の接頭辞は外す）の先頭の英小文字の並びで照合する
+ * ツール全体を許すルールにしてよい MCP のツールの、名前の最初の語（読み取り専用と名前から分かるもの）。
+ * MCP の個別のツール（`mcp__<サーバー>__<ツール>`）だけが対象で、名前に MCP_WRITE_WORDS を含むものは除く
  */
 export const READ_ONLY_MCP_VERBS: ReadonlySet<string> = new Set(['get', 'list', 'read', 'search', 'find', 'describe', 'view', 'show']);
+/** 読み取りの動詞で始まっても、含んでいれば読み取り専用とみなさない語 */
+const MCP_WRITE_WORDS = new Set([
+  'create', 'update', 'delete', 'remove', 'write', 'set', 'add', 'put', 'post', 'send', 'edit', 'modify', 'move',
+  'rename', 'upload', 'download', 'install', 'run', 'exec', 'execute', 'push', 'merge', 'close', 'approve', 'replace',
+  'or', 'and',
+]);
+/** MCP の個別のツール名。1 つ目がサーバー名、2 つ目がツール名 */
+const MCP_TOOL_RE = /^mcp__([A-Za-z0-9-]+(?:_[A-Za-z0-9-]+)*)__([A-Za-z0-9_-]+)$/;
 /** WebFetch のルールにする URL のスキーム */
 const WEB_FETCH_PROTOCOLS = new Set(['http:', 'https:']);
-/** 先頭の語から剥がす実行ファイルの拡張子 */
-const COMMAND_EXT_RE = /\.(exe|cmd|bat|com|ps1)$/;
-/** 先頭の語の末尾の版番号（`python3.12` の `3.12`）。英字の直後の数字だけを剥がす */
-const COMMAND_VERSION_RE = /(?<=[a-z])\d+(\.\d+)*$/;
-/** 複数のコマンドをつなぐ・リダイレクトする記号 */
-const COMPOUND_RE = /&&|\|\||[;|<>`\n\r]|\$\(|&\s*$|^\s*&/;
-
+/** WebFetch のルールにするホスト名の形（`*` を含むもの・IPv6 の `[::1]` などは作らない） */
+const WEB_FETCH_HOST_RE = /^[a-z0-9.-]+$/;
+const WEB_FETCH_DOMAIN_PREFIX = 'domain:';
 /**
- * コマンドの先頭の語を、判定に使う 1 つの名前にする。小文字にし、末尾の `.exe` `.cmd` `.bat` `.com` `.ps1` と版番号を剥がす
- * （例: `Git.EXE` → `git`、`python3.12` → `python`、`npm.cmd` → `npm`）
+ * シェルのコマンドを部分に分ける区切り（`;` `&&` `||` `|` `&` 改行 `$(` バッククォート）。
+ * 「全部許可」の ask との照合（session-allow.ts）と、ルールを作らない複合コマンドの判定の両方で使う
  */
-export function normalizeCommandName(word: string): string {
-  return word.toLowerCase().replace(COMMAND_EXT_RE, '').replace(COMMAND_VERSION_RE, '');
-}
+export const COMMAND_SEPARATOR_RE = /&&|\|\||[;|&\n\r`]|\$\(/;
+/** リダイレクトの記号 */
+const REDIRECT_RE = /[<>]/;
+/** Tool / Tool(中身) の形のルール */
+const RULE_RE = /^([A-Za-z][\w-]*)(?:\((.*)\))?$/;
 
 export type RuleResult =
   | { ok: true; rule: string; tool: string; prefix: string | undefined }
@@ -90,6 +99,11 @@ function commandOf(req: PermissionRequest): string | undefined {
   return inputField(req, 'command');
 }
 
+/** 複数のコマンドをつなぐ・リダイレクトするコマンドか */
+export function isCompoundCommand(command: string): boolean {
+  return COMMAND_SEPARATOR_RE.test(command) || REDIRECT_RE.test(command);
+}
+
 /**
  * 絶対パスを、Claude Code の permission rule の形（POSIX 形式・`//` 始まり）にする。
  * Windows の `C:\\dev\\foo` は `//c/dev/foo`、POSIX の `/home/a` は `//home/a`。絶対パスでなければ undefined
@@ -109,6 +123,21 @@ function segmentsOf(rulePath: string): string[] {
   return rulePath.replace(/^\/\//, '').split('/').filter((x) => x !== '');
 }
 
+/**
+ * ルール用のフォルダー（`//c/dev/foo`）が、ルールにしてよい範囲か。よければ undefined、だめなら理由。
+ * windowsDrive: 最初の段がドライブ名か（深さの数え方が変わる。//c/dev/foo は 2 段）
+ */
+function ruleDirProblem(dir: string, windowsDrive: boolean, home: string): string | undefined {
+  if (GLOB_CHARS_RE.test(dir.slice(2))) return 'パスに特殊な文字を含む';
+  const segments = segmentsOf(dir);
+  if (segments.some((seg) => seg === '..' || seg === '.')) return 'パスに .. や . を含む';
+  const depth = windowsDrive ? segments.length - 1 : segments.length;
+  if (depth < MIN_DIR_DEPTH) return 'フォルダーが浅すぎる（広すぎる）';
+  const homeRule = toRulePath(home);
+  if (homeRule && isSameOrAncestor(dir, homeRule)) return 'ホームフォルダーかその親は広すぎる';
+  return undefined;
+}
+
 /** パスを取るツールのリクエストから、対象のフォルダー以下に絞ったルールを作る */
 function derivePathRule(req: PermissionRequest, spec: { ruleTool: 'Read' | 'Edit'; field: string; isDir: boolean }, home: string): RuleResult {
   const raw = inputField(req, spec.field);
@@ -120,17 +149,9 @@ function derivePathRule(req: PermissionRequest, spec: { ruleTool: 'Read' | 'Edit
   const target = spec.isDir ? raw : /^[A-Za-z]:/.test(raw) ? path.win32.dirname(raw) : path.posix.dirname(raw);
   const dir = toRulePath(target);
   if (!dir) return { ok: false, reason: `絶対パスでないので作らない: ${raw}` };
-  if (GLOB_CHARS_RE.test(dir.slice(2))) return { ok: false, reason: `パスに特殊な文字を含むので作らない: ${raw}` };
-
-  const segments = segmentsOf(dir);
-  // Windows はドライブ名の段を除いて数える（//c/dev/foo は 2 段）
-  const depth = /^[a-z]$/.test(segments[0] ?? '') && /^[A-Za-z]:/.test(target) ? segments.length - 1 : segments.length;
-  if (depth < MIN_DIR_DEPTH) return { ok: false, reason: `フォルダーが浅すぎる（広すぎる）ので作らない: ${raw}` };
-  const homeRule = toRulePath(home);
-  if (homeRule && isSameOrAncestor(dir, homeRule)) {
-    return { ok: false, reason: `ホームフォルダーかその親は広すぎるので作らない: ${raw}` };
-  }
-  const pattern = `${dir}/**`;
+  const problem = ruleDirProblem(dir, /^[A-Za-z]:/.test(target), home);
+  if (problem) return { ok: false, reason: `${problem}ので作らない: ${raw}` };
+  const pattern = `${dir}${PATH_RULE_SUFFIX}`;
   return { ok: true, rule: `${spec.ruleTool}(${pattern})`, tool: spec.ruleTool, prefix: pattern };
 }
 
@@ -141,34 +162,35 @@ export function isSameOrAncestor(a: string, b: string): boolean {
   return x.length <= y.length && x.every((seg, i) => seg === y[i]);
 }
 
-/** シェルのリクエストから、SHELL_RULE_ALLOWLIST にあるコマンドだけ `Tool(prefix:*)` を作る */
-function deriveShellRule(req: PermissionRequest, tool: string): RuleResult {
-  const command = commandOf(req)?.trim();
-  if (!command) return { ok: false, reason: 'コマンドを読み取れなかった（入力が省略されている可能性）' };
-  if (COMPOUND_RE.test(command)) return { ok: false, reason: '複数のコマンドをつないだ・リダイレクトを含むコマンドからは作らない' };
+/**
+ * シェルのコマンドの先頭の語を、照合に使う 1 つの名前にする。
+ * 小文字にし、末尾の実行ファイルの拡張子（`.exe` `.cmd` `.bat` `.com` `.ps1`）と版番号を剥がす（`Python3.12.EXE` → `python`）
+ */
+export function normalizeCommandName(word: string): string {
+  return word.toLowerCase().replace(EXECUTABLE_EXT_RE, '').replace(VERSION_SUFFIX_RE, '');
+}
 
-  const words = command.split(/\s+/);
-  const first = words[0] ?? '';
-  if (!/^[A-Za-z][\w.-]*$/.test(first)) {
-    return { ok: false, reason: `コマンド名が想定外の形: ${first}` };
-  }
-  const name = normalizeCommandName(first);
-  if (!SHELL_RULE_ALLOWLIST.has(name)) {
-    return { ok: false, reason: `許可リストに追加できるコマンドではない: ${first}` };
-  }
-  const subcommands = SHELL_RULE_ALLOWLIST.get(name);
-  if (subcommands === undefined) return { ok: true, rule: `${tool}(${first}:*)`, tool, prefix: first };
-
-  const second = words[1];
-  if (second === undefined || !subcommands.includes(second)) {
-    return { ok: false, reason: `許可リストに追加できるサブコマンドではない: ${first} ${second ?? ''}（追加できるのは ${subcommands.join(' / ')}）`.trim() };
-  }
-  const prefix = `${first} ${second}`;
-  return { ok: true, rule: `${tool}(${prefix}:*)`, tool, prefix };
+/**
+ * MCP の個別のツールで、名前から読み取り専用と分かるか（`mcp__github__get_issue` など）。
+ * ツール名を snake_case・kebab-case・camelCase の語に分け、最初の語が READ_ONLY_MCP_VERBS にあり、MCP_WRITE_WORDS の語を
+ * 含まないものだけ。ツール名の頭にサーバー名が付いていれば外して見る（`mcp__excel__excel_read_sheet` は `read_sheet`）
+ */
+export function isReadOnlyMcpTool(tool: string): boolean {
+  const m = MCP_TOOL_RE.exec(tool);
+  if (!m) return false;
+  const server = (m[1] ?? '').toLowerCase();
+  const name = m[2] ?? '';
+  const withoutServer = name.toLowerCase().startsWith(`${server}_`) ? name.slice(server.length + 1) : name;
+  const words = withoutServer
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .toLowerCase()
+    .split(/[_-]+/)
+    .filter((w) => w !== '');
+  return READ_ONLY_MCP_VERBS.has(words[0] ?? '') && !words.some((w) => MCP_WRITE_WORDS.has(w));
 }
 
 /** WebFetch のリクエストから、URL のホストに絞った `WebFetch(domain:<ホスト>)` を作る */
-function deriveWebFetchRule(req: PermissionRequest, tool: string): RuleResult {
+function deriveWebFetchRule(req: PermissionRequest): RuleResult {
   const raw = inputField(req, 'url');
   let url: URL;
   try {
@@ -177,32 +199,35 @@ function deriveWebFetchRule(req: PermissionRequest, tool: string): RuleResult {
     return { ok: false, reason: 'URL を読み取れなかった（入力が省略されている可能性）' };
   }
   const host = url.hostname.toLowerCase();
-  if (!WEB_FETCH_PROTOCOLS.has(url.protocol) || !/^[a-z0-9.-]+$/.test(host)) {
+  if (!WEB_FETCH_PROTOCOLS.has(url.protocol) || !WEB_FETCH_HOST_RE.test(host)) {
     return { ok: false, reason: `URL のホストが想定外の形: ${raw ?? ''}` };
   }
-  const prefix = `domain:${host}`;
-  return { ok: true, rule: `${tool}(${prefix})`, tool, prefix };
+  const prefix = `${WEB_FETCH_DOMAIN_PREFIX}${host}`;
+  return { ok: true, rule: `WebFetch(${prefix})`, tool: 'WebFetch', prefix };
 }
 
-/** `mcp__<サーバー>__<ツール>` のうち、名前の先頭の動詞が READ_ONLY_MCP_VERBS にあるものか */
-export function isReadOnlyMcpTool(tool: string): boolean {
-  const m = /^mcp__(.+?)__(.+)$/.exec(tool);
-  if (!m) return false;
-  const server = m[1] ?? '';
-  const name = m[2] ?? '';
-  const withoutServer = name.toLowerCase().startsWith(`${server.toLowerCase()}_`) ? name.slice(server.length + 1) : name;
-  const verb = /^[a-z]+/.exec(withoutServer)?.[0];
-  return verb !== undefined && READ_ONLY_MCP_VERBS.has(verb);
+/** Bash / PowerShell のリクエストから、許可リスト（SHELL_RULE_ALLOWLIST）のコマンドと引数なしで一致するものだけルールを作る */
+function deriveShellRule(req: PermissionRequest, tool: string): RuleResult {
+  const command = commandOf(req)?.trim();
+  if (!command) return { ok: false, reason: 'コマンドを読み取れなかった（入力が省略されている可能性）' };
+  if (isCompoundCommand(command)) return { ok: false, reason: '複数のコマンドをつないだ・リダイレクトを含むコマンドからは作らない' };
+
+  const words = command.split(/\s+/).join(' ').toLowerCase();
+  const entry = SHELL_RULE_ALLOWLIST.find((e) => e.toLowerCase() === words);
+  if (!entry) {
+    return { ok: false, reason: `許可リストのコマンドを引数なしで呼んだものではないので作らない（作れるのは ${SHELL_RULE_ALLOWLIST.join(' / ')}）` };
+  }
+  return { ok: true, rule: `${tool}(${entry})`, tool, prefix: entry };
 }
 
 /**
  * 実行許可のリクエストから、許可リストに足すルールの候補を作る（許可リスト方式。当てはまらなければ作らない）。
- * - Bash / PowerShell: SHELL_RULE_ALLOWLIST の先頭の語（＋サブコマンド）だけ `Tool(prefix:*)` にする。複合コマンドからは作らない
+ * - Bash / PowerShell: SHELL_RULE_ALLOWLIST のコマンドを引数なしで呼んだものだけ、完全一致の `Tool(<コマンド>)` にする
  * - Read / Grep / Glob: 対象のフォルダー以下の `Read(//c/dev/foo/**)`
  * - Edit / Write / MultiEdit / NotebookEdit: 対象のフォルダー以下の `Edit(//c/dev/foo/**)`
  *   （浅すぎるフォルダー・ホームとその親・特殊な文字を含むパス・相対パスからは作らない）
  * - WebFetch: URL のホストに絞った `WebFetch(domain:example.com)`
- * - MCP の個別ツール: 名前から読み取り専用と分かるもの（isReadOnlyMcpTool）だけ、ツール名だけのルール
+ * - MCP の個別のツールで、名前から読み取り専用と分かるもの（isReadOnlyMcpTool）: ツール名だけのルール
  * - それ以外: 作らない
  * 作れないものは ok: false。deny との照合はここではしない（proposeRule）。
  */
@@ -212,9 +237,59 @@ export function deriveRule(req: PermissionRequest, home: string = os.homedir()):
   const pathSpec = PATH_TOOLS.get(tool);
   if (pathSpec) return derivePathRule(req, pathSpec, home);
   if (SHELL_TOOLS.has(tool)) return deriveShellRule(req, tool);
-  if (tool === 'WebFetch') return deriveWebFetchRule(req, tool);
+  if (tool === 'WebFetch') return deriveWebFetchRule(req);
   if (isReadOnlyMcpTool(tool)) return { ok: true, rule: tool, tool, prefix: undefined };
-  return { ok: false, reason: `このツールは許可リストに追加できない: ${tool}` };
+  return { ok: false, reason: `ツール全体を許すルールは、読み取り専用と分かる MCP のツールにだけ作る: ${tool}` };
+}
+
+/**
+ * 保存済みのルール（allow-extra.json）が、今の方式（deriveRule）で作れる形か。
+ * 前の方式で足したもの（`Bash(git log:*)`・`PowerShell(npm.cmd:*)`・ツール全体の `WebFetch`・書き込みを含む MCP のツールなど）は false
+ */
+export function isDerivableRule(rule: string, home: string = os.homedir()): boolean {
+  const m = RULE_RE.exec(rule);
+  if (!m) return false;
+  const tool = m[1] ?? '';
+  const body = m[2];
+  if (SHELL_TOOLS.has(tool)) return body !== undefined && SHELL_RULE_ALLOWLIST.includes(body);
+  if (tool === 'Read' || tool === 'Edit') {
+    if (body === undefined || !body.startsWith('//') || !body.endsWith(PATH_RULE_SUFFIX)) return false;
+    const dir = body.slice(0, -PATH_RULE_SUFFIX.length);
+    // toRulePath が作る形（区切りの重なりや末尾の区切りが無い）だけを受け付ける
+    if (`//${segmentsOf(dir).join('/')}` !== dir) return false;
+    return ruleDirProblem(dir, /^[a-z]$/.test(segmentsOf(dir)[0] ?? ''), home) === undefined;
+  }
+  if (tool === 'WebFetch') {
+    return body !== undefined && body.startsWith(WEB_FETCH_DOMAIN_PREFIX) && WEB_FETCH_HOST_RE.test(body.slice(WEB_FETCH_DOMAIN_PREFIX.length));
+  }
+  return body === undefined && isReadOnlyMcpTool(tool);
+}
+
+/** 保存済みのルールを、今の方式で作れるもの（usable）と作れないもの（rejected）に分ける。順番は保つ */
+export function partitionStoredRules(rules: readonly string[], home: string = os.homedir()): { usable: string[]; rejected: string[] } {
+  const usable: string[] = [];
+  const rejected: string[] = [];
+  for (const rule of rules) (isDerivableRule(rule, home) ? usable : rejected).push(rule);
+  return { usable, rejected };
+}
+
+/** 起動の知らせに並べる、作れないルールの件数の上限（超えた分は件数だけ書く） */
+const REJECTED_LIST_MAX = 20;
+
+/**
+ * 保存済みのルールのうち、今の方式では作れないもの（rejected）を知らせる文。無ければ undefined。
+ * 起動スクリプトはこれらを allow に入れない（allow-extra.json は書き換えない）
+ */
+export function buildRejectedRulesText(rejected: readonly string[]): string | undefined {
+  if (rejected.length === 0) return undefined;
+  const listed = rejected.slice(0, REJECTED_LIST_MAX).map((rule) => `• ${rule}`);
+  const more = rejected.length > REJECTED_LIST_MAX ? [`（ほか ${rejected.length - REJECTED_LIST_MAX} 件）`] : [];
+  return [
+    `⚠️ allow-extra.json に、今の「今後も許可」の方式では作れないルールが ${rejected.length} 件ある。` +
+      'このセッションの allow には入れていない（ファイルはそのまま）。要らなければ !rules から消す',
+    ...listed,
+    ...more,
+  ].join('\n');
 }
 
 interface ParsedRule {
@@ -226,14 +301,14 @@ interface ParsedRule {
 }
 
 function parseRule(rule: string): ParsedRule | undefined {
-  const m = /^([A-Za-z][\w-]*)(?:\((.*)\))?$/.exec(rule.trim());
+  const m = RULE_RE.exec(rule.trim());
   if (!m) return undefined;
   const raw = m[2]?.trim();
   const body = raw?.replace(/:\*$|\*$/, '').trim();
   return { tool: m[1] ?? '', body: body === '' ? undefined : body, raw: raw === '' ? undefined : raw };
 }
 
-/** 保存済みの候補（`Bash(git status:*)` / `WebFetch`）を denyOverlaps に渡せる形に戻す */
+/** 保存済みの候補（`Bash(git status)` / `WebFetch(domain:example.com)`）を denyOverlaps に渡せる形に戻す */
 export function parseRuleForCheck(rule: string): { tool: string; prefix: string | undefined } | undefined {
   const parsed = parseRule(rule);
   if (!parsed) return undefined;
@@ -356,6 +431,41 @@ export function readAsk(file: string): string[] {
   return stringsOf((readJson(file) as { permissions?: { ask?: unknown } } | undefined)?.permissions?.ask);
 }
 
+/**
+ * managed settings（組織の管理設定）の置き場所の候補（Claude Code の仕様。OS ごと）。どれも、在れば読む。
+ * Windows の `C:\ProgramData\ClaudeCode` は古い版の置き場所（版ごとの置き場所は未確認なので、両方を読む）
+ */
+const MANAGED_SETTINGS_DIRS: Partial<Record<NodeJS.Platform, readonly string[]>> = {
+  win32: ['C:\\Program Files\\ClaudeCode', 'C:\\ProgramData\\ClaudeCode'],
+  darwin: ['/Library/Application Support/ClaudeCode'],
+  linux: ['/etc/claude-code'],
+};
+const MANAGED_SETTINGS_FILE = 'managed-settings.json';
+/** managed-settings.json に重ねるファイルを置くフォルダー（中の *.json を名前順に読む） */
+const MANAGED_SETTINGS_DROPIN_DIR = 'managed-settings.d';
+
+/**
+ * managed settings のファイルの一覧（フォルダーごとに managed-settings.json と managed-settings.d の *.json）。
+ * 無いファイル・フォルダーは readAsk / readDeny が空として扱う。managed-settings.d が読めない（ENOENT 以外）ときは投げる。
+ * レジストリやサーバーから配る managed settings は読まない
+ */
+export function managedSettingsFiles(dirs: readonly string[] = MANAGED_SETTINGS_DIRS[process.platform] ?? []): string[] {
+  return dirs.flatMap((dir) => {
+    const dropInDir = path.join(dir, MANAGED_SETTINGS_DROPIN_DIR);
+    let dropIns: string[];
+    try {
+      dropIns = fs
+        .readdirSync(dropInDir)
+        .filter((name) => name.endsWith('.json') && !name.startsWith('.'))
+        .sort();
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error(`${dropInDir} を読めない: ${errMessage(e)}`, { cause: e });
+      dropIns = [];
+    }
+    return [path.join(dir, MANAGED_SETTINGS_FILE), ...dropIns.map((name) => path.join(dropInDir, name))];
+  });
+}
+
 /** 追加分のルール（状態ディレクトリの allow-extra.json）。start.ps1 が起動時に channel-settings.json の allow へ足す */
 export class AllowRuleStore {
   private readonly file: string;
@@ -373,6 +483,11 @@ export class AllowRuleStore {
     }
   }
 
+  /** 保存済みのルール。ファイルが無ければ空、読めない・JSON でなければ投げる */
+  read(): string[] {
+    return stringsOf((readJson(this.file) as { allow?: unknown } | undefined)?.allow);
+  }
+
   /** 追加する。既にあれば false。ファイルが読めない・JSON でなければ投げる（既存のルールを消さないため） */
   add(rule: string): boolean {
     const rules = this.read();
@@ -387,11 +502,6 @@ export class AllowRuleStore {
     if (!rules.includes(rule)) return false;
     this.write(rules.filter((r) => r !== rule));
     return true;
-  }
-
-  /** ファイルが無ければ空、読めない・JSON でなければ投げる */
-  private read(): string[] {
-    return stringsOf((readJson(this.file) as { allow?: unknown } | undefined)?.allow);
   }
 
   private write(rules: string[]): void {

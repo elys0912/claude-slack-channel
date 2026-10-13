@@ -65,6 +65,7 @@ GitHub Actions（`.github/workflows/ci.yml`）は、main への push と pull re
 | `src/screen.ts` | 画面のテキストから選択画面を取り出す（純関数） |
 | `src/screen-relay.ts` | `!screen` と選択肢ボタンの処理 |
 | `src/allow-rules.ts` | 「今後も許可」のルールの生成（作ってよいものの一覧）、deny との照合、保存 |
+| `src/allow-extra-check.ts` | 起動スクリプトから呼ぶコマンド。`allow-extra.json` のルールを、今の方式で作れるものと作れないものに分けて JSON で返す |
 | `src/rule-relay.ts` | 「今後も許可」の提案・確認と、`!rules` の処理 |
 | `src/home.ts` | ホームタブの画面の組み立て（純関数） |
 | `src/blocks.ts` | Slack の Block Kit の小さな部品（section、ボタンの文字数の上限） |

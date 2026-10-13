@@ -18,7 +18,7 @@ import { MS_PER_MINUTE, ResponseWatchdog, buildNoResponseText } from './watchdog
 import type { ConsoleAccess } from './console.js';
 import { ScreenRelay, noticeBlocks } from './screen-relay.js';
 import { RuleRelay } from './rule-relay.js';
-import { AllowRuleStore, readAsk, readDeny } from './allow-rules.js';
+import { AllowRuleStore, buildRejectedRulesText, partitionStoredRules, readAsk, readDeny } from './allow-rules.js';
 import { SessionAllowAll } from './session-allow.js';
 import { buildForbiddenHomeView, buildHomeView } from './home.js';
 import type { HomeCustom } from './home.js';
@@ -451,8 +451,10 @@ export interface BridgeAppOptions {
   restartFlagFile?: string | undefined;
   /** `!restart force` で claude.exe を止める手段（テスト用。省略時は taskkill でプロセスツリーごと止める） */
   killParent?: SessionControlOptions['killParent'];
-  /** 実行許可に「このセッション中は全部許可」ボタンを出すか（.env の SESSION_ALLOW_ALL）。除外する ask は denyFiles から読む */
+  /** 実行許可に「このセッション中は全部許可」ボタンを出すか（.env の SESSION_ALLOW_ALL）。除外する ask は denyFiles と managedSettingsFiles から読む */
   sessionAllowAll?: boolean | undefined;
+  /** managed settings（組織の管理設定）のファイルの一覧を返す。全部許可で除外する ask に加える。省略時は読まない（テスト用） */
+  managedSettingsFiles?: (() => string[]) | undefined;
 }
 
 /**
@@ -529,7 +531,8 @@ export async function startBridgeApp(opts: BridgeAppOptions): Promise<RunningApp
   });
   const sessionAllow = opts.sessionAllowAll
     ? // deny に当たる操作は Claude Code が確認を出す前に止めるので、照合するのは ask だけ
-      new SessionAllowAll(() => (opts.denyFiles ?? []).flatMap((f) => readAsk(f)))
+      // managed の ask も、--settings より優先して Claude Code が確認を求めるので照合する
+      new SessionAllowAll(() => [...(opts.denyFiles ?? []), ...(opts.managedSettingsFiles?.() ?? [])].flatMap((f) => readAsk(f)))
     : undefined;
   const relay: PermissionRelay = new PermissionRelay(bridge, server, logger, undefined, sessionAllow);
   const startedAt = new Date();
@@ -615,9 +618,23 @@ export async function startBridgeApp(opts: BridgeAppOptions): Promise<RunningApp
   logger.info('Slack ブリッジ稼働中');
   // 起動の途中で終了処理（stdin の終了など）が始まっていたら、それ以上は始めない（止めた後に投稿やタイマーを残さない）
   if (stopped === undefined) await publishHomeAll(true, startedAt);
+  if (stopped === undefined && ruleStore) await noticeRejectedRules(ruleStore, notice, logger);
   if (stopped === undefined) await inbox?.start();
 
   return { stop };
+}
+
+/**
+ * allow-extra.json のうち、今の方式では作れないルール（前の方式で足したもの）を知らせる。
+ * start.ps1 はこれらを allow に入れていない（dist/src/allow-extra-check.js と同じ判定）
+ */
+async function noticeRejectedRules(store: AllowRuleStore, notice: NoticePoster, logger: Logger): Promise<void> {
+  const { rejected } = partitionStoredRules(store.list());
+  const text = buildRejectedRulesText(rejected);
+  if (text === undefined) return;
+  logger.warn(`今の方式では作れない保存済みのルール ${rejected.length} 件を allow に入れていない: ${rejected.join(', ')}`);
+  process.stderr.write(`[slackbridge] ${text}\n`);
+  await notice.post(text);
 }
 
 export interface DegradedAppOptions {

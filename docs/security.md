@@ -45,7 +45,7 @@ Slack のセッションは `--strict-mcp-config` なので、この登録は読
 ### [config/channel-settings.json](../config/channel-settings.json)
 
 - **allow**: プロジェクトの中の読み取り（`Read(./**)`）、このサーバーの3つのツール。
-  `Glob` / `Grep` はツール全体を allow に入れていない。`path` でプロジェクトの外を指せるため。`Read(./**)` が Glob / Grep にも効くので、プロジェクトの中なら確認なしで使える（外を指したときは確認が出る）。
+  `Glob` / `Grep` はツール全体を allow に入れていない。`path` でプロジェクトの外を指せるため。実機（Claude Code 2.1.295 の `-p`、2026-10-13）では、`path` 無しと作業フォルダーの中の Glob / Grep は確認なしで通り、外を指したときは確認が出た（`path` 無しは作業フォルダーの読み取りとして扱われ、`Read(./**)` が無くても通った）。
   git コマンドは `git status` も allow に入れていない。`git diff --no-index` などで、プロジェクトの外のファイルを読めるため。
 - **deny**:
   - 読み取りの禁止（`Read(...)`）
@@ -72,19 +72,26 @@ deny は常に allow より優先される（評価順は deny → ask → allow
 
 | ツール | 作るルール | 条件 |
 |---|---|---|
-| Bash / PowerShell | `Tool(<先頭の語>:*)` | 先頭の語が `ls` / `dir` / `pwd` / `Get-Location` / `Get-ChildItem` |
-| Bash / PowerShell | `Tool(git <サブコマンド>:*)` | `git status` / `git log` / `git branch` |
+| Bash / PowerShell | `Tool(<コマンド>)`（`:*` を付けない完全一致） | 引数を付けずに `git status` / `pwd` / `Get-Location` / `ls` / `dir` を呼んだとき |
 | Read / Grep / Glob | `Read(<フォルダー>/**)` | 対象のフォルダー以下（浅すぎる・ホームとその親・相対パス・特殊文字を含むものは作らない） |
 | Edit / Write / MultiEdit / NotebookEdit | `Edit(<フォルダー>/**)` | 同上 |
-| WebFetch | `WebFetch(domain:<ホスト>)` | URL のホストに絞る。ツール全体の `WebFetch` は作らない |
-| MCP の個別ツール | `mcp__<サーバー>__<ツール>` | ツール名（サーバー名の接頭辞を除く）の先頭の動詞が `get` / `list` / `read` / `search` / `find` / `describe` / `view` / `show` |
+| WebFetch | `WebFetch(domain:<ホスト>)` | URL のホストに絞る。ホストが英小文字・数字・`.`・`-` だけのとき（`*.example.com` や IPv6 の `[::1]` からは作らない）。ツール全体の `WebFetch` は作らない |
+| MCP の個別ツール | `mcp__<サーバー>__<ツール>` | ツール名（頭にサーバー名が付いていれば除く）を語に分け、最初の語が `get` / `list` / `read` / `search` / `find` / `describe` / `view` / `show` で、`create` / `delete` / `send` / `download` / `replace` / `or` / `and` などの書き込みの語を含まないもの |
 
-- シェルのコマンドは、引数でファイルの中身を読めない・書けない・コードを実行しないものだけを置く。
-  `cat` / `type` / `Get-Content` / `git diff` / `git show` などの読み取りは、プロジェクトの外や deny のファイル（`.env` など）を読めるので置かない。
-  Claude Code の `Read` の deny は、シェルの子プロセスには効かない前提で扱う。
-- 先頭の語は、小文字にし、末尾の `.exe` / `.cmd` / `.bat` / `.com` / `.ps1` と版番号（`python3.12` の `3.12`）を剥がした名前で一覧と照らす。ルールには入力どおりの語を使う（例: `git.exe status` なら `Bash(git.exe status:*)`）。
-- 複合コマンド（`;` / `&&` / `||` / `|` / 改行 / `$(` / バッククォート）とリダイレクトを含むものからは作らない。
+- シェルのルールは、引数を取らない呼び出しの完全一致だけにする。`Bash(git status)` は `git status` そのものにだけ効き、`git status --short` には効かない。
+  引数付きの呼び出し（`ls C:\x` など）の確認には ♾ を出さない。引数を問わない形（`:*`）にすると、一覧のコマンドでも引数で読み書きできるため。
+  - `git log` は `--output=<ファイル>` で任意のファイルを書き、`-p` / `--all` で過去に commit されたファイル（作業ツリーでは deny の `.env` など）の中身を出す。`--ext-diff` / `--textconv` で設定済みの外部プログラムも動かす。
+  - `git branch` は `-D` / `-m` / `-f` などで ref を消す・動かし、名前だけの引数でブランチを作り、`--edit-description` でエディタを起動する。
+  - `Get-ChildItem` / `ls` / `dir` は、PowerShell では `Env:` などのドライブ（環境変数の中身）や UNC（外部の共有への接続）を引数に取れる。
+  - このため `git log` / `git branch` / `Get-ChildItem` は一覧から外し、`ls` / `dir` は引数なしだけにした。
+  - `cat` / `type` / `Get-Content` / `git diff` / `git show` などの読み取りは、プロジェクトの外や deny のファイル（`.env` など）を読めるので置かない。
+    Claude Code の `Read` の deny は、シェルの子プロセスには効かない前提で扱う。
+- 入力の綴りが、大文字小文字を除いて一覧と同じときだけ作り、ルールには一覧の綴りを使う（`GIT Status` からは `Bash(git status)`）。
+  拡張子や版番号の付いた名前（`git.exe` / `ls.cmd` / `dir2`）、引用符やパスの付いた名前からは作らない。一覧に無い別のプログラムにルールができないようにするため。
+- 複合コマンド（`;` / `&&` / `||` / `|` / `&` / 改行 / `$(` / バッククォート）とリダイレクト（`<` / `>`）を含むものからは作らない。区切りは「全部許可」の ask との照合と同じ定義を使う。
 - 作ったルールは、deny と照合してから追加する（[使い方の詳細](usage.md#許可リストへの追加-今後も許可)）。
+- 前の方式で `allow-extra.json` に入ったルール（`Bash(git log:*)`・`PowerShell(npm.cmd:*)`・ツール全体の `WebFetch` など）は、起動のたびに今の方式で作れる形かを確かめ、作れないものは allow に入れない。
+  `allow-extra.json` は書き換えず、起動の通知（Slack）とターミナルの警告で一覧を知らせる。要らなければ `!rules` から消す。
 
 > **制限**: `Bash(git push --force:*)` の deny は、`sh -c 'git push --force ...'` のような間接的な呼び出しまでは塞がない（Claude Code のパターン照合の既知の制限）。
 > `sh -c` 自体は確認待ちになるが、確認で許可すれば実行される。確認の中身はよく読む。
@@ -112,8 +119,8 @@ deny は常に allow より優先される（評価順は deny → ask → allow
 
 - 許可ユーザーの Slack アカウントが乗っ取られると、手元の Claude をそのまま操作される。
 - 確認で許可した操作は、その内容どおりに実行される。確認の内容はよく読む。
-- 「今後も許可」で足したルールは、以後そのプレフィックスのコマンドを確認なしで実行させる（例: `Bash(git status:*)` は、`git status` に続く引数を問わない）。
-  作れるルールは上の一覧に絞っているが、要らなくなったら `!rules` から消す。
+- 「今後も許可」で足したルールは、以後その操作を確認なしで実行させる。シェルのルールは引数なしの完全一致だけだが、`git status` も `core.fsmonitor` などのリポジトリの設定にあるプログラムを動かす（その設定を書き換えられていることが前提）。
+  要らなくなったら `!rules` から消す。
 - 「今後も許可」の MCP のツールは、名前だけで読み取り専用と判断する。名前と中身が違うサーバー（`get_` で外部に送るものなど）は見分けられない。
 - `extra-mcp.json` に登録した MCP サーバーのツールは、確認なしで実行される。
 - `!screen` の選択肢ボタンで、ターミナルの選択画面に Slack から答えられる（信頼の確認などの画面も含む）。

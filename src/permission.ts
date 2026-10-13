@@ -226,7 +226,7 @@ export function buildPermissionBlocks(
   /** 「このセッション中は全部許可」ボタンを付けるか */
   sessionButton = false,
   /** 「♾ 今後も許可」ボタンを付けるか（許可リストに足せるルールを作れるリクエストだけ） */
-  alwaysButton = true
+  alwaysButton = false
 ): { text: string; blocks: unknown[]; truncated: boolean } {
   const toolLabel = 'Tool: ';
   const toolNameResult = truncatePlain(orPlaceholder(req.tool_name, '(不明なツール)'), PLAIN_TEXT_LIMIT - toolLabel.length);

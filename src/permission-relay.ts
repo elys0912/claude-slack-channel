@@ -112,12 +112,10 @@ export class PermissionRelay {
     this.pending.add(req);
     this.startExpiryTimer(req.request_id);
 
-    const { text, blocks } = buildPermissionBlocks(
-      req,
-      undefined,
-      this.sessionAllow !== undefined && this.sessionAllow.current === undefined,
-      deriveRule(req).ok
-    );
+    // 自動許可から外す ask を読めないときは、全部許可のボタンを出さない
+    const sessionButton = this.sessionAllow !== undefined && this.sessionAllow.current === undefined && this.sessionAllow.available();
+    // 許可リストに足せるルールを作れないリクエストには「今後も許可」を出さない（その場の 1 回の許可だけにする）
+    const { text, blocks } = buildPermissionBlocks(req, undefined, sessionButton, deriveRule(req).ok);
     if (await this.replyToLastThread(req, text, blocks)) return;
 
     let results: MessageRef[] = [];

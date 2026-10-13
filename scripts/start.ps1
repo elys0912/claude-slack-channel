@@ -46,6 +46,7 @@ $DevChannelDialogTimeoutSec = 90
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $mainJs = Join-Path $repoRoot 'dist\src\main.js'
+$allowExtraCheckJs = Join-Path $repoRoot 'dist\src\allow-extra-check.js'
 $projectList = Join-Path $repoRoot 'config\projects.json'
 $settingsFile = if (-not $SettingsFile) {
     Join-Path $repoRoot 'config\channel-settings.json'
@@ -73,9 +74,9 @@ $sessionName = Split-Path -Leaf $stateDir
 
 # dist が無ければビルドする（clone 直後に start.cmd だけ叩いても動くように）
 function Confirm-Built {
-    if (Test-Path $mainJs) { return }
+    if ((Test-Path $mainJs) -and (Test-Path $allowExtraCheckJs)) { return }
 
-    Write-Host "[start] dist/src/main.js が無いので npm run build を実行する"
+    Write-Host "[start] dist/src/main.js か dist/src/allow-extra-check.js が無いので npm run build を実行する"
     if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
         Write-Error "npm が見つからない。Node.js をインストールしてから再実行して。"
         exit 1
@@ -199,19 +200,12 @@ function Read-ExtraMcpServers {
 }
 
 # Slack の「今後も許可」で足したルール（状態ディレクトリの allow-extra.json）を読む。
-# ブリッジが deny と照合してから書き込んだものだけが入っている。読めなければ警告だけ出して使わない
-function Read-AllowExtra {
+# ブリッジが deny と照合してから書き込んだもののうち、今の方式で作れるものだけを使う（common.ps1 の Read-AllowExtra）
+function Get-AllowExtraRules {
     $allowExtra = Join-Path $stateDir 'allow-extra.json'
-    if (-not (Test-Path $allowExtra)) { return @() }
-    try {
-        $rules = @((Get-Content -LiteralPath $allowExtra -Raw -Encoding UTF8 | ConvertFrom-Json).allow |
-            Where-Object { $_ -is [string] -and $_ -ne '' })
-        if ($rules.Count -gt 0) { Write-Host "Slack から追加した許可ルール: $($rules.Count) 件（$allowExtra）" }
-        return $rules
-    } catch {
-        Write-Warning "allow-extra.json を読めなかったので、追加の許可ルールは使わない: $($_.Exception.Message)"
-        return @()
-    }
+    $rules = @(Read-AllowExtra -Path $allowExtra -CheckerScript $allowExtraCheckJs)
+    if ($rules.Count -gt 0) { Write-Host "Slack から追加した許可ルール: $($rules.Count) 件（$allowExtra）" }
+    return $rules
 }
 
 # Claude Code の hook から呼ぶ記録コマンド（dist/src/hook.js）の設定。
@@ -240,21 +234,10 @@ function Get-HookSettings {
 function Get-EffectiveSettings {
     param([hashtable]$ExtraServers)
 
-    $extra = @(@($ExtraServers.Keys | Sort-Object | ForEach-Object { "mcp__$_" }) + @(Read-AllowExtra))
+    $extra = @(@($ExtraServers.Keys | Sort-Object | ForEach-Object { "mcp__$_" }) + @(Get-AllowExtraRules))
     try {
-        $settings = Get-Content -LiteralPath $settingsFile -Raw -Encoding UTF8 | ConvertFrom-Json
-        if ($extra.Count -gt 0) {
-            $settings.permissions.allow = @(@($settings.permissions.allow) + $extra | Select-Object -Unique)
-        }
-        $hooks = Get-HookSettings
-        if ($hooks.Count -gt 0) {
-            $settings | Add-Member -NotePropertyName 'hooks' -NotePropertyValue $hooks -Force
-        }
-
         $merged = Join-Path (Get-TempDir) "$sessionName\channel-settings.merged.json"
-        New-Item -ItemType Directory -Path (Split-Path -Parent $merged) -Force | Out-Null
-        $json = $settings | ConvertTo-Json -Depth 10
-        [System.IO.File]::WriteAllText($merged, $json, [System.Text.UTF8Encoding]::new($false))
+        Write-EffectiveSettings -SettingsFile $settingsFile -OutFile $merged -ExtraAllow $extra -Hooks (Get-HookSettings)
         return $merged
     } catch {
         Write-Warning "許可ルールと hook を足した設定を作れなかったので、channel-settings.json をそのまま使う: $($_.Exception.Message)"

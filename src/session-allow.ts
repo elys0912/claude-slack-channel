@@ -2,32 +2,51 @@
 // 有効な間は、settings の ask に当たる操作を除き、実行許可のリクエストにブリッジが自動で allow を返す。
 // deny に当たる操作は Claude Code が確認を出す前に止めるので、ここまで届かない（照合しない）。
 // 有効にできるのは .env で SESSION_ALLOW_ALL を指定したボットだけ。起動し直し・!clear・!lock で解除する。
+// ask との照合は、判断できないものを当たり（自動許可しない）に倒す。
+// このファイルは claude-slack-channel と claude-discord-channel で同じ内容にしている（直すときは両方を直す）。
 import path from 'node:path';
 import os from 'node:os';
 import type { PermissionRequest } from './permission.js';
-import { denyDirOf, isSameOrAncestor, normalizeCommandName, toRulePath } from './allow-rules.js';
+import { COMMAND_SEPARATOR_RE, denyDirOf, isSameOrAncestor, normalizeCommandName, toRulePath } from './allow-rules.js';
 import type { DenyContext } from './allow-rules.js';
 
 const SHELL_TOOLS = new Set(['bash', 'powershell']);
-/** シェルのコマンドを部分に分ける記号。ask との照合は、分けた部分ごとに行う */
-const SHELL_SPLIT_RE = /&&|\|\||[;|&\n\r`]|\$\(/;
-/** 照合できる形の先頭の語（パス・引用符・括弧・変数などで始まるものは照合できない） */
-const PLAIN_COMMAND_RE = /^[a-z][\w.-]*$/;
-/** 先頭の環境変数の代入（`FOO=1 git push`） */
-const ENV_ASSIGNMENT_RE = /^[a-z_][\w]*=/;
-/** 後ろに続く語を別のコマンドとして実行するもの。先頭がこれなら照合できない */
-const SHELL_WRAPPERS = new Set([
-  'sudo', 'env', 'command', 'builtin', 'exec', 'eval', 'source', 'nohup', 'time', 'timeout', 'nice', 'xargs', 'watch',
-  'sh', 'bash', 'zsh', 'dash', 'cmd', 'powershell', 'pwsh', 'wsl', 'start', 'call',
-  'iex', 'invoke-expression', 'icm', 'invoke-command', 'saps', 'start-process', 'npx', 'pnpx', 'bunx', 'uvx',
-]);
 /** パスのルール（Read / Edit）がどのツールに効くか（Claude Code の permission rule と同じ対応） */
 const PATH_RULE_TARGETS: Record<string, readonly string[]> = {
   read: ['read', 'grep', 'glob'],
   edit: ['edit', 'write', 'multiedit', 'notebookedit'],
 };
+/** 行の継続（Bash の `\` + 改行、PowerShell のバッククォート + 改行）。部分に分ける前に空白にする */
+const LINE_CONTINUATION_RE = /[\\`]\r?\n/g;
+/**
+ * 含んでいれば、コマンドの組み立てを解釈しない（当たりにする）文字。引用符（`git "push"`）・バッククォート（`` git `push ``）・
+ * 波かっこ（`{ git push }`）・丸かっこ（`if (...)`・`$(...)`）
+ */
+const UNPARSEABLE_CHARS_RE = /["'`{}()]/;
+/**
+ * 含んでいれば、コマンドの組み立てを解釈しない（当たりにする）語（小文字）。制御構文と、スクリプトブロックを取るコマンドレットとその別名。
+ * `then git push` や `do git push` のように、部分の先頭がこれらになるものを照合から漏らさない
+ */
+const CONTROL_WORDS = new Set([
+  'if', 'then', 'elif', 'else', 'fi', 'for', 'foreach', 'while', 'until', 'do', 'done', 'case', 'esac', 'select',
+  'function', 'try', 'catch', 'finally', 'trap', 'switch', 'foreach-object', '%', 'where-object', '?',
+]);
+/** 部分の先頭の環境変数の代入（`FOO=1 git push`） */
+const ENV_ASSIGNMENT_RE = /^[a-z_]\w*=/;
+/** 照合できる先頭の語の形（パス・変数などで始まるものは解釈しない） */
+const PLAIN_COMMAND_RE = /^[a-z][\w.-]*$/;
+/** 展開で別の語になりうる文字（変数・ワイルドカード）。ルールのサブコマンドの位置にあれば当たりにする */
+const EXPANSION_CHARS_RE = /[$*?[\]]/;
+/** 後ろの語を別のコマンドとして実行するもの。部分の先頭がこれなら、何を実行するかを解釈しない（当たりにする） */
+const WRAPPER_COMMANDS = new Set([
+  'env', 'sudo', 'runas', 'timeout', 'time', 'nohup', 'nice', 'xargs', 'watch', 'command', 'builtin', 'exec', 'eval', 'source',
+  'sh', 'bash', 'zsh', 'dash', 'cmd', 'powershell', 'pwsh', 'wsl', 'start', 'call', 'start-process', 'saps',
+  'invoke-expression', 'iex', 'invoke-command', 'icm', 'start-job', 'npx', 'pnpx', 'bunx', 'uvx',
+]);
 /** ファイル名だけのパターンで、正規表現に直す前にエスケープする文字（* と ? はワイルドカードとして別に扱う） */
 const REGEX_SPECIAL_RE = /[.+^$()|]/g;
+/** Tool / Tool(中身) の形のルール */
+const RULE_RE = /^([A-Za-z][\w-]*)(?:\((.*)\))?$/;
 
 /** input_preview（JSON）の文字列の項目。JSON でない（省略されている等）・文字列でなければ undefined */
 function inputField(req: PermissionRequest, field: string): string | undefined {
@@ -74,56 +93,83 @@ function pathRuleMatches(body: string, req: PermissionRequest, ctx: DenyContext)
   return isSameOrAncestor(dir, target);
 }
 
-/**
- * コマンドの 1 つの部分（小文字にしたもの）が、シェルのルールの語の並びで始まるか。照合できない形なら当たりにする（安全側）。
- * - 先頭が環境変数の代入・照合できない形の語・ラッパー（SHELL_WRAPPERS）なら当たり
- * - 先頭の語は normalizeCommandName で正規化して比べる（`git.exe push` も `git push` に当たる）
- * - 先頭の語が同じで、ルールのサブコマンドの位置にオプションがある（`git -C x push`）なら当たり
- */
-function shellPartMatches(part: string, ruleWords: readonly string[]): boolean {
-  const words = part.split(/\s+/);
-  const first = words[0] ?? '';
-  if (ENV_ASSIGNMENT_RE.test(first) || !PLAIN_COMMAND_RE.test(first)) return true;
-  const name = normalizeCommandName(first);
-  if (SHELL_WRAPPERS.has(name)) return true;
-  if (name !== normalizeCommandName(ruleWords[0] ?? '')) return false;
-  if (ruleWords.length > 1 && (words[1] ?? '').startsWith('-')) return true;
-  return [name, ...words.slice(1)].join(' ').startsWith([name, ...ruleWords.slice(1)].join(' '));
-}
-
-/**
- * シェルのコマンドが、シェルの中身付きのルールに当たるか。コマンドを `;` `&&` `||` `|` `&` 改行 `$(` バッククォートで分け、
- * どれかの部分が当たれば当たり。プレフィックスの途中にワイルドカードがあるルールは照合できないので当たりにする
- */
-function shellRuleMatches(body: string, command: string): boolean {
-  const prefix = body.replace(/:\*$|\s*\*$/, '').trim().toLowerCase();
-  if (prefix === '' || prefix.includes('*')) return true;
-  const ruleWords = prefix.split(/\s+/);
-  return command
-    .toLowerCase()
-    .split(SHELL_SPLIT_RE)
-    .map((part) => part.trim())
-    .filter((part) => part !== '')
-    .some((part) => shellPartMatches(part, ruleWords));
-}
-
 function defaultContext(): DenyContext {
   return { workDir: process.cwd(), home: os.homedir() };
 }
 
 /**
+ * コマンドの 1 つの部分（小文字にしたもの）が、ask のルールの語の並び（先頭の語は正規化済み）に当たるか。
+ * - 先頭が環境変数の代入・照合できない形の語・ラッパー（WRAPPER_COMMANDS）なら当たり
+ * - 部分のどこかに、ルールの語の並びが続いていれば当たり（`echo git push` も当たる。確認が出るだけなので安全側）。
+ *   語はバックスラッシュを取り除き、コマンド名の位置は normalizeCommandName で正規化して比べる（`git.exe push`・`git pus\h` も当たる）
+ * - ルールの先頭の語と同じ語の後ろが、オプション（`git -C x push`）か、展開で変わりうる語（`git $x`・`git pu*`）なら当たり
+ */
+function shellPartMatches(part: string, ruleWords: readonly string[]): boolean {
+  const words = part.split(/\s+/).map((w) => w.replace(/\\/g, ''));
+  const first = words[0] ?? '';
+  if (ENV_ASSIGNMENT_RE.test(first) || !PLAIN_COMMAND_RE.test(first)) return true;
+  if (WRAPPER_COMMANDS.has(normalizeCommandName(first))) return true;
+  const [ruleName = '', ...ruleRest] = ruleWords;
+  return words.some((word, i) => {
+    if (normalizeCommandName(word) !== ruleName) return false;
+    const rest = words.slice(i + 1);
+    if (ruleRest.length === 0) return true;
+    if ((rest[0] ?? '').startsWith('-')) return true;
+    if (rest.slice(0, ruleRest.length).some((w) => EXPANSION_CHARS_RE.test(w))) return true;
+    return rest.join(' ').startsWith(ruleRest.join(' '));
+  });
+}
+
+/**
+ * シェルのコマンドが ask のプレフィックス（`:*` と末尾の `*` を外したもの）に当たるか。次のどれかなら当たり。
+ * - プレフィックスが空か、途中にワイルドカードを含む（解釈しない）
+ * - コマンドが引用符・バッククォート・波かっこ・丸かっこ・制御構文の語を含む（組み立てを解釈しない）
+ * - 行の継続をつないでから区切り（COMMAND_SEPARATOR_RE）で分けた部分のどれかが shellPartMatches に当たる
+ */
+function shellCommandMatches(command: string, prefix: string): boolean {
+  if (prefix === '' || prefix.includes('*')) return true;
+  const text = command.replace(LINE_CONTINUATION_RE, ' ').toLowerCase();
+  if (UNPARSEABLE_CHARS_RE.test(text)) return true;
+  const parts = text
+    .split(COMMAND_SEPARATOR_RE)
+    .map((part) => part.trim())
+    .filter((part) => part !== '');
+  if (parts.some((part) => part.split(/\s+/).some((word) => CONTROL_WORDS.has(word)))) return true;
+  const [prefixFirst = '', ...prefixRest] = prefix.toLowerCase().split(/\s+/);
+  const ruleWords = [normalizeCommandName(prefixFirst), ...prefixRest];
+  return parts.some((part) => shellPartMatches(part, ruleWords));
+}
+
+/**
+ * MCP のルール（`mcp__<サーバー>` / `mcp__<サーバー>__*` / `mcp__<サーバー>__<ツール>`）がツール（小文字）に当たるか。
+ * MCP のルールでなければ undefined
+ */
+function mcpRuleMatches(rule: string, tool: string): boolean | undefined {
+  const name = rule.trim().toLowerCase();
+  if (!name.startsWith('mcp__')) return undefined;
+  const scope = name.endsWith('__*') ? name.slice(0, -'__*'.length) : name;
+  return tool === scope || tool.startsWith(`${scope}__`);
+}
+
+/**
  * リクエストが、ask のルールのどれかに当たるなら、そのルールを返す（当たらなければ undefined）。大文字小文字は区別しない。
  * - ツール全体のルール: そのツールの全リクエストに当たる
- * - シェル（Bash / PowerShell）の中身付き: shellRuleMatches（コマンドを分けた部分のどれかがプレフィックスで始まれば当たり）。
- *   コマンドが読めない・照合できない形なら当たり
+ * - MCP のルール: `mcp__<サーバー>` と `mcp__<サーバー>__*` は、そのサーバーの全ツールに当たる
+ * - シェル（Bash / PowerShell）の中身付き: shellCommandMatches。コマンドが読めなければ当たり
  * - Read / Edit の中身付き: pathRuleMatches（パスが読めない・複雑なパターンなら当たり）
  * - それ以外のツールの中身付き（WebFetch(domain:...) など）: 判断できないので当たり
+ * - 形の読めないルール: 判断できないので、どのリクエストにも当たり
  */
 export function matchingRule(req: PermissionRequest, rules: readonly string[], ctx: DenyContext = defaultContext()): string | undefined {
   const tool = req.tool_name.trim().toLowerCase();
   for (const rule of rules) {
-    const m = /^([A-Za-z][\w-]*)(?:\((.*)\))?$/.exec(rule.trim());
-    if (!m) continue;
+    const mcp = mcpRuleMatches(rule, tool);
+    if (mcp !== undefined) {
+      if (mcp) return rule;
+      continue;
+    }
+    const m = RULE_RE.exec(rule.trim());
+    if (!m) return rule;
     const ruleTool = (m[1] ?? '').toLowerCase();
     const pathTargets = PATH_RULE_TARGETS[ruleTool];
     if (!(pathTargets ?? [ruleTool]).includes(tool)) continue;
@@ -134,8 +180,10 @@ export function matchingRule(req: PermissionRequest, rules: readonly string[], c
       continue;
     }
     if (!SHELL_TOOLS.has(tool)) return rule;
-    const command = inputField(req, 'command');
-    if (command === undefined || shellRuleMatches(body, command)) return rule;
+    const command = inputField(req, 'command')?.trim();
+    if (command === undefined) return rule;
+    const prefix = body.replace(/:\*$|\s*\*$/, '').trim();
+    if (shellCommandMatches(command, prefix)) return rule;
   }
   return undefined;
 }
@@ -169,6 +217,19 @@ export class SessionAllowAll {
     const was = this.state !== undefined;
     this.state = undefined;
     return was;
+  }
+
+  /**
+   * 全部許可のボタンを出してよいか。ask を読めない（設定ファイルが読めない・JSON でない）なら、
+   * 何を自動許可から外すべきか判断できないので false
+   */
+  available(): boolean {
+    try {
+      this.loadRules();
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   /**
