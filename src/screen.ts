@@ -112,7 +112,8 @@ export function keysToSelect(cursor: number, target: number): ConsoleKey[] {
 
 /**
  * 入力欄の行で、まだ何も打っていないもの。`❯ ` / `> ` だけの行か、起動直後に薄く出る入力例
- * （`> Try "how do I log an error?"`。記号の後ろはノーブレークスペース）の行
+ * （`> Try "how do I log an error?"`。記号の後ろはノーブレークスペース）の行。
+ * 応答のあとに出る次の入力の候補（prompt suggestions）は打ちかけの文字と見分けられないので、channel-settings.json で切っておく
  */
 const EMPTY_PROMPT_RE = /^\s*[❯>](?:\s*|[\s\u00a0]+Try "[^"]*")$/;
 /** 入力欄を探す画面の末尾の行数 */
