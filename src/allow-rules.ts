@@ -11,6 +11,8 @@ import { stripBom } from './text.js';
 import { errMessage } from './errors.js';
 
 const SHELL_TOOLS = new Set(['Bash', 'PowerShell']);
+/** 保存済みのルールのツール名を大文字小文字を区別せずにシェルと判定するための、SHELL_TOOLS の小文字 */
+const SHELL_TOOLS_LOWER = new Set([...SHELL_TOOLS].map((tool) => tool.toLowerCase()));
 
 /**
  * パスを取るツール。ツール全体ではなく、対象のフォルダー以下に絞ったルールにする。
@@ -434,7 +436,7 @@ export function denyOverlaps(
       hits.push(d);
       continue;
     }
-    const overlaps = SHELL_TOOLS.has(candidate.tool)
+    const overlaps = SHELL_TOOLS_LOWER.has(candidate.tool.toLowerCase())
       ? shellPrefixesOverlap(candidate.prefix, parsed.body)
       : prefixesOverlap(candidate.prefix, parsed.body);
     if (overlaps) hits.push(d);
