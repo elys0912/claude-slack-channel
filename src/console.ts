@@ -4,6 +4,8 @@ import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type { Logger } from './log.js';
+import { powershellExe } from './system-exe.js';
 
 /** 送れるキー。自由な文字入力は送らない */
 export type ConsoleKey = 'Up' | 'Down' | 'Enter';
@@ -42,14 +44,17 @@ export function findConsoleScript(fromDir: string = path.dirname(fileURLToPath(i
 export class PowerShellConsole implements ConsoleAccess {
   private readonly script: string;
   private readonly targetPid: number | undefined;
+  private readonly logger: Pick<Logger, 'warn'> | undefined;
 
   /**
    * targetPid は Claude Code（claude.exe）の pid。Claude Code は MCP サーバーを別のコンソールで起動することがあり、
-   * そのままではブリッジのコンソール（空）を読んでしまうので、console.ps1 にそのプロセスのコンソールへ付け直させる
+   * そのままではブリッジのコンソール（空）を読んでしまうので、console.ps1 にそのプロセスのコンソールへ付け直させる。
+   * logger には、成功しても console.ps1 が stderr に書いた警告（付け直せなかった、など）を残す
    */
-  constructor(script: string, targetPid?: number) {
+  constructor(script: string, targetPid?: number, logger?: Pick<Logger, 'warn'>) {
     this.script = script;
     this.targetPid = targetPid;
+    this.logger = logger;
   }
 
   read(): Promise<string> {
@@ -68,7 +73,7 @@ export class PowerShellConsole implements ConsoleAccess {
   private run(args: string[]): Promise<string> {
     return new Promise((resolve, reject) => {
       execFile(
-        'powershell.exe',
+        powershellExe(),
         [
           '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', this.script, ...args,
           ...(this.targetPid !== undefined ? ['-TargetPid', String(this.targetPid)] : []),
@@ -80,6 +85,9 @@ export class PowerShellConsole implements ConsoleAccess {
             reject(new Error(`console.ps1 の実行に失敗: ${detail || err.message}`, { cause: err }));
             return;
           }
+          // 付け直せないと、console.ps1 は自分のコンソールのまま続けて 0 で終わる。原因を追えるよう警告を残す
+          const warning = stderr.trim();
+          if (warning !== '') this.logger?.warn(`console.ps1 の警告: ${warning.split(/\r?\n/)[0]}`);
           resolve(stdout.replace(/\r\n/g, '\n'));
         }
       );

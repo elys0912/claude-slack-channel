@@ -8,6 +8,8 @@ import type { ReadableStream as WebReadableStream } from 'node:stream/web';
 import { pipeline } from 'node:stream/promises';
 import zlib from 'node:zlib';
 import type { SlackBridge, SlackFile } from './slack.js';
+import { systemExe } from './system-exe.js';
+import { clip } from './text.js';
 
 const BYTES_PER_GIB = 1024 ** 3;
 /** ダウンロードの上限（Slack にアップロードできる上限と同じ 1GB） */
@@ -101,11 +103,6 @@ export function createUnique(dir: string, name: string, kind: 'file' | 'dir'): s
   }
 }
 
-/** エラー文に載せる長さに収める */
-function clip(text: string, max: number): string {
-  return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
-}
-
 /** 通過したバイト数を数え、上限を超えたらエラーで止める */
 function byteLimiter(maxBytes: number, what: string): Transform {
   let total = 0;
@@ -132,7 +129,7 @@ async function writeLimited(source: Readable, file: string, maxBytes: number, wh
 /** Windows では Git などの GNU tar を拾わないよう、OS 付属の bsdtar を絶対パスで使う */
 export function defaultTarPath(): string {
   if (process.platform !== 'win32') return 'bsdtar';
-  return path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe');
+  return systemExe('tar.exe');
 }
 
 interface TreeStat {
