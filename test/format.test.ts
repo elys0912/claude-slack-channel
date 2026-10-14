@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { META_VALUE_MAX, escapeMrkdwn, neutralizeBroadcasts, sanitizeMeta } from '../src/format.js';
+import { META_VALUE_MAX, escapeMrkdwn, linkifyMarkdownUrls, neutralizeBroadcasts, sanitizeMeta } from '../src/format.js';
 
 describe('neutralizeBroadcasts', () => {
   it('neutralizes <!channel>', () => {
@@ -94,5 +94,53 @@ describe('sanitizeMeta', () => {
     const out = sanitizeMeta({ emoji: 'x'.repeat(1998) + '😀😀' });
     expect(out.emoji).toBe('x'.repeat(1998) + '…');
     expect(out.emoji).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
+  });
+});
+
+describe('linkifyMarkdownUrls', () => {
+  it('生の URL を [URL](URL) にする', () => {
+    expect(linkifyMarkdownUrls('見て https://example.com/a?b=1 ね')).toBe('見て [https://example.com/a?b=1](https://example.com/a?b=1) ね');
+  });
+
+  it('全角の記号の直後・直前でも URL だけを切り出す', () => {
+    expect(linkifyMarkdownUrls('こっちよ：https://claude.ai/artifact/AbC123）。')).toBe(
+      'こっちよ：[https://claude.ai/artifact/AbC123](https://claude.ai/artifact/AbC123)）。',
+    );
+  });
+
+  it('末尾の句読点は URL に含めない', () => {
+    expect(linkifyMarkdownUrls('see https://example.com/x.')).toBe('see [https://example.com/x](https://example.com/x).');
+    expect(linkifyMarkdownUrls('https://example.com, next')).toBe('[https://example.com](https://example.com), next');
+  });
+
+  it('リンクの文字の _ や * はエスケープする', () => {
+    expect(linkifyMarkdownUrls('https://example.com/a_b_c')).toBe('[https://example.com/a\\_b\\_c](https://example.com/a_b_c)');
+  });
+
+  it('mrkdwn の <URL> と <URL|文字> を markdown のリンクにする', () => {
+    expect(linkifyMarkdownUrls('<https://example.com>')).toBe('[https://example.com](https://example.com)');
+    expect(linkifyMarkdownUrls('<https://example.com|報告>')).toBe('[報告](https://example.com)');
+  });
+
+  it('もう [文字](URL) のものは触らない', () => {
+    const md = '詳細：[夜の報告](https://claude.ai/artifact/AbC123)';
+    expect(linkifyMarkdownUrls(md)).toBe(md);
+  });
+
+  it('インラインコードとフェンスのコードの中は触らない', () => {
+    const inline = '`curl https://example.com` を叩く';
+    expect(linkifyMarkdownUrls(inline)).toBe(inline);
+    const fence = '```\ncurl https://example.com\n```\nhttps://example.com';
+    expect(linkifyMarkdownUrls(fence)).toBe('```\ncurl https://example.com\n```\n[https://example.com](https://example.com)');
+  });
+
+  it('閉じていないフェンスの後ろも触らない', () => {
+    const open = '```\nhttps://example.com';
+    expect(linkifyMarkdownUrls(open)).toBe(open);
+  });
+
+  it('URL の無い文と、中身の無い https:// はそのまま', () => {
+    expect(linkifyMarkdownUrls('URL は無いわ')).toBe('URL は無いわ');
+    expect(linkifyMarkdownUrls('https:// だけ')).toBe('https:// だけ');
   });
 });
