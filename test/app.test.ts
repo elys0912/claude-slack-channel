@@ -678,6 +678,141 @@ describe('縮退モード', () => {
   });
 });
 
+describe('縮退モードからの復帰（ロックの取り直し）', () => {
+  const BUSY = 'error: 別のインスタンスが動いているため、この Slack ブリッジは送信できない';
+  const NOT_ACQUIRED = { acquired: false as const, holder: { pid: 1, heartbeat: 0, startedAt: 0 } };
+
+  /**
+   * 縮退で起動し、tryAcquire の acquireOn 回目から取れるロックで取り直させる。
+   * start を渡さなければ、本物の SlackBridge で通常のブリッジを始める
+   */
+  async function startRecovering(opts: { acquireOn?: number; start?: (server: ChannelServer) => Promise<() => Promise<void>> } = {}) {
+    const logger = new Logger({ stderr: false });
+    const infoSpy = vi.spyOn(logger, 'info');
+    const web = makeWeb();
+    const socket = makeSocket();
+    const lockCalls = { tries: 0, released: 0 };
+    const lock = {
+      tryAcquire: () => (++lockCalls.tries >= (opts.acquireOn ?? 2) ? { acquired: true as const } : NOT_ACQUIRED),
+      release: () => {
+        lockCalls.released += 1;
+      },
+    };
+    const startSlack = async (server: ChannelServer): Promise<() => Promise<void>> => {
+      const bridge = new SlackBridge({ botToken: 'xoxb-TEST-DUMMY', appToken: 'xapp-TEST-DUMMY', access: ACCESS, logger, web, socket });
+      await bridge.init();
+      return (await startBridgeApp({ bridge, logger, server, lock })).stop;
+    };
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: 'test-client', version: '0.0.1' }, { capabilities: {} });
+    const notifications: Notification[] = [];
+    client.fallbackNotificationHandler = async (n) => {
+      notifications.push(n as Notification);
+    };
+    const app = await startDegradedApp({ logger, transport: serverTransport, recover: { lock, intervalMs: 5, start: opts.start ?? startSlack } });
+    await client.connect(clientTransport);
+    const recovered = (): boolean => infoSpy.mock.calls.some(([msg]) => String(msg).includes('通常のブリッジに戻った'));
+    return { app, client, web, lockCalls, notifications, logger, recovered };
+  }
+
+  const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+  const replyText = async (client: Client): Promise<string> => toolText(await client.callTool({ name: 'reply', arguments: { chat_id: DM1, text: 'hi' } }));
+
+  it('ロックが取れたら、同じ MCP の接続のまま本物のツールに替わり、tools/list_changed を知らせる。Slack には投稿しない', async () => {
+    const h = await startRecovering();
+    await vi.waitFor(() => expect(h.recovered()).toBe(true));
+
+    expect(h.notifications.map((n) => n.method)).toContain('notifications/tools/list_changed');
+    expect(h.web.calls.filter((c) => c.method.startsWith('chat.postMessage'))).toEqual([]);
+    expect(await replyText(h.client)).not.toBe(BUSY);
+    expect(h.web.calls.some((c) => c.method === 'chat.postMessage')).toBe(true);
+
+    await h.client.close();
+    await h.app.stop();
+  });
+
+  it('戻った後は取り直しをやめ、stop で通常のブリッジのロックも放す', async () => {
+    const h = await startRecovering();
+    await vi.waitFor(() => expect(h.recovered()).toBe(true));
+    await sleep(30);
+    expect(h.lockCalls.tries).toBe(2);
+
+    await h.client.close();
+    await h.app.stop();
+    expect(h.lockCalls.released).toBe(1);
+  });
+
+  it('戻る途中で失敗したら、ロックを放して縮退のツールに戻し、次の回にまた試す', async () => {
+    let starts = 0;
+    let openSecond: () => void = () => undefined;
+    const secondGate = new Promise<void>((r) => {
+      openSecond = r;
+    });
+    const logger = new Logger({ stderr: false });
+    const h = await startRecovering({
+      acquireOn: 1,
+      start: async (server) => {
+        starts += 1;
+        if (starts === 2) await secondGate;
+        // 本物のツールに差し替えたあとで失敗する（Socket Mode の開始の失敗など）
+        await server.replaceDeps({ ...createDegradedDeps(logger), onReply: async () => 'sent' });
+        if (starts === 1) throw new Error('Slack に接続できない');
+        return async () => undefined;
+      },
+    });
+    await vi.waitFor(() => expect(h.lockCalls.released).toBe(1));
+    expect(await replyText(h.client)).toBe(BUSY);
+
+    openSecond();
+    await vi.waitFor(() => expect(h.recovered()).toBe(true));
+    expect(starts).toBe(2);
+    expect(await replyText(h.client)).toBe('sent');
+
+    await h.client.close();
+    await h.app.stop();
+  });
+
+  it('ロックが取れない間は始めず、stop したら取り直しをやめる', async () => {
+    const start = vi.fn(async () => async () => undefined);
+    const h = await startRecovering({ acquireOn: Number.POSITIVE_INFINITY, start });
+    await vi.waitFor(() => expect(h.lockCalls.tries).toBeGreaterThanOrEqual(2));
+    expect(start).not.toHaveBeenCalled();
+    expect(await replyText(h.client)).toBe(BUSY);
+
+    await h.client.close();
+    await h.app.stop();
+    const tries = h.lockCalls.tries;
+    await sleep(30);
+    expect(h.lockCalls.tries).toBe(tries);
+  });
+
+  it('戻る途中で stop したら、始め終わるのを待ってから、始めたブリッジを止める', async () => {
+    let started = false;
+    let bridgeStopped = false;
+    let finishStart: () => void = () => undefined;
+    const startGate = new Promise<void>((r) => {
+      finishStart = r;
+    });
+    const h = await startRecovering({
+      acquireOn: 1,
+      start: async () => {
+        started = true;
+        await startGate;
+        return async () => {
+          bridgeStopped = true;
+        };
+      },
+    });
+    await vi.waitFor(() => expect(started).toBe(true));
+
+    await h.client.close();
+    const stopping = h.app.stop();
+    finishStart();
+    await stopping;
+    expect(bridgeStopped).toBe(true);
+  });
+});
+
 describe('createToolHandlers 単体', () => {
   it('bridge の例外を error 文にして返し、logger.error に残す', async () => {
     const logger = new Logger({ stderr: false });

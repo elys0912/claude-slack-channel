@@ -6,9 +6,10 @@ import { loadAccess, loadHomeCustom, loadTokens, stateDir } from './config.js';
 import type { ParsedAccess, Tokens } from './config.js';
 import { errMessage } from './errors.js';
 import { Logger } from './log.js';
-import { InstanceLock, acquireWithRetry, isProcessAlive } from './lock.js';
+import { DEFAULT_STALE_MS, InstanceLock, acquireWithRetry, isProcessAlive } from './lock.js';
 import { SlackBridge } from './slack.js';
 import { startBridgeApp, startDegradedApp } from './app.js';
+import type { BridgeAppOptions } from './app.js';
 import { replyTimeoutMs } from './watchdog.js';
 import { PowerShellConsole, findConsoleScript } from './console.js';
 import { HOOK_LOG_FILE, SESSION_TAG_ENV } from './hook-event.js';
@@ -92,33 +93,75 @@ async function main(dir: string, logger: Logger): Promise<void> {
   );
 
   if (degraded) {
-    const app = await startDegradedApp({ logger });
+    // 縮退の間もロックを取り直し、取れたら同じ MCP の接続のまま通常のブリッジに戻る。設定はそのときに読み直す
+    const app = await startDegradedApp({
+      logger,
+      recover: {
+        lock,
+        intervalMs: DEFAULT_STALE_MS,
+        start: async (server) => {
+          const fresh = { tokens: loadTokens(dir), access: loadAccess(dir) };
+          const slack = await connectSlack(fresh.tokens, fresh.access, logger);
+          const running = await startBridgeApp({ ...bridgeAppOptions(dir, logger, lock, fresh.tokens, fresh.access, slack), server });
+          process.stderr.write('[slackbridge] ロックを取り直したので、Slack に接続して通常のブリッジに戻った\n');
+          return running.stop;
+        },
+      },
+    });
+    // 戻った後に別のインスタンスにロックを取られたら、通常モードと同じく接続を切って終わる
+    stopApp = app.stop;
     installShutdown(logger, app.stop);
     return;
   }
 
-  const bridge = new SlackBridge({ botToken: tokens.botToken, appToken: tokens.appToken, access, logger });
-  let botUserId: string;
+  let slack: ConnectedSlack;
   try {
-    const init = await bridge.init();
-    botUserId = init.botUserId;
-    logger.info(`Slack 接続確認 OK bot=${init.botUserId} team=${init.teamId} dm=${init.dmChannelCount}件`);
+    slack = await connectSlack(tokens, access, logger);
   } catch (e) {
-    return abort(logger, 'Slack への接続確認に失敗', e, async () => {
-      lock.release();
-      await bridge.stop();
-    });
+    return abort(logger, 'Slack への接続確認に失敗', e, () => lock.release());
   }
 
   // 終了処理は Socket Mode の接続を待つ前に登録する。開始に失敗したら startBridgeApp が後片付けしてから投げる
   await startBridgeApp({
-    bridge,
-    logger,
-    lock,
+    ...bridgeAppOptions(dir, logger, lock, tokens, access, slack),
     onCleanupReady: (stop) => {
       stopApp = stop;
       installShutdown(logger, stop);
     },
+  });
+}
+
+interface ConnectedSlack {
+  bridge: SlackBridge;
+  botUserId: string;
+}
+
+/** Slack に接続して確かめる。失敗したら bridge を止めてから投げる */
+async function connectSlack(tokens: Tokens, access: ParsedAccess, logger: Logger): Promise<ConnectedSlack> {
+  const bridge = new SlackBridge({ botToken: tokens.botToken, appToken: tokens.appToken, access, logger });
+  try {
+    const init = await bridge.init();
+    logger.info(`Slack 接続確認 OK bot=${init.botUserId} team=${init.teamId} dm=${init.dmChannelCount}件`);
+    return { bridge, botUserId: init.botUserId };
+  } catch (e) {
+    await bridge.stop();
+    throw e;
+  }
+}
+
+/** 通常のブリッジの設定（起動したときと、縮退モードから戻るときで同じもの） */
+function bridgeAppOptions(
+  dir: string,
+  logger: Logger,
+  lock: InstanceLock,
+  tokens: Tokens,
+  access: ParsedAccess,
+  { bridge, botUserId }: ConnectedSlack
+): BridgeAppOptions {
+  return {
+    bridge,
+    logger,
+    lock,
     replyTimeoutMs: replyTimeoutMs(),
     console: consoleAccess(logger),
     workDir: process.cwd(),
@@ -150,7 +193,7 @@ async function main(dir: string, logger: Logger): Promise<void> {
       path.join(process.cwd(), '.claude', 'settings.json'),
       path.join(process.cwd(), '.claude', 'settings.local.json'),
     ],
-  });
+  };
 }
 
 /** 画面の読み取りに使う console.ps1 が見つかれば、その実装を返す。Windows 以外・見つからなければ undefined */

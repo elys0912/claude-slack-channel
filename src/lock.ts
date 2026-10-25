@@ -36,7 +36,8 @@ export function isProcessAlive(pid: number): boolean {
   }
 }
 
-const DEFAULT_STALE_MS = 30000;
+/** ロックの失効（heartbeat がこれより古ければ取ってよい） */
+export const DEFAULT_STALE_MS = 30000;
 const DEFAULT_INTERVAL_MS = 10000;
 // heartbeat が現在時刻よりこれ以上未来なら不正な値とみなす（時計のずれを少しだけ許容する）
 const FUTURE_TOLERANCE_MS = 5000;

@@ -403,8 +403,13 @@ export interface BridgeAppOptions {
   /** init() 済みの SlackBridge */
   bridge: AppBridge;
   logger: Logger;
-  /** MCP のトランスポート。省略時は stdio */
+  /** MCP のトランスポート。省略時は stdio。server を渡したときは使わない */
   transport?: Transport | undefined;
+  /**
+   * 接続済みの ChannelServer（縮退モードから戻るとき）。渡したら新しく作らず、deps を差し替えて使う。
+   * 接続も close もしない（close は渡した側が行う）
+   */
+  server?: ChannelServer | undefined;
   /** stop() の最初に release する（後片付けが固まってもロックを残さないため） */
   lock?: Pick<InstanceLock, 'release'> | undefined;
   /**
@@ -461,7 +466,7 @@ export interface BridgeAppOptions {
 
 /**
  * 通常モード: Slack と Claude Code（MCP）をつないで中継を始める。
- * MCP の接続か Socket Mode の開始に失敗したら、後片付け（lock.release → relay.denyAll → bridge.stop → server.close）をしてから投げ直す。
+ * MCP の接続か Socket Mode の開始に失敗したら、後片付け（lock.release → relay.denyAll → bridge.stop → server.close。server を渡したときは close しない）をしてから投げ直す。
  */
 /**
  * ホームタブの更新。opts.home が無いか、bridge がホームを出せなければ何もしない。
@@ -523,14 +528,16 @@ export async function startBridgeApp(opts: BridgeAppOptions): Promise<RunningApp
     : undefined;
 
   // server と relay は互いを参照する。relay を使うのは接続後なので、宣言順はこれでよい
-  const server: ChannelServer = new ChannelServer({
+  const deps: McpDeps = {
     logger,
     ...createToolHandlers(bridge, logger, () => watchdog.activity(), opts.download),
     onPermissionRequest: (req) => {
       watchdog.activity();
       return relay.request(req);
     },
-  });
+  };
+  const ownsServer = opts.server === undefined;
+  const server: ChannelServer = opts.server ?? new ChannelServer(deps);
   const sessionAllow = opts.sessionAllowAll
     ? // deny に当たる操作は Claude Code が確認を出す前に止めるので、照合するのは ask だけ
       // managed の ask も、--settings より優先して Claude Code が確認を求めるので照合する
@@ -599,13 +606,14 @@ export async function startBridgeApp(opts: BridgeAppOptions): Promise<RunningApp
         await publishHomeAll(false, new Date());
         await bridge.stop();
       } finally {
-        await server.close();
+        if (ownsServer) await server.close();
       }
     })());
   opts.onCleanupReady?.(stop);
 
   try {
-    if (opts.transport) await server.connect(opts.transport);
+    if (!ownsServer) await server.replaceDeps(deps);
+    else if (opts.transport) await server.connect(opts.transport);
     else await server.connectStdio();
     await bridge.start({
       onMessage: (result, raw) => handleMessage(wiring, result, raw),
@@ -639,17 +647,72 @@ async function noticeRejectedRules(store: AllowRuleStore, notice: NoticePoster, 
   await notice.post(text);
 }
 
+export interface DegradedRecovery {
+  /** 縮退の間に取り直すロック。取れたら heartbeat が始まる */
+  lock: Pick<InstanceLock, 'tryAcquire' | 'release'>;
+  /** 取り直す間隔（ミリ秒） */
+  intervalMs: number;
+  /** 接続済みのサーバーで通常のブリッジを始め、その後片付けを返す。失敗したら、自分の分の後片付けを済ませてから投げる */
+  start: (server: ChannelServer) => Promise<() => Promise<void>>;
+}
+
 export interface DegradedAppOptions {
   logger: Logger;
   /** MCP のトランスポート。省略時は stdio */
   transport?: Transport | undefined;
+  /** 縮退の間もロックを取り直し、取れたら通常のブリッジに戻る。省略時は戻らない */
+  recover?: DegradedRecovery | undefined;
 }
 
-/** 縮退モード: MCP サーバーだけ起動し、ツールはすべてエラーを返す */
+/**
+ * 縮退モード: MCP サーバーだけ起動し、ツールはすべてエラーを返す。
+ * recover があれば intervalMs ごとにロックを取り直し、取れたら同じサーバーのまま通常のブリッジに戻る。
+ * 戻れなかったらロックを放して縮退のツールに戻し、次の回にまた試す。戻ったことは投稿せず、ログにだけ書く
+ */
 export async function startDegradedApp(opts: DegradedAppOptions): Promise<RunningApp> {
-  const server = new ChannelServer(createDegradedDeps(opts.logger));
+  const { logger, recover } = opts;
+  const server = new ChannelServer(createDegradedDeps(logger));
   if (opts.transport) await server.connect(opts.transport);
   else await server.connectStdio();
 
-  return { stop: () => server.close() };
+  let stopBridge: (() => Promise<void>) | undefined;
+  let stopped: Promise<void> | undefined;
+  let attempt: Promise<void> | undefined;
+
+  const tryRecover = async (lock: DegradedRecovery['lock'], start: DegradedRecovery['start']): Promise<void> => {
+    if (!lock.tryAcquire().acquired) return;
+    logger.info('ロックを取り直せたので、通常のブリッジに戻る');
+    try {
+      stopBridge = await start(server);
+      clearInterval(timer);
+      logger.info('縮退モードから通常のブリッジに戻った');
+    } catch (e) {
+      logger.warn('通常のブリッジに戻れなかったので、ロックを放して縮退モードを続ける', errMessage(e));
+      lock.release();
+      await server.replaceDeps(createDegradedDeps(logger));
+    }
+  };
+
+  const timer = recover
+    ? setInterval(() => {
+        if (attempt || stopBridge || stopped) return;
+        attempt = tryRecover(recover.lock, recover.start).finally(() => {
+          attempt = undefined;
+        });
+      }, recover.intervalMs)
+    : undefined;
+  timer?.unref();
+
+  const stop = (): Promise<void> =>
+    (stopped ??= (async () => {
+      clearInterval(timer);
+      // 戻る途中なら、始め終わるのを待ってから止める（始めたブリッジを残さない）
+      await attempt;
+      try {
+        await stopBridge?.();
+      } finally {
+        await server.close();
+      }
+    })());
+  return { stop };
 }

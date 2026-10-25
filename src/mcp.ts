@@ -178,8 +178,8 @@ export interface McpDeps {
 }
 
 export class ChannelServer {
-  private readonly logger: Logger;
-  private readonly deps: McpDeps;
+  private logger: Logger;
+  private deps: McpDeps;
   private readonly server: Server;
 
   constructor(deps: McpDeps) {
@@ -194,7 +194,8 @@ export class ChannelServer {
             'claude/channel': {},
             'claude/channel/permission': {},
           },
-          tools: {},
+          // 縮退モードから戻ると deps が替わり、出すツールも変わりうる
+          tools: { listChanged: true },
         },
         instructions: INSTRUCTIONS,
       }
@@ -241,6 +242,20 @@ export class ChannelServer {
   /** このサーバーで出すツール（deps に実体の無いものは除く） */
   private tools(): ToolDefinition[] {
     return TOOLS.filter((t) => t.enabled?.(this.deps) ?? true);
+  }
+
+  /**
+   * deps を差し替える（縮退モードから通常のブリッジに戻るとき、戻れずに縮退へ戻すとき）。
+   * 接続は張り直せないので、ツールの一覧が変わったことを tools/list_changed で知らせる。送れなくても投げない
+   */
+  async replaceDeps(deps: McpDeps): Promise<void> {
+    this.deps = deps;
+    this.logger = deps.logger;
+    try {
+      await this.server.sendToolListChanged();
+    } catch (e) {
+      this.logger.warn('tools/list_changed の送信に失敗', errMessage(e));
+    }
   }
 
   /** 任意のトランスポートに接続する（テストで in-memory トランスポートを使うため） */
