@@ -36,3 +36,65 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run lint
+
+  # 起動スクリプト（scripts/*.ps1）の静的解析。Error は失敗、Warning は表示だけ（既存の警告を一度に直さないため）
+  psscriptanalyzer:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          if (-not (Get-Module -ListAvailable PSScriptAnalyzer)) {
+              Install-Module PSScriptAnalyzer -Scope CurrentUser -Force
+          }
+          $files = Get-ChildItem -Recurse -File -Include *.ps1, *.psm1 |
+              Where-Object { $_.FullName -notmatch '[\/](node_modules|dist|\.git)[\/]' }
+          Write-Host "対象: $(@($files).Count) ファイル（PSScriptAnalyzer $((Get-Module -ListAvailable PSScriptAnalyzer | Select-Object -First 1).Version)）"
+          $results = @(foreach ($f in $files) { Invoke-ScriptAnalyzer -Path $f.FullName -Severity Error, Warning })
+          $errors = @($results | Where-Object Severity -eq 'Error')
+          $warnings = @($results | Where-Object Severity -eq 'Warning')
+          foreach ($r in $results) {
+              $path = Resolve-Path -Relative $r.ScriptName
+              $level = if ($r.Severity -eq 'Error') { 'error' } else { 'warning' }
+              Write-Host "::$level file=$path,line=$($r.Line)::$($r.RuleName): $($r.Message)"
+          }
+          Write-Host "Error: $($errors.Count) 件 / Warning: $($warnings.Count) 件"
+          if ($errors.Count -gt 0) { exit 1 }
+
+  # start.ps1 -DryRun を Windows PowerShell 5.1（shell: powershell）で実際に回す。claude.exe には起動しない偽物を PATH に置き、
+  # 状態ディレクトリは一時フォルダー（.env / access.json は空の見本）を -StateDir で渡して、本物の状態を読み書きしない
+  start-dryrun:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: start.ps1 -DryRun（Windows PowerShell 5.1）
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          "PowerShell $($PSVersionTable.PSVersion)"
+          $root = Join-Path $env:RUNNER_TEMP 'dryrun'
+          $bin = Join-Path $root 'bin'
+          $project = Join-Path $root 'project'
+          $state = Join-Path $root 'state'
+          New-Item -ItemType Directory -Force -Path $bin, $project, $state | Out-Null
+          Set-Content -LiteralPath (Join-Path $bin 'claude.cmd') -Value '@exit /b 0' -Encoding ASCII
+          Set-Content -LiteralPath (Join-Path $state '.env') -Value '' -Encoding ASCII
+          Set-Content -LiteralPath (Join-Path $state 'access.json') -Value '{}' -Encoding ASCII
+          $env:PATH = "$bin;$env:PATH"
+          $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\start.ps1 $project -StateDir $state -DryRun | Out-String
+          Write-Host $out
+          if ($LASTEXITCODE -ne 0) { throw "start.ps1 -DryRun が終了コード $LASTEXITCODE で終わった" }
+          if ($out -notmatch '--dangerously-load-development-channels server:slackbridge') { throw 'コマンドラインに channel の指定が無い' }
