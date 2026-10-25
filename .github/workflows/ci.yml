@@ -58,7 +58,7 @@ jobs:
           $errors = @($results | Where-Object Severity -eq 'Error')
           $warnings = @($results | Where-Object Severity -eq 'Warning')
           foreach ($r in $results) {
-              $path = Resolve-Path -Relative $r.ScriptName
+              $path = [System.IO.Path]::GetRelativePath((Get-Location).Path, $r.ScriptName)
               $level = if ($r.Severity -eq 'Error') { 'error' } else { 'warning' }
               Write-Host "::$level file=$path,line=$($r.Line)::$($r.RuleName): $($r.Message)"
           }
@@ -80,6 +80,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
+      # Windows PowerShell 5.1 は BOM の無いスクリプトを ANSI として読むので、この step の中は ASCII だけで書く
       - name: start.ps1 -DryRun（Windows PowerShell 5.1）
         shell: powershell
         run: |
@@ -96,5 +97,5 @@ jobs:
           $env:PATH = "$bin;$env:PATH"
           $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\start.ps1 $project -StateDir $state -DryRun | Out-String
           Write-Host $out
-          if ($LASTEXITCODE -ne 0) { throw "start.ps1 -DryRun が終了コード $LASTEXITCODE で終わった" }
-          if ($out -notmatch '--dangerously-load-development-channels server:slackbridge') { throw 'コマンドラインに channel の指定が無い' }
+          if ($LASTEXITCODE -ne 0) { throw "start.ps1 -DryRun exited with code $LASTEXITCODE" }
+          if ($out -notmatch '--dangerously-load-development-channels server:slackbridge') { throw 'channel option is missing from the command line' }
