@@ -80,8 +80,8 @@ export interface Tokens {
 /**
  * dir/.env から SLACK_BOT_TOKEN（xoxb-）と SLACK_APP_TOKEN（xapp-）、任意の DOWNLOAD_DIR を読む。環境変数は見ない。
  * ファイルが読めない・キーが無い・接頭辞が違う・DOWNLOAD_DIR が絶対パスでないときは投げる（メッセージにトークンの値は含めない）。
+ * warn は .env の値を読み替えたときの知らせ（起動は止めない）。省略時は知らせない。
  */
-/** warn は .env の値を読み替えたときの知らせ（起動は止めない）。省略時は知らせない */
 export function loadTokens(dir: string, warn?: (message: string) => void): Tokens {
   const file = path.join(dir, '.env');
   let text: string;
