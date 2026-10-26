@@ -74,7 +74,7 @@ jobs:
           findstr /C:"[DryRun]" "%RUNNER_TEMP%\dryrun.log" > nul || exit /b 1
 
   # 相手の repo と同じ内容にしているファイル（shared-files.txt）を、名前の違いを除いて比べる。
-  # 初めは警告だけ（今ある食い違いを揃え終えたら continue-on-error を外して失敗にする）
+  # 違えば失敗にする（直すときは、相手の repo も同じ名前のブランチで直して両方の PR を通す）
   shared-check:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -106,4 +106,3 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npm run shared-check -- sibling
-        continue-on-error: true

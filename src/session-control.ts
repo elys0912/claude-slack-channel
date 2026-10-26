@@ -31,14 +31,14 @@ const KILLABLE_PARENTS = new Set(['claude.exe', 'node.exe']);
 /** 状態ディレクトリに置く再起動の印（scripts/start.ps1 の $RestartFlagName と同じ名前にすること） */
 export const RESTART_FLAG_FILE = 'restart.flag';
 
-export type SessionSlack = Pick<SlackBridge, 'postText'>;
+export type SessionBridge = Pick<SlackBridge, 'postText'>;
 
 export interface SessionControlOptions {
   /** ターミナルを操作する手段。無ければ !restart（force 以外）・!compact・!clear は使えない */
   console: ConsoleAccess | undefined;
   /** start.ps1 が起動し直す印として見るファイル */
   restartFlagFile: string;
-  slack: SessionSlack;
+  bridge: SessionBridge;
   logger: Logger;
   /** 親プロセス（claude.exe）を止める（`!restart force`）。省略時は defaultKillParent */
   killParent?: ((logger: Logger) => void | Promise<void>) | undefined;
@@ -109,6 +109,27 @@ export class SessionControl {
     if (!sent) return;
     this.opts.logger.info(`!clear by=${byUserId}: /clear を送った`);
     await this.say(at, '🧹 /clear を送った。終わると「会話をクリアした」の知らせが来る');
+  }
+
+  /**
+   * `!stop`: Esc を送って、Claude の今の作業（応答・ツールの実行）を中断する。送れたら true。投げない。
+   * 応答中でなければ Esc は何も起こさないので、画面の状態は確かめずに送る
+   */
+  async interrupt(at: ThreadRef, byUserId: string): Promise<boolean> {
+    const console = this.opts.console;
+    if (!console) {
+      await this.say(at, '⚠️ このブリッジからはターミナルを操作できないので、中断できない（!restart force なら強制終了できる）');
+      return false;
+    }
+    try {
+      await console.sendKeys(['Esc']);
+      this.opts.logger.info(`!stop by=${byUserId}: Esc を送った`);
+      return true;
+    } catch (e) {
+      this.opts.logger.warn('Esc の送信に失敗', e);
+      await this.say(at, `⚠️ 中断のキーを送れなかった: ${errMessage(e)}`);
+      return false;
+    }
   }
 
   stop(): void {
@@ -187,7 +208,7 @@ export class SessionControl {
 
   private async say(at: ThreadRef, text: string): Promise<void> {
     try {
-      await this.opts.slack.postText(at.channel, text, at.threadTs);
+      await this.opts.bridge.postText(at.channel, text, at.threadTs);
     } catch (e) {
       this.opts.logger.warn('再起動・圧縮・クリアの知らせの投稿に失敗', e);
     }

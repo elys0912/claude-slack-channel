@@ -1,7 +1,7 @@
 // Slack のアプリのホームタブに出す画面（Block Kit の view）を組み立てる純関数群（I/O なし）
 import { escapeMrkdwn } from './format.js';
 // Slack の上限（header の plain_text は 150、section の mrkdwn は 3000）に収める。サロゲートペアの途中では切らない
-import { clip } from './text.js';
+import { clip, formatTime } from './text.js';
 
 export interface HomeState {
   /** 稼働中なら起動時刻、停止中なら停止時刻 */
@@ -38,12 +38,6 @@ export interface HomeCustom {
   greetings?: string[] | undefined;
   body?: string[] | undefined;
   footer?: string | undefined;
-}
-
-/** `2026-09-30 21:05` の形（実行している PC のタイムゾーン） */
-export function formatTime(d: Date): string {
-  const pad = (n: number): string => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
 function section(text: string): unknown {

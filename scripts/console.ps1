@@ -7,7 +7,7 @@
 #
 # 使い方:
 #   console.ps1 -Mode read                     表示中の範囲の文字を UTF-8 で標準出力に書く
-#   console.ps1 -Mode keys -Keys Down,Enter    キーを順に送る（Up / Down / Enter / Digit1 のみ）
+#   console.ps1 -Mode keys -Keys Down,Enter    キーを順に送る（Up / Down / Enter / Digit1 / Esc のみ）
 #   console.ps1 -Mode command -Command exit    固定のスラッシュコマンド（/exit・/compact・/clear）を打って Enter を送る
 #   -TargetPid <pid>                           そのプロセスのコンソールに付け直してから操作する
 
@@ -24,7 +24,7 @@ $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 
 # 送ってよいキー。1 つでも違えば何も送らずに終わる（途中まで送ると TUI の状態が中途半端になるため）
-$AllowedKeys = @('Up', 'Down', 'Enter', 'Digit1')
+$AllowedKeys = @('Up', 'Down', 'Enter', 'Digit1', 'Esc')
 $keyList = @($Keys -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
 $unknown = @($keyList | Where-Object { $AllowedKeys -notcontains $_ })
 if ($unknown.Count -gt 0) {
@@ -32,11 +32,13 @@ if ($unknown.Count -gt 0) {
     exit 2
 }
 
-# 仮想キーコード（VK_UP / VK_DOWN / VK_RETURN / VK_1）と、Enter の文字
+# 仮想キーコード（VK_UP / VK_DOWN / VK_RETURN / VK_1 / VK_ESCAPE）と、Enter・Esc の文字
 $VK_UP = 0x26
 $VK_DOWN = 0x28
 $VK_RETURN = 0x0D
 $VK_1 = 0x31
+$VK_ESCAPE = 0x1B
+$CHAR_ESC = [char]27
 $CHAR_NONE = [char]0
 $CHAR_CR = [char]13
 # TUI が 1 キーずつ描き直す間を空ける
@@ -169,6 +171,7 @@ foreach ($key in $keyList) {
         'Down' { [SlackChannelConsole]::SendKey($CHAR_NONE, $VK_DOWN) }
         'Enter' { [SlackChannelConsole]::SendKey($CHAR_CR, $VK_RETURN) }
         'Digit1' { [SlackChannelConsole]::SendKey([char]'1', $VK_1) }
+        'Esc' { [SlackChannelConsole]::SendKey($CHAR_ESC, $VK_ESCAPE) }
     }
     Start-Sleep -Milliseconds $KEY_INTERVAL_MS
 }
