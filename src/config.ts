@@ -5,6 +5,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import { errMessage } from './errors.js';
 import { stripBom } from './text.js';
+import { parseSwitch, unknownSwitchMessage } from './env-switch.js';
 
 /** 状態ディレクトリの既定の場所（ホームからの相対。scripts/start.ps1 の $DefaultStateDirRelative と同じ値にすること） */
 const DEFAULT_STATE_DIR_RELATIVE = ['.claude', 'channels', 'slack'];
@@ -79,8 +80,9 @@ export interface Tokens {
 /**
  * dir/.env から SLACK_BOT_TOKEN（xoxb-）と SLACK_APP_TOKEN（xapp-）、任意の DOWNLOAD_DIR を読む。環境変数は見ない。
  * ファイルが読めない・キーが無い・接頭辞が違う・DOWNLOAD_DIR が絶対パスでないときは投げる（メッセージにトークンの値は含めない）。
+ * warn は .env の値を読み替えたときの知らせ（起動は止めない）。省略時は知らせない。
  */
-export function loadTokens(dir: string): Tokens {
+export function loadTokens(dir: string, warn?: (message: string) => void): Tokens {
   const file = path.join(dir, '.env');
   let text: string;
   try {
@@ -101,7 +103,9 @@ export function loadTokens(dir: string): Tokens {
     if (!path.isAbsolute(downloadDir)) throw new Error('DOWNLOAD_DIR は絶対パスで指定する');
     tokens.downloadDir = path.resolve(downloadDir);
   }
-  if (/^(on|true|1)$/i.test(parsed.SESSION_ALLOW_ALL ?? '')) tokens.sessionAllowAll = true;
+  const allowAll = parseSwitch(parsed.SESSION_ALLOW_ALL);
+  if (allowAll === true) tokens.sessionAllowAll = true;
+  if (allowAll === null) warn?.(unknownSwitchMessage('SESSION_ALLOW_ALL', parsed.SESSION_ALLOW_ALL ?? '', false));
   return tokens;
 }
 

@@ -13,14 +13,18 @@ scripts/start.cmd
 
 src/allow-extra-check.ts
 src/allow-rules.ts
+src/bounded-map.ts
 src/chunk.ts
 src/console.ts
 src/download.ts
+src/env-switch.ts
 src/errors.ts
 src/hook-event.ts
 src/hook-inbox.ts
 src/hook.ts
 src/lock.ts
+src/log.ts
+src/permission-core.ts
 src/placeholder.ts
 src/screen.ts
 src/session-allow.ts
@@ -34,8 +38,10 @@ src/watchdog.ts
 
 test/allow-extra-check.test.ts
 test/allow-rules.test.ts
+test/bounded-map.test.ts
 test/chunk-legacy.test.ts
 test/chunk.test.ts
+test/env-switch.test.ts
 test/console-script.test.ts
 test/hook-inbox.test.ts
 test/hook.test.ts
