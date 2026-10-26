@@ -13,6 +13,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
     "precheck": "npm run build",
     "check": "node dist/scripts/check.js",
+    "shared-check": "node dist/scripts/shared-check.js",
     "start": "node dist/src/main.js",
     "lint": "eslint ."
   },
