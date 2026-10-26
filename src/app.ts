@@ -405,6 +405,11 @@ export interface BridgeAppOptions {
   logger: Logger;
   /** MCP のトランスポート。省略時は stdio */
   transport?: Transport | undefined;
+  /**
+   * 接続済みの MCP サーバー（縮退モードから戻るとき）。渡したら新しく作らず、ツールの実体を差し替えて使う（transport は使わない）。
+   * 起動に失敗したときは閉じない（縮退モードに戻して使い続けるため）
+   */
+  server?: ChannelServer | undefined;
   /** stop() の最初に release する（後片付けが固まってもロックを残さないため） */
   lock?: Pick<InstanceLock, 'release'> | undefined;
   /**
@@ -523,14 +528,15 @@ export async function startBridgeApp(opts: BridgeAppOptions): Promise<RunningApp
     : undefined;
 
   // server と relay は互いを参照する。relay を使うのは接続後なので、宣言順はこれでよい
-  const server: ChannelServer = new ChannelServer({
+  const deps: McpDeps = {
     logger,
     ...createToolHandlers(bridge, logger, () => watchdog.activity(), opts.download),
     onPermissionRequest: (req) => {
       watchdog.activity();
       return relay.request(req);
     },
-  });
+  };
+  const server: ChannelServer = opts.server ?? new ChannelServer(deps);
   const sessionAllow = opts.sessionAllowAll
     ? // deny に当たる操作は Claude Code が確認を出す前に止めるので、照合するのは ask だけ
       // managed の ask も、--settings より優先して Claude Code が確認を求めるので照合する
@@ -587,6 +593,8 @@ export async function startBridgeApp(opts: BridgeAppOptions): Promise<RunningApp
   const { publishHomeAll, onHomeOpened } = wireHome(opts, ruleStore, startedAt);
 
   let stopped: Promise<void> | undefined;
+  /** 起動に失敗したか（受け取った server は、そのときは閉じない） */
+  let startFailed = false;
   const stop = (): Promise<void> =>
     (stopped ??= (async () => {
       opts.lock?.release();
@@ -599,13 +607,14 @@ export async function startBridgeApp(opts: BridgeAppOptions): Promise<RunningApp
         await publishHomeAll(false, new Date());
         await bridge.stop();
       } finally {
-        await server.close();
+        if (!(startFailed && opts.server)) await server.close();
       }
     })());
   opts.onCleanupReady?.(stop);
 
   try {
-    if (opts.transport) await server.connect(opts.transport);
+    if (opts.server) await server.replaceDeps(deps);
+    else if (opts.transport) await server.connect(opts.transport);
     else await server.connectStdio();
     await bridge.start({
       onMessage: (result, raw) => handleMessage(wiring, result, raw),
@@ -614,6 +623,7 @@ export async function startBridgeApp(opts: BridgeAppOptions): Promise<RunningApp
       onHomeOpened,
     });
   } catch (e) {
+    startFailed = true;
     await stop().catch((err: unknown) => logger.error('起動失敗後の後片付けで例外', err));
     throw e;
   }
@@ -639,17 +649,77 @@ async function noticeRejectedRules(store: AllowRuleStore, notice: NoticePoster, 
   await notice.post(text);
 }
 
+/** 縮退中にロックを取り直す間隔（lock.ts のロックの失効 staleMs の既定と同じ） */
+export const DEGRADED_RELOCK_MS = 30000;
+
 export interface DegradedAppOptions {
   logger: Logger;
   /** MCP のトランスポート。省略時は stdio */
   transport?: Transport | undefined;
+  /** 縮退中にロックを取り直し、取れたら通常のブリッジに戻る。省略時は取り直さない */
+  relock?:
+    | {
+        lock: Pick<InstanceLock, 'tryAcquire' | 'release'>;
+        /** 取り直す間隔（ミリ秒。テスト用。省略時は DEGRADED_RELOCK_MS） */
+        intervalMs?: number | undefined;
+        /**
+         * ロックが取れたら、接続済みの server を渡して呼ぶ。通常のブリッジを始めて返す（startBridgeApp に server を渡す）。
+         * 投げたらロックを手放して縮退モードに戻り、次の間隔でまた取り直す
+         */
+        promote: (server: ChannelServer) => Promise<RunningApp>;
+      }
+    | undefined;
 }
 
-/** 縮退モード: MCP サーバーだけ起動し、ツールはすべてエラーを返す */
+/**
+ * 縮退モード: MCP サーバーだけ起動し、ツールはすべてエラーを返す。
+ * relock があれば、ロックが取れるまで取り直し、取れたら同じ MCP サーバーのまま通常のブリッジに戻る
+ * （戻ったことは Slack には投稿せず、ログにだけ書く）
+ */
 export async function startDegradedApp(opts: DegradedAppOptions): Promise<RunningApp> {
-  const server = new ChannelServer(createDegradedDeps(opts.logger));
+  const { logger, relock } = opts;
+  const server = new ChannelServer(createDegradedDeps(logger));
   if (opts.transport) await server.connect(opts.transport);
   else await server.connectStdio();
 
-  return { stop: () => server.close() };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let promoting: Promise<void> | undefined;
+  let promoted: RunningApp | undefined;
+  let stopped: Promise<void> | undefined;
+
+  const tryPromote = async (): Promise<void> => {
+    if (!relock || stopped) return;
+    if (!relock.lock.tryAcquire().acquired) {
+      schedule();
+      return;
+    }
+    logger.info('ロックが取れたので、縮退モードから通常のブリッジに戻る');
+    try {
+      promoted = await relock.promote(server);
+      logger.info('通常のブリッジに戻った');
+    } catch (e) {
+      logger.warn('通常のブリッジに戻れなかったので、縮退モードを続ける', e);
+      relock.lock.release();
+      await server.replaceDeps(createDegradedDeps(logger));
+      schedule();
+    }
+  };
+  function schedule(): void {
+    if (!relock || stopped) return;
+    timer = setTimeout(() => {
+      promoting = tryPromote();
+    }, relock.intervalMs ?? DEGRADED_RELOCK_MS);
+    timer.unref();
+  }
+  schedule();
+
+  const stop = (): Promise<void> =>
+    (stopped ??= (async () => {
+      clearTimeout(timer);
+      // 戻る途中なら、終わるのを待ってから止める（始めかけたブリッジを残さない）
+      await promoting;
+      if (promoted) await promoted.stop();
+      else await server.close();
+    })());
+  return { stop };
 }

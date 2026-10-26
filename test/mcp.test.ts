@@ -68,7 +68,7 @@ describe('ChannelServer の initialize', () => {
     expect(caps?.experimental).toBeDefined();
     expect(caps?.experimental?.['claude/channel']).toEqual({});
     expect(caps?.experimental?.['claude/channel/permission']).toEqual({});
-    expect(caps?.tools).toEqual({});
+    expect(caps?.tools).toEqual({ listChanged: true });
     expect(client.getServerVersion()?.name).toBe(SERVER_NAME);
     expect(client.getInstructions()).toBe(INSTRUCTIONS);
     await client.close();

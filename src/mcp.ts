@@ -178,8 +178,8 @@ export interface McpDeps {
 }
 
 export class ChannelServer {
-  private readonly logger: Logger;
-  private readonly deps: McpDeps;
+  private logger: Logger;
+  private deps: McpDeps;
   private readonly server: Server;
 
   constructor(deps: McpDeps) {
@@ -194,7 +194,8 @@ export class ChannelServer {
             'claude/channel': {},
             'claude/channel/permission': {},
           },
-          tools: {},
+          // 縮退モードから通常のブリッジに戻ると download_file が増えるので、tools/list_changed を送る
+          tools: { listChanged: true },
         },
         instructions: INSTRUCTIONS,
       }
@@ -250,6 +251,20 @@ export class ChannelServer {
 
   async connectStdio(): Promise<void> {
     await this.connect(new StdioServerTransport());
+  }
+
+  /**
+   * ツールの実体を差し替える（縮退モードと通常のブリッジを行き来するとき）。
+   * Claude Code とは初期化を済ませているので、サーバーは作り直さずに deps だけ替え、ツールの一覧が変わったことを知らせる
+   */
+  async replaceDeps(deps: McpDeps): Promise<void> {
+    this.deps = deps;
+    this.logger = deps.logger;
+    try {
+      await this.server.sendToolListChanged();
+    } catch (e) {
+      this.logger.warn('tools/list_changed を送れなかった', e);
+    }
   }
 
   /** Slack から届いたメッセージを Claude のセッションへ流す */
