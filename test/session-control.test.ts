@@ -33,7 +33,7 @@ describe('SessionControl', () => {
     return new SessionControl({
       console,
       restartFlagFile: flag,
-      slack: { postText: async (_c, text) => ({ ts: [String(posted.push(text))] }) },
+      bridge: { postText: async (_c, text) => ({ ts: [String(posted.push(text))] }) },
       logger: new Logger({ stderr: false }),
       killParent: () => void killed++,
       exitConfirmMs,
@@ -119,7 +119,7 @@ describe('SessionControl', () => {
     const s = new SessionControl({
       console: undefined,
       restartFlagFile: flag,
-      slack: { postText: async (_c, text) => ({ ts: [String(posted.push(text))] }) },
+      bridge: { postText: async (_c, text) => ({ ts: [String(posted.push(text))] }) },
       logger: new Logger({ stderr: false }),
       killParent: () => {
         throw new Error('EPERM');
@@ -146,7 +146,7 @@ describe('SessionControl', () => {
     const s = new SessionControl({
       console: fakeConsole(),
       restartFlagFile: path.join(dir, 'no-such-dir', 'restart.flag'),
-      slack: { postText: async (_c, text) => ({ ts: [String(posted.push(text))] }) },
+      bridge: { postText: async (_c, text) => ({ ts: [String(posted.push(text))] }) },
       logger: new Logger({ stderr: false }),
       killParent: () => void killed++,
     });
@@ -185,7 +185,7 @@ describe('restart.flag の中身', () => {
         new SessionControl({
           console: undefined,
           restartFlagFile: flag,
-          slack: { postText: async () => ({ ts: [] }) },
+          bridge: { postText: async () => ({ ts: [] }) },
           logger: new Logger({ stderr: false }),
           killParent: () => undefined,
           sessionId,

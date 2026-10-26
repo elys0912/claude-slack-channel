@@ -585,7 +585,7 @@ export async function startBridgeApp(opts: BridgeAppOptions): Promise<RunningApp
     });
   };
   const session = opts.restartFlagFile
-    ? new SessionControl({ console: opts.console, restartFlagFile: opts.restartFlagFile, slack: bridge, logger, killParent: opts.killParent, sessionId: () => sessionId })
+    ? new SessionControl({ console: opts.console, restartFlagFile: opts.restartFlagFile, bridge, logger, killParent: opts.killParent, sessionId: () => sessionId })
     : undefined;
   const wiring: Wiring = { bridge, server, relay, logger, watchdog, screen, rules, status, session, sessionAllow };
 
