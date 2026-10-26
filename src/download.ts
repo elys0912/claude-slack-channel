@@ -11,7 +11,7 @@ import { systemExe } from './system-exe.js';
 import { clip } from './text.js';
 
 const BYTES_PER_GIB = 1024 ** 3;
-/** ダウンロードの上限（1GB。Slack・Discord とも、添付はこれより小さい） */
+/** ダウンロードの上限（1GB。どちらのチャネルでも、添付の上限より大きい） */
 export const MAX_DOWNLOAD_BYTES = BYTES_PER_GIB;
 /** 展開後の合計サイズの上限（ZIP 爆弾対策） */
 export const MAX_EXTRACT_BYTES = 4 * BYTES_PER_GIB;
@@ -263,7 +263,7 @@ export interface RemoteFile {
   url: string;
 }
 
-/** Ref は添付の指し方（Slack はファイル ID、Discord はメッセージと添付の ID）。F はチャネルの側の添付の情報 */
+/** Ref は添付の指し方（チャネルごとに違う。ファイル ID や、メッセージと添付の ID）。F はチャネルの側の添付の情報 */
 export interface DownloadDeps<Ref, F extends RemoteFile = RemoteFile> {
   /** 添付の情報を引く */
   info: (ref: Ref) => Promise<F>;

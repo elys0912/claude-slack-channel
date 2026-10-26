@@ -25,12 +25,12 @@ import type { HomeCustom } from './home.js';
 import { downloadAttachment } from './download.js';
 import type { DownloadDeps } from './download.js';
 import type { SlackFile } from './slack.js';
-
-/** Slack のファイル ID で指す添付の取得 */
-export type SlackDownloadDeps = DownloadDeps<string, SlackFile>;
 import { HookInbox } from './hook-inbox.js';
 import { hookToNotice } from './hook-notices.js';
 import { NoticePoster } from './notice.js';
+
+/** Slack のファイル ID で指す添付の取得 */
+export type SlackDownloadDeps = DownloadDeps<string, SlackFile>;
 
 // Slack 側で「読んだ」「許可した」「拒否した」を示すリアクション
 export const REACTION = {
