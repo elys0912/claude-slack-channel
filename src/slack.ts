@@ -4,7 +4,7 @@ import { WebClient } from '@slack/web-api';
 import { SocketModeClient } from '@slack/socket-mode';
 import type { ParsedAccess } from './config.js';
 import type { Logger } from './log.js';
-import { toSlackLogger } from './log.js';
+import { toSlackLogger } from './slack-logger.js';
 import { EventDedupe, gate } from './gate.js';
 import type { GateResult, InboundMessage } from './gate.js';
 import { parseBlockAction } from './permission.js';

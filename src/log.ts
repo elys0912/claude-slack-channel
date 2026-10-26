@@ -1,7 +1,8 @@
-// stderr / ファイルへ書き出すロガー。@slack/logger 互換のアダプタも提供する。
+// stderr / ファイルへ書き出すロガー。
+// このファイルは claude-slack-channel と claude-discord-channel で同じ内容にしている（直すときは両方を直す）。
 import fs from 'node:fs';
 import path from 'node:path';
-import type { Logger as SlackLogger, LogLevel as SlackLogLevel } from '@slack/logger';
+import { redactChannelSecrets } from './redact.js';
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
@@ -18,11 +19,6 @@ export function parseLogLevel(value: string | undefined): LogLevel | undefined {
   return v !== undefined && Object.hasOwn(LEVEL_ORDER, v) ? (v as LogLevel) : undefined;
 }
 
-// Slack のトークン（xox?- 系すべて、xapp-）と Bearer トークンをログから伏せる。
-// xox の後ろの 1 文字は種別（b/p/a/e など）で、将来増えても漏れないよう英小文字すべてを対象にする。
-const XOX_TOKEN_RE = /xox[a-z]-[\w-]+/g;
-const XAPP_TOKEN_RE = /xapp-[\w-]+/g;
-const BEARER_RE = /Bearer\s+\S+/g;
 // 画面の中継（!screen）にも使うので、ターミナルに出やすいほかの鍵の形も伏せる。
 // GitHub のトークン（ghp_ / gho_ / ghu_ / ghs_ / ghr_ と github_pat_）、AWS のアクセスキー ID（AKIA / ASIA + 16 文字）、
 // sk- で始まる API キー（Anthropic・OpenAI など。普通の語を伏せないよう 20 文字以上に限る）
@@ -30,11 +26,9 @@ const GITHUB_TOKEN_RE = /\b(gh[pousr]_|github_pat_)[A-Za-z0-9_]{20,}/g;
 const AWS_ACCESS_KEY_RE = /\b(AKIA|ASIA)[A-Z0-9]{16}\b/g;
 const SK_API_KEY_RE = /\bsk-[A-Za-z0-9_-]{20,}/g;
 
+/** ログと画面の中継に出す前に、トークンや鍵の形を伏せる（チャネル固有の形は redact.ts） */
 export function redact(s: string): string {
-  return s
-    .replace(XOX_TOKEN_RE, 'xox?-***')
-    .replace(XAPP_TOKEN_RE, 'xapp-***')
-    .replace(BEARER_RE, 'Bearer ***')
+  return redactChannelSecrets(s)
     .replace(GITHUB_TOKEN_RE, (_m, prefix: string) => `${prefix}***`)
     .replace(AWS_ACCESS_KEY_RE, (_m, prefix: string) => `${prefix}***`)
     .replace(SK_API_KEY_RE, 'sk-***');
@@ -165,26 +159,4 @@ export class Logger {
       // ファイル書き込みの失敗も呼び出し元へは伝えない
     }
   }
-}
-
-/**
- * @slack/logger の Logger インターフェース互換のアダプタ。
- * SocketModeClient / WebClient の logger オプションにそのまま渡せる形。
- *
- * Logger はプロセスで 1 つを共有しているので、SDK からの setName / setLevel は共有側に透過させない
- * （WebClient はコンストラクタで setLevel(INFO) を呼ぶ）。代わりに行頭へ範囲名 `[scope]` を付ける。
- * @slack/logger の LogLevel（文字列 enum）は値が 'debug' | 'info' | 'warn' | 'error' で
- * このモジュールの LogLevel と同じなので、getLevel は enum 型として返す。
- */
-export function toSlackLogger(l: Logger, scope: string): SlackLogger {
-  const tag = `[${scope}]`;
-  return {
-    debug: (...m: unknown[]) => l.debug(tag, ...m),
-    info: (...m: unknown[]) => l.info(tag, ...m),
-    warn: (...m: unknown[]) => l.warn(tag, ...m),
-    error: (...m: unknown[]) => l.error(tag, ...m),
-    setLevel: () => undefined,
-    getLevel: (): SlackLogLevel => l.getLevel() as SlackLogLevel,
-    setName: () => undefined,
-  };
 }

@@ -2,7 +2,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { Logger, parseLogLevel, redact, toSlackLogger } from '../src/log.js';
+import { Logger, parseLogLevel, redact } from '../src/log.js';
+import { toSlackLogger } from '../src/slack-logger.js';
 
 describe('redact', () => {
   it('xoxb トークンを伏せる', () => {
