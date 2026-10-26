@@ -89,7 +89,7 @@ jobs:
           HEAD_REF: ${{ github.head_ref }}
         run: |
           ref=main
-          if [ -n "$HEAD_REF" ] && git ls-remote --exit-code --heads https://github.com/elys0912/claude-discord-channel.git "$HEAD_REF" > /dev/null; then
+          if [ -n "$HEAD_REF" ] && git ls-remote --exit-code --heads https://github.com/elys0912/claude-discord-channel.git "refs/heads/$HEAD_REF" > /dev/null; then
             ref="$HEAD_REF"
           fi
           echo "ref=$ref" >> "$GITHUB_OUTPUT"

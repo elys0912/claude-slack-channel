@@ -15,7 +15,7 @@ const LEVEL_ORDER: Record<LogLevel, number> = {
 /** 文字列をログのレベルにする（大文字・小文字は問わない）。空・知らない値なら undefined */
 export function parseLogLevel(value: string | undefined): LogLevel | undefined {
   const v = value?.trim().toLowerCase();
-  return v !== undefined && v in LEVEL_ORDER ? (v as LogLevel) : undefined;
+  return v !== undefined && Object.hasOwn(LEVEL_ORDER, v) ? (v as LogLevel) : undefined;
 }
 
 // Slack のトークン（xox?- 系すべて、xapp-）と Bearer トークンをログから伏せる。
