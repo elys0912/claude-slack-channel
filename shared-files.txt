@@ -7,6 +7,7 @@ test/shared-check.test.ts
 config/extra-mcp.example.json
 config/projects.example.json
 scripts/common.ps1
+scripts/console.ps1
 scripts/dialog-answer.ps1
 scripts/start.cmd
 

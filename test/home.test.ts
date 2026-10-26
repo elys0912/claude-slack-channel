@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { buildForbiddenHomeView, buildHomeView, formatTime } from '../src/home.js';
+import { buildForbiddenHomeView, buildHomeView } from '../src/home.js';
+import { formatTime } from '../src/text.js';
 import type { HomeState } from '../src/home.js';
 
 const base: HomeState = {

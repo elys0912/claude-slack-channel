@@ -20,7 +20,7 @@ export interface WatchdogOptions {
 }
 
 /**
- * 最後に Claude へ渡したメッセージから timeoutMs の間、Claude の動き（reply / react / edit_message /
+ * 最後に Claude へ渡したメッセージから timeoutMs の間、Claude の動き（返事にあたるツールと
  * permission_request）が 1 つも無ければ notify を 1 回呼ぶ。見張るのは常に最後の 1 件だけ
  * （セッションは 1 つなので、新しいメッセージが届いたら待ち時間を最初から数え直す）。
  */

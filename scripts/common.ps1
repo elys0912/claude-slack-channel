@@ -144,7 +144,7 @@ function Get-LaunchArgs {
 }
 
 # 一時ファイル（mcp.json・合成した設定）を置くフォルダーの名前。状態ディレクトリの末尾の名前に、フルパスのハッシュの先頭 8 桁を足す
-# （例: slack-1a2b3c4d）。末尾の名前が同じ別の状態ディレクトリ（C:\a\slack と既定の ...\channels\slack など）で上書きし合わない。
+# （例: 末尾が bridge なら bridge-1a2b3c4d）。末尾の名前が同じ別の状態ディレクトリ（C:\a\bridge と C:\b\bridge など）で上書きし合わない。
 # DryRun は起動中のセッションのファイルを上書きしないよう、末尾に -dryrun を付けた別のフォルダーにする
 function Get-SessionDirName {
     param([Parameter(Mandatory)][string]$StateDir, [switch]$DryRun)
