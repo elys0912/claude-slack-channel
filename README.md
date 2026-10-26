@@ -198,8 +198,10 @@ Slack から手元の PC を操作する以上、何をどこまで許すかが�
 | [docs/security.md](docs/security.md) | Slack から実行できる範囲を変える前と、トークンが漏れたとき |
 | [docs/reference.md](docs/reference.md) | 期限や上限などの値、設定ファイルと環境変数を調べるとき。動かないときのトラブルシューティング |
 | [docs/development.md](docs/development.md) | このリポジトリに手を入れるとき（コマンド、テスト、ファイル構成） |
+| [CHANGELOG.md](CHANGELOG.md) | 版ごとに、設定・起動・Slack での見え方がどう変わったかを知りたいとき |
+| [SECURITY.md](SECURITY.md) | 脆弱性を見つけたとき（Issues ではなく非公開で報告する） |
 
-ドキュメントで解決しないときは、GitHub の Issues に書いてほしい。
+ドキュメントで解決しないときは、GitHub の Issues に書いてほしい。脆弱性だけは Issues に書かず、[SECURITY.md](SECURITY.md) の手順で知らせてほしい。
 
 ## ライセンス
 
