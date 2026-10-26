@@ -37,6 +37,7 @@
 | 変数 | 用途 |
 |---|---|
 | `SLACK_CHANNEL_STATE_DIR` | 状態ディレクトリを変える（既定は `%USERPROFILE%\.claude\channels\slack`）。変えたら deny も書き換える（[権限の設計](security.md#権限の設計)） |
+| `SLACK_CHANNEL_LOG_LEVEL` | ログのレベル（debug / info / warn / error。既定は info）。`start.ps1` を実行するシェルで設定すれば、ブリッジに渡す（[ログ](#ログ)） |
 | `SLACK_CHANNEL_REPLY_TIMEOUT_MIN` | 無応答の警告を出すまでの分数（既定は 5、小数も可）。`0` で無効になる |
 | `ENABLE_CLAUDEAI_MCP_SERVERS` | 起動スクリプトが `false` を設定する。手で設定する必要はない |
 | `SLACK_CHANNEL_PLACEHOLDER` | `1` なら、サーバーはツールを持たずに待つだけになる。起動スクリプトが local スコープに登録する `slackbridge` にだけ付ける（[権限の設計](security.md#権限の設計)）。手で設定する必要はない |
@@ -49,7 +50,7 @@
 ## ログ
 
 - 出力先は `logs\bridge.log` と stderr。stderr が Claude Code の `/mcp` から見えるかは確かめていない。
-- レベルは info で固定（変える設定は無い）。
+- レベルの既定は info。環境変数 `SLACK_CHANNEL_LOG_LEVEL`（debug / info / warn / error）で変えられる。`start.ps1` を実行するシェルで設定すれば、ブリッジに渡す。知らない値なら info のままにし、ログに警告を出す。
 - 5MB を超えると `bridge.log.1` に退避する。残すのは1世代だけで、古い `.1` は上書きする。
 
 ## 固定値

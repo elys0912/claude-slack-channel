@@ -12,6 +12,12 @@ const LEVEL_ORDER: Record<LogLevel, number> = {
   error: 3,
 };
 
+/** 文字列をログのレベルにする（大文字・小文字は問わない）。空・知らない値なら undefined */
+export function parseLogLevel(value: string | undefined): LogLevel | undefined {
+  const v = value?.trim().toLowerCase();
+  return v !== undefined && v in LEVEL_ORDER ? (v as LogLevel) : undefined;
+}
+
 // Slack のトークン（xox?- 系すべて、xapp-）と Bearer トークンをログから伏せる。
 // xox の後ろの 1 文字は種別（b/p/a/e など）で、将来増えても漏れないよう英小文字すべてを対象にする。
 const XOX_TOKEN_RE = /xox[a-z]-[\w-]+/g;

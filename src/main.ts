@@ -5,7 +5,7 @@ import path from 'node:path';
 import { loadAccess, loadHomeCustom, loadTokens, stateDir } from './config.js';
 import type { ParsedAccess, Tokens } from './config.js';
 import { errMessage } from './errors.js';
-import { Logger } from './log.js';
+import { Logger, parseLogLevel } from './log.js';
 import { InstanceLock, acquireWithRetry, isProcessAlive } from './lock.js';
 import { SlackBridge } from './slack.js';
 import { startBridgeApp, startDegradedApp } from './app.js';
@@ -30,9 +30,15 @@ const STDIN_POLL_MS = 5000;
 const LOCK_RETRY_MS = 10000;
 const LOCK_RETRY_INTERVAL_MS = 500;
 
+/** ログのレベルを変える環境変数（debug / info / warn / error。省略時は info）。start.ps1 が設定されていればブリッジに渡す */
+const LOG_LEVEL_ENV = 'SLACK_CHANNEL_LOG_LEVEL';
+
 function createLogger(dir: string): Logger {
-  const logger = new Logger({ file: path.join(dir, 'logs', 'bridge.log') });
+  const raw = process.env[LOG_LEVEL_ENV];
+  const level = parseLogLevel(raw);
+  const logger = new Logger({ file: path.join(dir, 'logs', 'bridge.log'), ...(level ? { level } : {}) });
   logger.setName('bridge');
+  if (raw && !level) logger.warn(`${LOG_LEVEL_ENV} の値 ${JSON.stringify(raw)} は使えないので info にする（debug / info / warn / error のどれか）`);
   return logger;
 }
 
