@@ -16,6 +16,7 @@ src/allow-rules.ts
 src/chunk.ts
 src/console.ts
 src/download.ts
+src/env-switch.ts
 src/errors.ts
 src/hook-event.ts
 src/hook-inbox.ts
@@ -36,6 +37,7 @@ test/allow-extra-check.test.ts
 test/allow-rules.test.ts
 test/chunk-legacy.test.ts
 test/chunk.test.ts
+test/env-switch.test.ts
 test/console-script.test.ts
 test/hook-inbox.test.ts
 test/hook.test.ts

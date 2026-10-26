@@ -87,7 +87,10 @@ async function main(dir: string, logger: Logger): Promise<void> {
   let tokens: Tokens;
   let access: ParsedAccess;
   try {
-    tokens = loadTokens(dir);
+    tokens = loadTokens(dir, (message) => {
+      process.stderr.write(`[slackbridge] ${message}\n`);
+      logger.warn(message);
+    });
     access = loadAccess(dir);
   } catch (e) {
     return abort(logger, '設定の読み込みに失敗', e, () => lock.release());
