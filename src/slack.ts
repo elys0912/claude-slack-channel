@@ -13,6 +13,7 @@ import { chunkText } from './chunk.js';
 import { escapeMrkdwn, linkifyMarkdownUrls, neutralizeBroadcasts } from './format.js';
 import { errMessage } from './errors.js';
 import { slackErrorCode } from './slack-errors.js';
+import { BoundedMap } from './bounded-map.js';
 
 // markdown_text は Slack 側の上限が 12000。余裕をみて 11000 で切る。
 const MARKDOWN_LIMIT = 11000;
@@ -246,7 +247,7 @@ export class SlackBridge {
   /** 送信やボタン操作を受け付けるチャンネル（許可ユーザーの DM + access.channels） */
   private readonly allowedChannelIds = new Set<string>();
   /** access.channels のチャンネルで、ボットが関わっているスレッド（`channel:threadTs`）。古いものから忘れる */
-  private readonly activeThreads = new Map<string, true>();
+  private readonly activeThreads = new BoundedMap<true>(ACTIVE_THREAD_CAPACITY);
 
   private botUserId: string | undefined;
   private handlers: SlackBridgeEvents | undefined;
@@ -543,12 +544,7 @@ export class SlackBridge {
   private markActiveThread(channel: string, threadTs: string): void {
     if (!(this.access.channels ?? []).includes(channel)) return;
     const key = `${channel}:${threadTs}`;
-    this.activeThreads.delete(key);
     this.activeThreads.set(key, true);
-    if (this.activeThreads.size > ACTIVE_THREAD_CAPACITY) {
-      const oldest = this.activeThreads.keys().next();
-      if (!oldest.done) this.activeThreads.delete(oldest.value);
-    }
   }
 
   /** interactive の処理本体（ack は enqueue で済ませてある） */
