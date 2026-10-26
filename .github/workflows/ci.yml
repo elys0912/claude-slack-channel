@@ -36,3 +36,39 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run lint
+
+  # 起動スクリプト（scripts/*.ps1）の静的解析と、start.cmd -DryRun が最後まで通るかを見る
+  scripts:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: PSScriptAnalyzer
+        shell: powershell
+        run: |
+          if (-not (Get-Module -ListAvailable PSScriptAnalyzer)) {
+              Install-Module PSScriptAnalyzer -Scope CurrentUser -Force
+          }
+          $results = Invoke-ScriptAnalyzer -Path scripts -Recurse -Settings PSScriptAnalyzerSettings.psd1
+          $results | Format-Table -AutoSize | Out-String -Width 200 | Write-Host
+          if ($results) { exit 1 }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      # claude.exe は入れず、PATH に置いた空の claude.cmd で代える（DryRun は claude を実行しない）
+      - name: start.cmd -DryRun
+        shell: cmd
+        run: |
+          mkdir "%RUNNER_TEMP%\fake-claude"
+          echo @exit /b 0> "%RUNNER_TEMP%\fake-claude\claude.cmd"
+          set "PATH=%RUNNER_TEMP%\fake-claude;%PATH%"
+          call scripts\start.cmd "%GITHUB_WORKSPACE%" -DryRun > "%RUNNER_TEMP%\dryrun.log" 2>&1
+          set code=%ERRORLEVEL%
+          type "%RUNNER_TEMP%\dryrun.log"
+          if not "%code%"=="0" exit /b %code%
+          findstr /C:"[DryRun]" "%RUNNER_TEMP%\dryrun.log" > nul || exit /b 1

@@ -230,9 +230,9 @@ function Get-HookSettings {
         return @{}
     }
     $hooks = @{}
-    foreach ($event in @('SessionStart', 'SessionEnd', 'Stop', 'StopFailure', 'Notification', 'PostCompact')) {
+    foreach ($hookEvent in @('SessionStart', 'SessionEnd', 'Stop', 'StopFailure', 'Notification', 'PostCompact')) {
         # exec 形式（command + args）でシェルを挟まず起動する（パスの引用符の問題を避ける）
-        $hooks[$event] = @(@{ hooks = @(@{ type = 'command'; command = $node.Source; args = @($hookJs); timeout = 5 }) })
+        $hooks[$hookEvent] = @(@{ hooks = @(@{ type = 'command'; command = $node.Source; args = @($hookJs); timeout = 5 }) })
     }
     return $hooks
 }
