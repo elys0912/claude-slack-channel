@@ -24,6 +24,7 @@ src/hook-inbox.ts
 src/hook.ts
 src/lock.ts
 src/log.ts
+src/permission-core.ts
 src/placeholder.ts
 src/screen.ts
 src/session-allow.ts
