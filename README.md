@@ -25,7 +25,7 @@ Claude Code（claude.exe、手元のセッション）
 ## 必要なもの
 
 - Windows と Windows Terminal。VS Code の統合ターミナルは、動作を確かめていないので対象外。
-- Node.js 22.12 以上。Claude Code が `node` コマンドでこのサーバーを起動するので、`node` と `npm` に **PATH を通しておく**。
+- Node.js 24 以上。Claude Code が `node` コマンドでこのサーバーを起動するので、`node` と `npm` に **PATH を通しておく**。
 - Claude Code。channels 機能と、channel 経由の実行許可の確認に対応した版が要る（最低バージョンは確かめていない）。`claude.exe` は次の順に探す。
   1. PATH 上の `claude`
   2. VS Code 拡張に同梱の `%USERPROFILE%\.vscode\extensions\anthropic.claude-code-<版>-win32-x64\resources\native-binary\claude.exe`（複数あればバージョン番号が最大のもの）
