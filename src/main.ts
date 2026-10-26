@@ -38,8 +38,17 @@ function createLogger(dir: string): Logger {
   const level = parseLogLevel(raw);
   const logger = new Logger({ file: path.join(dir, 'logs', 'bridge.log'), ...(level ? { level } : {}) });
   logger.setName('bridge');
-  if (raw && !level) logger.warn(`${LOG_LEVEL_ENV} の値 ${JSON.stringify(raw)} は使えないので info にする（debug / info / warn / error のどれか）`);
+  // 値そのものは出さない（.env の SESSION_ALLOW_ALL の知らせと同じく、書き間違えた秘密の値をログに残さない）
+  if (raw && !level) logger.warn(`${LOG_LEVEL_ENV} の値（${raw.trim().length} 文字）は使えないので info にする（debug / info / warn / error のどれか）`);
   return logger;
+}
+
+/** .env の値を読み替えたときの知らせを、stderr（Claude Code の /mcp で見える）とログの両方に出す */
+function envWarner(logger: Logger): (message: string) => void {
+  return (message) => {
+    process.stderr.write(`[slackbridge] ${message}\n`);
+    logger.warn(message);
+  };
 }
 
 /**
@@ -87,10 +96,7 @@ async function main(dir: string, logger: Logger): Promise<void> {
   let tokens: Tokens;
   let access: ParsedAccess;
   try {
-    tokens = loadTokens(dir, (message) => {
-      process.stderr.write(`[slackbridge] ${message}\n`);
-      logger.warn(message);
-    });
+    tokens = loadTokens(dir, envWarner(logger));
     access = loadAccess(dir);
   } catch (e) {
     return abort(logger, '設定の読み込みに失敗', e, () => lock.release());
@@ -108,8 +114,10 @@ async function main(dir: string, logger: Logger): Promise<void> {
       relock: {
         lock,
         promote: async (server) => {
-          const { bridge, botUserId } = await initBridge(tokens, access, logger);
-          return startBridgeApp({ ...bridgeAppOptions(dir, tokens, access, logger, bridge, botUserId), lock, server });
+          // 縮退の間に .env や access.json を直していてもよいよう、戻るときに読み直す（読めなければ縮退のまま次の間隔で取り直す）
+          const fresh = { tokens: loadTokens(dir, envWarner(logger)), access: loadAccess(dir) };
+          const { bridge, botUserId } = await initBridge(fresh.tokens, fresh.access, logger);
+          return startBridgeApp({ ...bridgeAppOptions(dir, fresh.tokens, fresh.access, logger, bridge, botUserId), lock, server });
         },
       },
     });
