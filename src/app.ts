@@ -707,7 +707,7 @@ export async function startDegradedApp(opts: DegradedAppOptions): Promise<Runnin
   function schedule(): void {
     if (!relock || stopped) return;
     timer = setTimeout(() => {
-      promoting = tryPromote();
+      promoting = tryPromote().catch((e: unknown) => logger.error('ロックの取り直しで例外', e));
     }, relock.intervalMs ?? DEGRADED_RELOCK_MS);
     timer.unref();
   }
