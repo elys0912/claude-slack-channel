@@ -33,6 +33,8 @@ function Invoke-Console {
 }
 
 function Write-Log {
+    # catch を空にしているのは意図どおり（下のコメント）
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingEmptyCatchBlock', '')]
     param([string]$Message)
     if (-not $LogFile) { return }
     try {
