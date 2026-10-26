@@ -24,13 +24,13 @@ jobs:
     timeout-minutes: 15
     steps:
       # アクションはタグの付け替えで中身が変わらないよう、コミットの SHA で固定する（コメントは対応するタグ）
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # 後続の npm ci（依存のスクリプト）から GITHUB_TOKEN を読めないよう、認証情報を残さない
           persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
       - run: npm ci
       - run: npm run typecheck
@@ -42,7 +42,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: PSScriptAnalyzer
@@ -54,9 +54,9 @@ jobs:
           $results = Invoke-ScriptAnalyzer -Path scripts -Recurse -Settings PSScriptAnalyzerSettings.psd1
           $results | Format-Table -AutoSize | Out-String -Width 200 | Write-Host
           if ($results) { exit 1 }
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
       - run: npm ci
       - run: npm run build
@@ -72,3 +72,38 @@ jobs:
           type "%RUNNER_TEMP%\dryrun.log"
           if not "%code%"=="0" exit /b %code%
           findstr /C:"[DryRun]" "%RUNNER_TEMP%\dryrun.log" > nul || exit /b 1
+
+  # 相手の repo と同じ内容にしているファイル（shared-files.txt）を、名前の違いを除いて比べる。
+  # 初めは警告だけ（今ある食い違いを揃え終えたら continue-on-error を外して失敗にする）
+  shared-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # PR では相手の repo に同じ名前のブランチがあればそれと、無ければ main と比べる（対の PR を両方そろえて確かめられるように）
+      - name: 相手の repo のブランチを決める
+        id: sibling
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          ref=main
+          if [ -n "$HEAD_REF" ] && git ls-remote --exit-code --heads https://github.com/elys0912/claude-discord-channel.git "refs/heads/$HEAD_REF" > /dev/null; then
+            ref="$HEAD_REF"
+          fi
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: elys0912/claude-discord-channel
+          ref: ${{ steps.sibling.outputs.ref }}
+          path: sibling
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm run shared-check -- sibling
+        continue-on-error: true
