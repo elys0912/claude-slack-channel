@@ -73,7 +73,7 @@ async function main(dir: string, logger: Logger): Promise<void> {
   const degraded = !lockResult.acquired;
   if (!lockResult.acquired) {
     process.stderr.write(
-      `[slackbridge] 別のインスタンスが動いている（pid=${lockResult.holder.pid}）。Slack には接続せず、MCP サーバーのみ起動する\n`
+      `[slackbridge] 別のインスタンスが動いている（pid=${lockResult.holder.pid}）。Slack には接続せず、MCP サーバーのみ起動する（30 秒ごとにロックを取り直す）\n`
     );
     logger.warn(`ロック取得に失敗（保持者 pid=${lockResult.holder.pid}）。縮退モードで起動する`);
   }
