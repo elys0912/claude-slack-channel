@@ -668,6 +668,149 @@ describe('縮退モード', () => {
     await app.stop();
   });
 
+  describe('ロックの取り直し（relock）', () => {
+    const busy = 'error: 別のインスタンスが動いているため、この Slack ブリッジは送信できない';
+
+    /** tryAcquire が results の順に答える偽のロック（尽きたら最後の値）。calls.free を true にすると、それ以降は取れる */
+    function fakeLock(results: boolean[]) {
+      const calls = { acquire: 0, release: 0, free: false };
+      const lock = {
+        tryAcquire: () => {
+          const acquired = calls.free || (results[Math.min(calls.acquire, results.length - 1)] ?? false);
+          calls.acquire += 1;
+          return acquired ? ({ acquired: true } as const) : ({ acquired: false, holder: { pid: 1, heartbeat: 0, startedAt: 0 } } as const);
+        },
+        release: () => void (calls.release += 1),
+      };
+      return { lock, calls };
+    }
+
+    async function startDegraded(results: boolean[], failStarts: ('auth' | 'closed')[] = []) {
+      const logger = new Logger({ stderr: false });
+      const web = makeWeb();
+      const socket = makeSocket();
+      socket.failStart = failStarts;
+      const { lock, calls } = fakeLock(results);
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      const client = new Client({ name: 'test-client', version: '0.0.1' }, { capabilities: {} });
+      const notifications: Notification[] = [];
+      client.fallbackNotificationHandler = async (n) => {
+        notifications.push(n as Notification);
+      };
+      let promoted = 0;
+      const app = await startDegradedApp({
+        logger,
+        transport: serverTransport,
+        relock: {
+          lock,
+          intervalMs: 10,
+          promote: async (server) => {
+            const bridge = new SlackBridge({ botToken: 'xoxb-TEST-DUMMY', appToken: 'xapp-TEST-DUMMY', access: ACCESS, logger, web, socket });
+            await bridge.init();
+            const running = await startBridgeApp({ bridge, logger, server, lock });
+            promoted += 1;
+            return running;
+          },
+        },
+      });
+      await client.connect(clientTransport);
+      return { app, client, web, socket, calls, notifications, promoted: () => promoted };
+    }
+
+    async function waitFor(cond: () => boolean): Promise<void> {
+      for (let i = 0; i < 200 && !cond(); i += 1) await new Promise((r) => setTimeout(r, 5));
+      expect(cond()).toBe(true);
+    }
+
+    it('取れるまでは縮退のまま。取れたら同じ MCP の接続のまま通常のブリッジに戻り、Slack には投稿しない', async () => {
+      const d = await startDegraded([false]);
+      await waitFor(() => d.calls.acquire >= 2);
+      const before = await d.client.callTool({ name: 'reply', arguments: { chat_id: DM1, text: 'hi' } });
+      expect(toolText(before)).toBe(busy);
+
+      d.calls.free = true;
+      await waitFor(() => d.promoted() === 1);
+      const acquired = d.calls.acquire;
+      expect(d.notifications.map((n) => n.method)).toContain('notifications/tools/list_changed');
+      expect(d.web.calls.filter((c) => c.method === 'chat.postMessage')).toEqual([]);
+
+      const after = await d.client.callTool({ name: 'reply', arguments: { chat_id: DM1, text: 'hi' } });
+      expect(toolText(after)).toMatch(/^sent /);
+
+      // 戻った後は取り直さない。stop で通常のブリッジごと止まる
+      await new Promise((r) => setTimeout(r, 30));
+      expect(d.calls.acquire).toBe(acquired);
+      await d.app.stop();
+      expect(d.socket.disconnected).toBe(1);
+      expect(d.calls.release).toBe(1);
+      await d.client.close();
+    });
+
+    it('戻るのに失敗したら、ロックを手放して縮退モードに戻り、次の間隔で取り直す', async () => {
+      const d = await startDegraded([true], ['auth']);
+      await waitFor(() => d.calls.acquire >= 2 && d.promoted() === 1);
+      // 1 回目の失敗の後片付けで、startBridgeApp の stop と縮退モードの両方が release する（2 回目は持ち主でないので何もしない）
+      expect(d.calls.release).toBe(2);
+      const reply = await d.client.callTool({ name: 'reply', arguments: { chat_id: DM1, text: 'hi' } });
+      expect(toolText(reply)).toMatch(/^sent /);
+      await d.app.stop();
+      await d.client.close();
+    });
+
+    it('失敗して縮退モードに戻った間は、ツールが error 文を返す', async () => {
+      const d = await startDegraded([true, false], ['auth']);
+      await waitFor(() => d.calls.acquire >= 2);
+      const reply = await d.client.callTool({ name: 'reply', arguments: { chat_id: DM1, text: 'hi' } });
+      expect(toolText(reply)).toBe(busy);
+      expect(d.promoted()).toBe(0);
+      await d.app.stop();
+      await d.client.close();
+    });
+
+    it('戻る途中に stop したら、戻り終わるのを待ってから通常のブリッジを止める', async () => {
+      const logger = new Logger({ stderr: false });
+      const { lock } = fakeLock([true]);
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      const client = new Client({ name: 'test-client', version: '0.0.1' }, { capabilities: {} });
+      let entered = false;
+      let finish: () => void = () => undefined;
+      const promotedStop = vi.fn(async () => undefined);
+      const app = await startDegradedApp({
+        logger,
+        transport: serverTransport,
+        relock: {
+          lock,
+          intervalMs: 10,
+          promote: async () => {
+            entered = true;
+            await new Promise<void>((r) => (finish = r));
+            return { stop: promotedStop };
+          },
+        },
+      });
+      await client.connect(clientTransport);
+      await waitFor(() => entered);
+
+      let stopped = false;
+      const stopping = app.stop().then(() => (stopped = true));
+      await new Promise((r) => setTimeout(r, 20));
+      expect(stopped).toBe(false);
+      finish();
+      await stopping;
+      expect(promotedStop).toHaveBeenCalledTimes(1);
+      await client.close();
+    });
+
+    it('stop の後は取り直さない', async () => {
+      const d = await startDegraded([false]);
+      await d.app.stop();
+      const count = d.calls.acquire;
+      await new Promise((r) => setTimeout(r, 40));
+      expect(d.calls.acquire).toBe(count);
+      await d.client.close();
+    });
+  });
+
   it('createDegradedDeps は logger をそのまま含む', async () => {
     const logger = new Logger({ stderr: false });
     const deps = createDegradedDeps(logger);
