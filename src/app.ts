@@ -22,8 +22,12 @@ import { AllowRuleStore, buildRejectedRulesText, partitionStoredRules, readAsk, 
 import { SessionAllowAll } from './session-allow.js';
 import { buildForbiddenHomeView, buildHomeView } from './home.js';
 import type { HomeCustom } from './home.js';
-import { downloadSlackFile } from './download.js';
+import { downloadAttachment } from './download.js';
 import type { DownloadDeps } from './download.js';
+import type { SlackFile } from './slack.js';
+
+/** Slack のファイル ID で指す添付の取得 */
+export type SlackDownloadDeps = DownloadDeps<string, SlackFile>;
 import { HookInbox } from './hook-inbox.js';
 import { hookToNotice } from './hook-notices.js';
 import { NoticePoster } from './notice.js';
@@ -135,7 +139,7 @@ export function createToolHandlers(
   bridge: ToolBridge,
   logger: Logger,
   onActivity?: () => void,
-  download?: DownloadDeps
+  download?: SlackDownloadDeps
 ): ToolHandlers {
   const run = async (tool: string, action: () => Promise<string>, isAnswer = true): Promise<string> => {
     if (isAnswer) onActivity?.();
@@ -171,7 +175,7 @@ export function createToolHandlers(
     onDownload: download
       ? ({ file_id, extract }) =>
           run('download_file', async () => {
-            const result = await downloadSlackFile(download, file_id, extract ?? false);
+            const result = await downloadAttachment(download, file_id, extract ?? false);
             logger.info(`download_file file=${file_id} extract=${extract ?? false}`);
             return result;
           }, false)
@@ -444,7 +448,7 @@ export interface BridgeAppOptions {
       }
     | undefined;
   /** 添付の保存先と取得手段（.env の DOWNLOAD_DIR があるとき）。省略時は download_file を出さない */
-  download?: DownloadDeps | undefined;
+  download?: SlackDownloadDeps | undefined;
   /**
    * Claude Code の hook が追記する記録（状態ディレクトリの hooks.jsonl）。読んで、ターミナル側の入力待ち・
    * 使用量の上限・セッションの開始と終了・圧縮を Slack に知らせる。省略時は読まない

@@ -8,7 +8,7 @@ import {
   archiveKind,
   createUnique,
   defaultTarPath,
-  downloadSlackFile,
+  downloadAttachment,
   extractArchive,
   sanitizeFileName,
   splitName,
@@ -203,11 +203,11 @@ describe('extractArchive', () => {
   });
 });
 
-describe('downloadSlackFile', () => {
-  function fakeBridge(info: Partial<SlackFile>, body: BodyInit | null): DownloadDeps['bridge'] & { fetched: number } {
+describe('downloadAttachment', () => {
+  function fakeBridge(info: Partial<SlackFile>, body: BodyInit | null): Pick<DownloadDeps<string, SlackFile>, 'info' | 'fetch'> & { fetched: number } {
     const bridge = {
       fetched: 0,
-      fileInfo: async (id: string): Promise<SlackFile> => ({
+      info: async (id: string): Promise<SlackFile> => ({
         id,
         name: 'a.txt',
         size: undefined,
@@ -215,7 +215,7 @@ describe('downloadSlackFile', () => {
         url: 'https://files.slack.com/x',
         ...info,
       }),
-      fetchFile: async (): Promise<Response> => {
+      fetch: async (): Promise<Response> => {
         bridge.fetched += 1;
         return new Response(body);
       },
@@ -224,45 +224,45 @@ describe('downloadSlackFile', () => {
   }
 
   it('送信者のファイル名を無害化して保存先に保存する', async () => {
-    const result = await downloadSlackFile({ bridge: fakeBridge({ name: '../../evil.txt' }, 'hello'), dir, limits: LIMITS }, 'F123', false);
+    const result = await downloadAttachment({ ...fakeBridge({ name: '../../evil.txt' }, 'hello'), dir, limits: LIMITS }, 'F123', false);
     expect(result).toBe(`saved: ${path.join(dir, 'evil.txt')} (5 bytes)`);
     expect(fs.readFileSync(path.join(dir, 'evil.txt'), 'utf8')).toBe('hello');
   });
 
   it('同じ名前があれば番号を付けて保存する', async () => {
     fs.writeFileSync(path.join(dir, 'a.txt'), 'old');
-    await downloadSlackFile({ bridge: fakeBridge({}, 'new'), dir, limits: LIMITS }, 'F123', false);
+    await downloadAttachment({ ...fakeBridge({}, 'new'), dir, limits: LIMITS }, 'F123', false);
     expect(fs.readFileSync(path.join(dir, 'a.txt'), 'utf8')).toBe('old');
     expect(fs.readFileSync(path.join(dir, 'a (1).txt'), 'utf8')).toBe('new');
   });
 
   it('files.info のサイズが上限を超えていれば取りに行かない', async () => {
     const bridge = fakeBridge({ size: LIMITS.maxDownloadBytes + 1 }, 'x');
-    await expect(downloadSlackFile({ bridge, dir, limits: LIMITS }, 'F123', false)).rejects.toThrow(/大きすぎる/);
+    await expect(downloadAttachment({ ...bridge, dir, limits: LIMITS }, 'F123', false)).rejects.toThrow(/大きすぎる/);
     expect(bridge.fetched).toBe(0);
     expect(fs.readdirSync(dir)).toEqual([]);
   });
 
   it('受信中に上限を超えたら止めて、書きかけを消す', async () => {
     const bridge = fakeBridge({}, Buffer.alloc(2000));
-    await expect(downloadSlackFile({ bridge, dir, limits: { ...LIMITS, maxDownloadBytes: 1000 } }, 'F123', false)).rejects.toThrow(/上限/);
+    await expect(downloadAttachment({ ...bridge, dir, limits: { ...LIMITS, maxDownloadBytes: 1000 } }, 'F123', false)).rejects.toThrow(/上限/);
     expect(fs.readdirSync(dir)).toEqual([]);
   });
 
   it('保存先が無ければ投げる', async () => {
     const missing = path.join(dir, 'missing');
-    await expect(downloadSlackFile({ bridge: fakeBridge({}, 'x'), dir: missing, limits: LIMITS }, 'F123', false)).rejects.toThrow(/保存先/);
+    await expect(downloadAttachment({ ...fakeBridge({}, 'x'), dir: missing, limits: LIMITS }, 'F123', false)).rejects.toThrow(/保存先/);
   });
 
   it('extract で gzip を展開する', async () => {
     const bridge = fakeBridge({ name: 'log.txt.gz' }, zlib.gzipSync('hello'));
-    const result = await downloadSlackFile({ bridge, dir, limits: LIMITS }, 'F123', true);
+    const result = await downloadAttachment({ ...bridge, dir, limits: LIMITS }, 'F123', true);
     expect(result).toContain(`extracted: ${path.join(dir, 'log.txt')} (1 files, 5 bytes)`);
     expect(fs.existsSync(path.join(dir, 'log.txt.gz'))).toBe(true);
   });
 
   it('extract でも圧縮ファイルでなければ保存だけする', async () => {
-    const result = await downloadSlackFile({ bridge: fakeBridge({}, 'x'), dir, limits: LIMITS }, 'F123', true);
+    const result = await downloadAttachment({ ...fakeBridge({}, 'x'), dir, limits: LIMITS }, 'F123', true);
     expect(result).toContain('展開していない');
   });
 });
