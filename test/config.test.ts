@@ -104,7 +104,24 @@ describe('loadTokens', () => {
       'SLACK_BOT_TOKEN=xoxb-TEST-DUMMY\nSLACK_APP_TOKEN=xapp-TEST-DUMMY\n',
     );
     const tokens = loadTokens(dir);
-    expect(tokens).toEqual({ botToken: 'xoxb-TEST-DUMMY', appToken: 'xapp-TEST-DUMMY' });
+    expect(tokens).toEqual({
+      botToken: 'xoxb-TEST-DUMMY',
+      appToken: 'xapp-TEST-DUMMY',
+      keepalive: { enabled: true, afterMin: 55, max: 6, quiet: { start: 60, end: 420 } },
+    });
+  });
+
+  it('KEEPALIVE の設定を読み、off・時間帯なし・範囲外を扱う', () => {
+    const write = (extra: string) =>
+      fs.writeFileSync(path.join(dir, '.env'), `SLACK_BOT_TOKEN=xoxb-TEST-DUMMY\nSLACK_APP_TOKEN=xapp-TEST-DUMMY\n${extra}`);
+    write('KEEPALIVE=off\nKEEPALIVE_AFTER_MIN=50\nKEEPALIVE_MAX=3\nKEEPALIVE_QUIET=\n');
+    expect(loadTokens(dir).keepalive).toEqual({ enabled: false, afterMin: 50, max: 3, quiet: undefined });
+    write('KEEPALIVE_AFTER_MIN=60\n');
+    expect(() => loadTokens(dir)).toThrow(/KEEPALIVE_AFTER_MIN/);
+    write('KEEPALIVE_QUIET=1-7\n');
+    expect(() => loadTokens(dir)).toThrow(/KEEPALIVE_QUIET/);
+    write('KEEPALIVE=maybe\n');
+    expect(() => loadTokens(dir)).toThrow(/KEEPALIVE は on か off/);
   });
 
   it('ファイルが無ければ Error', () => {

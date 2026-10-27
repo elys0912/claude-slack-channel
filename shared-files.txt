@@ -22,6 +22,7 @@ src/errors.ts
 src/hook-event.ts
 src/hook-inbox.ts
 src/hook.ts
+src/keepalive.ts
 src/lock.ts
 src/log.ts
 src/permission-core.ts
@@ -45,6 +46,7 @@ test/env-switch.test.ts
 test/console-script.test.ts
 test/hook-inbox.test.ts
 test/hook.test.ts
+test/keepalive.test.ts
 test/lock.test.ts
 test/placeholder.test.ts
 test/screen.test.ts

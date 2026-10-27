@@ -230,7 +230,8 @@ function Get-HookSettings {
         return @{}
     }
     $hooks = @{}
-    foreach ($hookEvent in @('SessionStart', 'SessionEnd', 'Stop', 'StopFailure', 'Notification', 'PostCompact')) {
+    # UserPromptSubmit は、手元で入力して作業中になったことを知るため（キャッシュのつなぎ止めを作業中に送らない）
+    foreach ($hookEvent in @('SessionStart', 'SessionEnd', 'Stop', 'StopFailure', 'Notification', 'PostCompact', 'UserPromptSubmit')) {
         # exec 形式（command + args）でシェルを挟まず起動する（パスの引用符の問題を避ける）
         $hooks[$hookEvent] = @(@{ hooks = @(@{ type = 'command'; command = $node.Source; args = @($hookJs); timeout = 5 }) })
     }
