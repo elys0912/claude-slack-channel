@@ -208,3 +208,72 @@ describe.runIf(process.platform === 'win32')('scripts/common.ps1 の Read-AllowE
     expect(build().permissions.allow).toEqual(['Read(./**)', 'mcp__extra', 'Bash(pwd)']);
   });
 });
+
+describe.runIf(process.platform === 'win32')('scripts/common.ps1 の想定外の終了からの起動し直し', { timeout: 30000 }, () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'auto-restart-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('Test-AutoRestartEnabled: .env の AUTO_RESTART が off / false / 0 のときだけ起動し直さない（無い・コメント付きも読む）', () => {
+    const env = path.join(dir, '.env');
+    const enabled = (): string => ps(`Test-AutoRestartEnabled -EnvFile '${env}'`);
+    expect(enabled()).toBe('True');
+    fs.writeFileSync(env, 'BOT_TOKEN=x\nAUTO_RESTART=off # 止める\n');
+    expect(enabled()).toBe('False');
+    fs.writeFileSync(env, 'AUTO_RESTART="0"\n');
+    expect(enabled()).toBe('False');
+    fs.writeFileSync(env, 'AUTO_RESTART=on\n');
+    expect(enabled()).toBe('True');
+  });
+
+  it('Select-RecentRestarts: 窓の中の時刻だけを配列のまま返す', () => {
+    const count = (times: string): string =>
+      ps(`$now = [datetime]'2026-10-27 12:00'; $r = Select-RecentRestarts -Times @(${times}) -Now $now -WindowMin 10; "$($r.Count)"`);
+    expect(count('')).toBe('0');
+    expect(count("[datetime]'2026-10-27 11:55'")).toBe('1');
+    expect(count("[datetime]'2026-10-27 11:49', [datetime]'2026-10-27 11:51', [datetime]'2026-10-27 11:59'")).toBe('2');
+  });
+
+  it('Get-LastHookSessionId: 自分の session_tag の行で最後の UUID を返す。無ければ空', () => {
+    const log = path.join(dir, 'hooks.jsonl');
+    const id1 = '11111111-2222-3333-4444-555555555555';
+    const id2 = '66666666-7777-8888-9999-aaaaaaaaaaaa';
+    const last = (): string => ps(`Get-LastHookSessionId -HookLog '${log}' -SessionTag 'mine'`);
+    expect(last()).toBe('');
+    fs.writeFileSync(
+      log,
+      [
+        JSON.stringify({ session_tag: 'mine', session_id: id1 }),
+        'not json',
+        JSON.stringify({ session_tag: 'other', session_id: id2 }),
+        JSON.stringify({ session_tag: 'mine', session_id: 'not-a-uuid' }),
+      ].join('\n') + '\n'
+    );
+    expect(last()).toBe(id1);
+  });
+
+  it('Write-CrashRecord: ブリッジ（crash-notice.ts）が読める形で BOM なしに書く', () => {
+    const file = path.join(dir, 'crash.json');
+    ps(`Write-CrashRecord -Path '${file}' -ExitCode 3 -Count 2 -Max 3 -WindowMin 10 -Resumed $true`);
+    const text = fs.readFileSync(file, 'utf8');
+    expect(text.charCodeAt(0)).not.toBe(0xfeff);
+    expect(JSON.parse(text)).toMatchObject({ exit_code: 3, count: 2, max: 3, window_min: 10, resumed: true });
+  });
+
+  it('Write-EffectiveSettings: StatusLine を渡せば statusLine に入れる', () => {
+    const settings = path.join(dir, 'channel-settings.json');
+    const merged = path.join(dir, 'merged.json');
+    fs.writeFileSync(settings, JSON.stringify({ permissions: { allow: [], deny: [], ask: [] } }));
+    ps(
+      `Write-EffectiveSettings -SettingsFile '${settings}' -OutFile '${merged}' ` +
+        `-StatusLine @{ type = 'command'; command = 'node statusline.js'; refreshInterval = 60 }`
+    );
+    expect(JSON.parse(fs.readFileSync(merged, 'utf8')).statusLine).toEqual({ type: 'command', command: 'node statusline.js', refreshInterval: 60 });
+  });
+});

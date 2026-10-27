@@ -108,7 +108,19 @@ describe('loadTokens', () => {
       botToken: 'xoxb-TEST-DUMMY',
       appToken: 'xapp-TEST-DUMMY',
       keepalive: { enabled: true, afterMin: 55, max: 6, quiet: { start: 60, end: 420 } },
+      usageWatch: { enabled: true, usageWarnPct: [80, 95], contextWarnPct: [70, 90] },
     });
+  });
+
+  it('USAGE_WATCH としきい値を読み、空なら知らせない・形が違えば投げる', () => {
+    const write = (extra: string) =>
+      fs.writeFileSync(path.join(dir, '.env'), `SLACK_BOT_TOKEN=xoxb-TEST-DUMMY\nSLACK_APP_TOKEN=xapp-TEST-DUMMY\n${extra}`);
+    write('USAGE_WATCH=off\nUSAGE_WARN_PCT=90,50\nCONTEXT_WARN_PCT=\n');
+    expect(loadTokens(dir).usageWatch).toEqual({ enabled: false, usageWarnPct: [50, 90], contextWarnPct: [] });
+    write('USAGE_WARN_PCT=101\n');
+    expect(() => loadTokens(dir)).toThrow(/USAGE_WARN_PCT/);
+    write('USAGE_WATCH=maybe\n');
+    expect(() => loadTokens(dir)).toThrow(/USAGE_WATCH は on か off/);
   });
 
   it('KEEPALIVE の設定を読み、off・時間帯なし・範囲外を扱う', () => {

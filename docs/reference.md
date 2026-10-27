@@ -17,7 +17,7 @@
 
 | ファイル | 場所 | 内容 |
 |---|---|---|
-| `.env` | 状態ディレクトリ | `SLACK_BOT_TOKEN`（`xoxb-`）、`SLACK_APP_TOKEN`（`xapp-`）。任意で `DOWNLOAD_DIR`（添付の保存先の絶対パス）と `SESSION_ALLOW_ALL`（`on` で「このセッション中は全部許可」ボタンを出す。on / off 以外の値は off にし、ログに警告を出す）。キャッシュのつなぎ止めの `KEEPALIVE`（既定 on）・`KEEPALIVE_AFTER_MIN`（55）・`KEEPALIVE_MAX`（6）・`KEEPALIVE_QUIET`（`01:00-07:00`）（docs/usage.md） |
+| `.env` | 状態ディレクトリ | `SLACK_BOT_TOKEN`（`xoxb-`）、`SLACK_APP_TOKEN`（`xapp-`）。任意で `DOWNLOAD_DIR`（添付の保存先の絶対パス）と `SESSION_ALLOW_ALL`（`on` で「このセッション中は全部許可」ボタンを出す。on / off 以外の値は off にし、ログに警告を出す）。キャッシュのつなぎ止めの `KEEPALIVE`（既定 on）・`KEEPALIVE_AFTER_MIN`（55）・`KEEPALIVE_MAX`（6）・`KEEPALIVE_QUIET`（`01:00-07:00`）、見張りの `USAGE_WATCH`（既定 on）・`USAGE_WARN_PCT`（`80,95`）・`CONTEXT_WARN_PCT`（`70,90`）・`AUTO_RESTART`（既定 on。start.ps1 が読む）（docs/usage.md） |
 | `access.json` | 状態ディレクトリ | `teamId`（`T...`）、`allowFrom`（`U...` の配列）、`channels`（`C...` / `G...` の配列、省略可）。ほかのキーがあるとエラーにする |
 | `home.json` | 状態ディレクトリ（省略可） | ホームタブの文面の差し替え（[アプリのホームタブ](usage.md#アプリのホームタブ)） |
 | `allow-extra.json` | 状態ディレクトリ | Slack の「今後も許可」で足したルール（`{"allow": [...]}`）。ブリッジが書き、起動スクリプトが今の方式で作れるものだけを allow に足す（作れないものは起動の通知で知らせる。ファイルは書き換えない） |

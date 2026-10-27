@@ -16,6 +16,7 @@ src/allow-rules.ts
 src/bounded-map.ts
 src/chunk.ts
 src/console.ts
+src/crash-notice.ts
 src/download.ts
 src/env-switch.ts
 src/errors.ts
@@ -31,10 +32,12 @@ src/screen.ts
 src/session-allow.ts
 src/session-control.ts
 src/status.ts
+src/statusline.ts
 src/stdio-guard.ts
 src/system-exe.ts
 src/text.ts
 src/types.ts
+src/usage-watch.ts
 src/watchdog.ts
 
 test/allow-extra-check.test.ts
@@ -44,6 +47,7 @@ test/chunk-legacy.test.ts
 test/chunk.test.ts
 test/env-switch.test.ts
 test/console-script.test.ts
+test/crash-notice.test.ts
 test/hook-inbox.test.ts
 test/hook.test.ts
 test/keepalive.test.ts
@@ -52,5 +56,7 @@ test/placeholder.test.ts
 test/screen.test.ts
 test/session-allow.test.ts
 test/start-script.test.ts
+test/statusline.test.ts
 test/text.test.ts
+test/usage-watch.test.ts
 test/watchdog.test.ts

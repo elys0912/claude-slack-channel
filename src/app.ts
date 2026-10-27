@@ -31,6 +31,8 @@ import { NoticePoster } from './notice.js';
 import { Keepalive, keepaliveStatusLine } from './keepalive.js';
 import type { QuietHours } from './keepalive.js';
 import { formatTime } from './text.js';
+import { UsageWatch } from './usage-watch.js';
+import { takeCrashNotice } from './crash-notice.js';
 
 /** Slack のファイル ID で指す添付の取得 */
 export type SlackDownloadDeps = DownloadDeps<string, SlackFile>;
@@ -512,6 +514,10 @@ export interface BridgeAppOptions {
   managedSettingsFiles?: (() => string[]) | undefined;
   /** キャッシュのつなぎ止めの設定。省略時はつなぎ止めない（hook の記録が無いと応答の終わりが分からないので、hookInboxFile も要る） */
   keepalive?: { enabled: boolean; afterMs: number; max: number; quiet: QuietHours | undefined } | undefined;
+  /** 使用量とコンテキストの見張り（statusline が書く usage.json としきい値）。省略時は見張らない */
+  usageWatch?: { file: string; usageWarnPct: number[]; contextWarnPct: number[]; pollMs?: number | undefined } | undefined;
+  /** start.ps1 が想定外の終了から起動し直したときに置く印（状態ディレクトリの crash.json）。起動後に読んで知らせ、消す */
+  crashFile?: string | undefined;
 }
 
 /**
@@ -606,7 +612,8 @@ export async function startBridgeApp(opts: BridgeAppOptions): Promise<RunningApp
           ...opts.keepalive,
           send: () => server.pushMessage(KEEPALIVE_TEXT, { kind: 'keepalive' }),
           isBusy: () => turnActive || watchdog.isWaiting() || relay.pendingCount() > 0,
-          isLimited: () => limited,
+          // 使用量がしきい値を越えている間も送らない（合図でも使用量を使うため）
+          isLimited: () => limited || (usageWatch?.isHigh() ?? false),
           logger,
         })
       : undefined;
@@ -615,6 +622,14 @@ export async function startBridgeApp(opts: BridgeAppOptions): Promise<RunningApp
   const notice = new NoticePoster(bridge, () => relay.lastThread, logger);
   /** 今の会話の session_id（自分のセッションの hook の記録で最後に見たもの）。!restart で同じ会話を開き直すのに使う */
   let sessionId: string | undefined;
+  const usageWatch = opts.usageWatch
+    ? new UsageWatch({
+        ...opts.usageWatch,
+        sessionTag: opts.sessionTag,
+        notify: (text) => notice.post(text),
+        logger,
+      })
+    : undefined;
   const inbox = opts.hookInboxFile
     ? new HookInbox({
         file: opts.hookInboxFile,
@@ -630,15 +645,23 @@ export async function startBridgeApp(opts: BridgeAppOptions): Promise<RunningApp
             case 'Stop':
               turnActive = false;
               limited = false;
+              usageWatch?.limitCleared();
               keepalive?.requestEnded(event.at);
               break;
             case 'StopFailure':
               turnActive = false;
-              if (event.error === 'rate_limit') limited = true;
+              if (event.error === 'rate_limit') {
+                limited = true;
+                usageWatch?.limitHit();
+              }
               keepalive?.requestEnded(event.at);
               break;
             case 'SessionStart':
               keepalive?.resetCount();
+              usageWatch?.contextReset();
+              break;
+            case 'PostCompact':
+              usageWatch?.contextReset();
               break;
           }
           // !clear などで新しい会話になったら、「全部許可」を解除する（会話ごとに許可し直す）
@@ -665,7 +688,9 @@ export async function startBridgeApp(opts: BridgeAppOptions): Promise<RunningApp
       pendingPermissions: relay.pendingCount(),
       lastHooks: inbox?.lastEvents(5) ?? [],
       sessionAllowSince: sessionAllow ? (sessionAllow.current?.since ?? null) : undefined,
-      extraLines: keepalive ? [keepaliveStatusLine(keepalive.status())] : undefined,
+      extraLines: [keepalive ? keepaliveStatusLine(keepalive.status()) : undefined, usageWatch?.statusLine()].filter(
+        (line): line is string => line !== undefined
+      ),
       now: new Date(),
     });
   };
@@ -702,6 +727,7 @@ export async function startBridgeApp(opts: BridgeAppOptions): Promise<RunningApp
       inbox?.stop();
       session?.stop();
       keepalive?.stop();
+      usageWatch?.stop();
       watchdog.stop();
       try {
         // Slack の書き換えと Claude への通知が届くよう、切断より前に行う（denyAll・publishHome は投げない）
@@ -734,6 +760,14 @@ export async function startBridgeApp(opts: BridgeAppOptions): Promise<RunningApp
   if (stopped === undefined) await publishHomeAll(true, startedAt);
   if (stopped === undefined && ruleStore) await noticeRejectedRules(ruleStore, notice, logger);
   if (stopped === undefined) await inbox?.start();
+  if (stopped === undefined && opts.crashFile) {
+    const crashed = takeCrashNotice(opts.crashFile);
+    if (crashed) {
+      logger.warn('想定外の終了から起動し直した');
+      await notice.post(crashed);
+    }
+  }
+  if (stopped === undefined) usageWatch?.start();
 
   return { stop };
 }

@@ -55,6 +55,10 @@ GitHub Actions（`.github/workflows/ci.yml`）は、main への push と pull re
 | `src/gate.ts` | 受信したメッセージを中継すべきかの判定（純関数） |
 | `src/watchdog.ts` | Claude の無応答の見張り |
 | `src/keepalive.ts` | キャッシュのつなぎ止め |
+| `src/statusline.ts` | statusline の記録（usage.json） |
+| `src/usage-watch.ts` | 使用量とコンテキストの見張り |
+| `src/crash-notice.ts` | 想定外の終了から起動し直したことの知らせ |
+| `src/notify-cli.ts` | ブリッジが動いていないときの単発の知らせ |
 | `src/hook.ts` | Claude Code の hook として起動され、`hooks.jsonl` に1行追記するコマンド |
 | `src/hook-event.ts` | `hooks.jsonl` の1行のスキーマ（zod）と型 |
 | `src/hook-inbox.ts` | `hooks.jsonl` の増えた分を読み、イベントとして渡す |

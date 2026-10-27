@@ -8,6 +8,7 @@ import { stripBom } from './text.js';
 import { parseSwitch, unknownSwitchMessage } from './env-switch.js';
 import { DEFAULT_KEEPALIVE_AFTER_MIN, DEFAULT_KEEPALIVE_MAX, DEFAULT_KEEPALIVE_QUIET, parseQuietHours } from './keepalive.js';
 import type { QuietHours } from './keepalive.js';
+import { DEFAULT_CONTEXT_WARN_PCT, DEFAULT_USAGE_WARN_PCT, parsePercents } from './usage-watch.js';
 
 /** 状態ディレクトリの既定の場所（ホームからの相対。scripts/start.ps1 の $DefaultStateDirRelative と同じ値にすること） */
 const DEFAULT_STATE_DIR_RELATIVE = ['.claude', 'channels', 'slack'];
@@ -79,6 +80,8 @@ export interface Tokens {
   sessionAllowAll?: boolean;
   /** キャッシュのつなぎ止め（.env の KEEPALIVE / KEEPALIVE_AFTER_MIN / KEEPALIVE_MAX / KEEPALIVE_QUIET） */
   keepalive: { enabled: boolean; afterMin: number; max: number; quiet: QuietHours | undefined };
+  /** 使用量とコンテキストの見張り（.env の USAGE_WATCH / USAGE_WARN_PCT / CONTEXT_WARN_PCT） */
+  usageWatch: { enabled: boolean; usageWarnPct: number[]; contextWarnPct: number[] };
 }
 
 /** .env の整数の設定を読む。無い・空なら undefined。min〜max の整数でなければ投げる */
@@ -88,6 +91,28 @@ function readInt(parsed: Record<string, string>, key: string, min: number, max: 
   const n = Number(raw);
   if (!Number.isInteger(n) || n < min || n > max) throw new Error(`${key} は ${min}〜${max} の整数で指定する`);
   return n;
+}
+
+/** 割合の並びの設定（`80,95`）。無ければ fallback。形が違えば投げる */
+function readPercents(parsed: Record<string, string>, key: string, fallback: readonly number[]): number[] {
+  const raw = parsed[key];
+  if (raw === undefined) return [...fallback];
+  try {
+    return parsePercents(raw);
+  } catch (e) {
+    throw new Error(`${key}: ${errMessage(e)}`, { cause: e });
+  }
+}
+
+/** 使用量とコンテキストの見張りの設定。USAGE_WATCH は既定で on（off / false / 0 で止める） */
+function readUsageWatch(parsed: Record<string, string>): Tokens['usageWatch'] {
+  const enabled = parseSwitch(parsed.USAGE_WATCH);
+  if (enabled === null) throw new Error('USAGE_WATCH は on か off で指定する');
+  return {
+    enabled: enabled ?? true,
+    usageWarnPct: readPercents(parsed, 'USAGE_WARN_PCT', DEFAULT_USAGE_WARN_PCT),
+    contextWarnPct: readPercents(parsed, 'CONTEXT_WARN_PCT', DEFAULT_CONTEXT_WARN_PCT),
+  };
 }
 
 /** キャッシュのつなぎ止めの設定。KEEPALIVE は既定で on（off / false / 0 で止める） */
@@ -131,6 +156,7 @@ export function loadTokens(dir: string, warn?: (message: string) => void): Token
     botToken: requireToken(parsed, 'SLACK_BOT_TOKEN', 'xoxb-'),
     appToken: requireToken(parsed, 'SLACK_APP_TOKEN', 'xapp-'),
     keepalive: readKeepalive(parsed),
+    usageWatch: readUsageWatch(parsed),
   };
   const downloadDir = parsed.DOWNLOAD_DIR;
   if (downloadDir) {
