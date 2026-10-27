@@ -6,6 +6,8 @@ import { z } from 'zod';
 import { errMessage } from './errors.js';
 import { stripBom } from './text.js';
 import { parseSwitch, unknownSwitchMessage } from './env-switch.js';
+import { DEFAULT_KEEPALIVE_AFTER_MIN, DEFAULT_KEEPALIVE_MAX, DEFAULT_KEEPALIVE_QUIET, parseQuietHours } from './keepalive.js';
+import type { QuietHours } from './keepalive.js';
 
 /** 状態ディレクトリの既定の場所（ホームからの相対。scripts/start.ps1 の $DefaultStateDirRelative と同じ値にすること） */
 const DEFAULT_STATE_DIR_RELATIVE = ['.claude', 'channels', 'slack'];
@@ -75,6 +77,38 @@ export interface Tokens {
   downloadDir?: string;
   /** .env の SESSION_ALLOW_ALL が on / true / 1 なら、実行許可に「このセッション中は全部許可」ボタンを出す */
   sessionAllowAll?: boolean;
+  /** キャッシュのつなぎ止め（.env の KEEPALIVE / KEEPALIVE_AFTER_MIN / KEEPALIVE_MAX / KEEPALIVE_QUIET） */
+  keepalive: { enabled: boolean; afterMin: number; max: number; quiet: QuietHours | undefined };
+}
+
+/** .env の整数の設定を読む。無い・空なら undefined。min〜max の整数でなければ投げる */
+function readInt(parsed: Record<string, string>, key: string, min: number, max: number): number | undefined {
+  const raw = parsed[key];
+  if (raw === undefined || raw.trim() === '') return undefined;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < min || n > max) throw new Error(`${key} は ${min}〜${max} の整数で指定する`);
+  return n;
+}
+
+/** キャッシュのつなぎ止めの設定。KEEPALIVE は既定で on（off / false / 0 で止める） */
+function readKeepalive(parsed: Record<string, string>): Tokens['keepalive'] {
+  const enabled = parseSwitch(parsed.KEEPALIVE);
+  if (enabled === null) throw new Error('KEEPALIVE は on か off で指定する');
+  let quiet: QuietHours | undefined = DEFAULT_KEEPALIVE_QUIET;
+  if (parsed.KEEPALIVE_QUIET !== undefined) {
+    try {
+      quiet = parseQuietHours(parsed.KEEPALIVE_QUIET);
+    } catch (e) {
+      throw new Error(`KEEPALIVE_QUIET: ${errMessage(e)}`, { cause: e });
+    }
+  }
+  return {
+    enabled: enabled ?? true,
+    // キャッシュの期限は 1 時間なので、それより前に送る
+    afterMin: readInt(parsed, 'KEEPALIVE_AFTER_MIN', 1, 59) ?? DEFAULT_KEEPALIVE_AFTER_MIN,
+    max: readInt(parsed, 'KEEPALIVE_MAX', 0, 48) ?? DEFAULT_KEEPALIVE_MAX,
+    quiet,
+  };
 }
 
 /**
@@ -96,6 +130,7 @@ export function loadTokens(dir: string, warn?: (message: string) => void): Token
   const tokens: Tokens = {
     botToken: requireToken(parsed, 'SLACK_BOT_TOKEN', 'xoxb-'),
     appToken: requireToken(parsed, 'SLACK_APP_TOKEN', 'xapp-'),
+    keepalive: readKeepalive(parsed),
   };
   const downloadDir = parsed.DOWNLOAD_DIR;
   if (downloadDir) {

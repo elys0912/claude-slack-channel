@@ -195,6 +195,12 @@ function bridgeAppOptions(
       ? { info: (id) => bridge.fileInfo(id), fetch: (file, signal) => bridge.fetchFile(file, signal), dir: tokens.downloadDir }
       : undefined,
     sessionAllowAll: tokens.sessionAllowAll === true,
+    keepalive: {
+      enabled: tokens.keepalive.enabled && tokens.keepalive.max > 0,
+      afterMs: tokens.keepalive.afterMin * 60_000,
+      max: tokens.keepalive.max,
+      quiet: tokens.keepalive.quiet,
+    },
     managedSettingsFiles: () => managedSettingsFiles(),
     // 起動スクリプトは作業フォルダーで claude.exe を起動し、MCP サーバーも同じ作業フォルダーで動く。
     // channel セッションの設定ファイルは -SettingsFile で替えられるので、起動スクリプトが渡した場所を優先する

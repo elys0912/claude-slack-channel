@@ -175,6 +175,7 @@ Windows Terminal から実行する。
 | `!restart` | `/exit` を送り、同じ会話のまま再起動する。警告ダイアログには自動で答える |
 | `!restart force` | Claude Code を強制終了してから再起動する（応答しないとき用） |
 | `!lock` | 「このセッション中は全部許可」を解除する（有効にしたボットだけ） |
+| `!keepalive` / `!keepalive on` / `!keepalive off` | キャッシュのつなぎ止めの状態を見る・切り替える |
 
 Claude Code 側の出来事（使用量の上限、ターミナル側の入力待ち、セッションの開始と終了など）は、hook を通して Slack に通知する。
 

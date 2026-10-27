@@ -9,6 +9,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { SlackBridge } from '../src/slack.js';
 import { Logger } from '../src/log.js';
 import {
+  KEEPALIVE_TEXT,
   REACTION,
   createDegradedDeps,
   createToolHandlers,
@@ -58,6 +59,7 @@ async function startHarness(
     | 'managedSettingsFiles'
     | 'sessionTag'
     | 'workDir'
+    | 'keepalive'
   > = {}
 ): Promise<Harness> {
   const web = makeWeb();
@@ -1034,6 +1036,9 @@ describe('parseCommand', () => {
     expect(parseCommand('  !RESTART   FORCE ')).toBe('restart force');
     expect(parseCommand('!clear')).toBe('clear');
     expect(parseCommand('!Help')).toBe('help');
+    expect(parseCommand('!keepalive')).toBe('keepalive');
+    expect(parseCommand('!keepalive  OFF')).toBe('keepalive off');
+    expect(parseCommand('!keepalive maybe')).toBeUndefined();
   });
 
   it('アプリの署名（太字 + メンション）が末尾にあっても認める', () => {
@@ -1673,5 +1678,53 @@ describe('このセッション中は全部許可', () => {
     await client_sendBash(h, 'npm test', 'fghij');
     expect(verdicts()).toHaveLength(1);
     expect(actionIds(posts()[0])).toContain('perm_session');
+  });
+});
+
+describe('キャッシュのつなぎ止め', () => {
+  let h: Harness | undefined;
+  let dir: string;
+  const texts = (): string[] =>
+    (h?.web.calls ?? [])
+      .filter((c) => c.method === 'chat.postMessage')
+      .map((c) => String(c.args.markdown_text ?? c.args.text));
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'app-keepalive-'));
+  });
+
+  afterEach(async () => {
+    await h?.client.close();
+    await h?.stop();
+    h = undefined;
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('!keepalive で状態を見て、off / on で切り替える。Claude には渡さない', async () => {
+    h = await startHarness(ACCESS, undefined, {
+      hookInboxFile: path.join(dir, 'hooks.jsonl'),
+      keepalive: { enabled: true, afterMs: 55 * 60_000, max: 6, quiet: undefined },
+    });
+    h.socket.emit('slack_event', dmEnvelope('!keepalive', { ts: '40.0' }));
+    await flush();
+    h.socket.emit('slack_event', dmEnvelope('!keepalive off', { ts: '41.0' }));
+    await flush();
+    h.socket.emit('slack_event', dmEnvelope('!keepalive on', { ts: '42.0' }));
+    await flush();
+
+    const posted = texts();
+    expect(posted[0]).toContain('有効');
+    expect(posted[1]).toContain('無効');
+    expect(posted[2]).toContain('有効');
+    expect(h.notifications).toEqual([]);
+    expect(KEEPALIVE_TEXT).toContain('ok とだけ書く');
+  });
+
+  it('つなぎ止めが無いブリッジでは、!keepalive は使えない旨を返す', async () => {
+    h = await startHarness();
+    h.socket.emit('slack_event', dmEnvelope('!keepalive', { ts: '43.0' }));
+    await flush();
+
+    expect(texts()).toEqual(['⚠️ このブリッジでは !keepalive を使えない']);
   });
 });
