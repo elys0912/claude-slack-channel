@@ -2,13 +2,14 @@
 import type { ParsedAccess } from './config.js';
 import type { Verdict } from './types.js';
 import { neutralizeBroadcasts } from './format.js';
-import { TOKEN_ID_LENGTH } from './text.js';
-import { plainSection } from './blocks.js';
-import { isValidRequestId, DEFAULT_PREVIEW_LIMIT, truncatePlain, truncateHeadTail, PREVIEW_TRUNCATED_WARNING, orPlaceholder, TOKEN_ID_RE } from './permission-core.js';
+import { TOKEN_ID_BODY, TOKEN_ID_RE } from './text.js';
+import { button, plainContext, plainSection } from './blocks.js';
+import { isValidRequestId, DEFAULT_PREVIEW_LIMIT, truncatePlain, truncateHeadTail, PREVIEW_TRUNCATED_WARNING, orPlaceholder } from './permission-core.js';
 import type { PermissionRequest } from './permission-core.js';
 
 // チャネルによらない部分は permission-core.ts。ほかのモジュールからは今までどおりここから使える
-export { PERMISSION_ID_BODY, PERMISSION_ID_RE, isValidRequestId, PendingPermissions, DEFAULT_PREVIEW_LIMIT, revealInvisible, truncatePlain, truncateHeadTail, PREVIEW_TRUNCATED_WARNING, orPlaceholder, TOKEN_ID_RE } from './permission-core.js';
+export { PERMISSION_ID_BODY, PERMISSION_ID_RE, isValidRequestId, PendingPermissions, DEFAULT_PREVIEW_LIMIT, revealInvisible, truncatePlain, truncateHeadTail, PREVIEW_TRUNCATED_WARNING, orPlaceholder } from './permission-core.js';
+export { TOKEN_ID_RE } from './text.js';
 export type { PermissionRequest } from './permission-core.js';
 
 /** Block Kit の plain_text（section / context）の文字数の上限 */
@@ -49,14 +50,13 @@ export function preformattedBlock(text: string): unknown {
   };
 }
 
-function button(label: string, actionId: string, requestId: string, style?: 'primary' | 'danger'): unknown {
-  return {
-    type: 'button',
-    text: { type: 'plain_text', text: label },
-    ...(style ? { style } : {}),
-    action_id: actionId,
-    value: requestId
-  };
+export interface PermissionBlocksOptions {
+  /** input_preview を省略せずに出す長さ（既定 DEFAULT_PREVIEW_LIMIT） */
+  previewLimit?: number;
+  /** 「このセッション中は全部許可」ボタンを付けるか */
+  showSessionButton?: boolean;
+  /** 「♾ 今後も許可」ボタンを付けるか（許可リストに足せるルールを作れるリクエストだけ） */
+  showAlwaysButton?: boolean;
 }
 
 /**
@@ -68,11 +68,7 @@ function button(label: string, actionId: string, requestId: string, style?: 'pri
  */
 export function buildPermissionBlocks(
   req: PermissionRequest,
-  previewLimit: number = DEFAULT_PREVIEW_LIMIT,
-  /** 「このセッション中は全部許可」ボタンを付けるか */
-  sessionButton = false,
-  /** 「♾ 今後も許可」ボタンを付けるか（許可リストに足せるルールを作れるリクエストだけ） */
-  alwaysButton = false
+  { previewLimit = DEFAULT_PREVIEW_LIMIT, showSessionButton = false, showAlwaysButton = false }: PermissionBlocksOptions = {}
 ): { text: string; blocks: unknown[]; truncated: boolean } {
   const toolLabel = 'Tool: ';
   const toolNameResult = truncatePlain(orPlaceholder(req.tool_name, '(不明なツール)'), PLAIN_TEXT_LIMIT - toolLabel.length);
@@ -96,24 +92,14 @@ export function buildPermissionBlocks(
     },
     preformattedBlock(previewResult.text),
     // 省略したときだけ警告行を足す（省略していなければ従来どおりのブロック構成）
-    ...(previewResult.truncated
-      ? [{ type: 'context', elements: [{ type: 'plain_text', text: PREVIEW_TRUNCATED_WARNING }] }]
-      : []),
-    {
-      type: 'context',
-      elements: [
-        {
-          type: 'plain_text',
-          text: `ID: ${req.request_id} ／ テキストで "yes ${req.request_id}" / "no ${req.request_id}" でも回答できる`
-        }
-      ]
-    },
+    ...(previewResult.truncated ? [plainContext(PREVIEW_TRUNCATED_WARNING)] : []),
+    plainContext(`ID: ${req.request_id} ／ テキストで "yes ${req.request_id}" / "no ${req.request_id}" でも回答できる`),
     {
       type: 'actions',
       elements: [
         button('Allow', ACTION.ALLOW, req.request_id, 'primary'),
-        ...(alwaysButton ? [button('♾ 今後も許可', ACTION.ALLOW_ALWAYS, req.request_id)] : []),
-        ...(sessionButton ? [button('🔓 このセッション中は全部許可', ACTION.ALLOW_SESSION, req.request_id)] : []),
+        ...(showAlwaysButton ? [button('♾ 今後も許可', ACTION.ALLOW_ALWAYS, req.request_id)] : []),
+        ...(showSessionButton ? [button('🔓 このセッション中は全部許可', ACTION.ALLOW_SESSION, req.request_id)] : []),
         button('Deny', ACTION.DENY, req.request_id, 'danger'),
         // 省略した部分があるときだけ、全文を出すボタンを付ける
         ...(truncated ? [button('See more', ACTION.SEE_MORE, req.request_id)] : [])
@@ -165,34 +151,29 @@ export function buildResolvedBlocks(
   };
 }
 
-export function buildExpiredBlocks(requestId: string): { text: string; blocks: unknown[] } {
-  const blocks: unknown[] = [
-    {
-      type: 'section',
-      text: { type: 'plain_text', text: `⌛ Permission request ${requestId} expired` }
-    }
-  ];
-  return {
-    text: neutralizeBroadcasts(`⌛ Permission request ${requestId} expired`),
-    blocks
-  };
-}
-
-/** 1 行の知らせ（plain_text の section 1 つ） */
-function noticeBlocks(text: string): { text: string; blocks: unknown[] } {
+/** 1 行の知らせ（plain_text の section 1 つ）。text も section も @channel などを無効にした文にする */
+function oneLineView(text: string): { text: string; blocks: unknown[] } {
   const safe = neutralizeBroadcasts(text);
   return { text: safe, blocks: [plainSection(safe)] };
 }
 
+/**
+ * 期限切れのボタンが押されたときの表示。
+ * requestId は parseBlockAction で検証済み（英小文字 5 文字）なので、section 側も neutralizeBroadcasts を通した文にしても表示は変わらない
+ */
+export function buildExpiredBlocks(requestId: string): { text: string; blocks: unknown[] } {
+  return oneLineView(`⌛ Permission request ${requestId} expired`);
+}
+
 /** 回答が無いまま自動で deny したときの表示。reason は「期限切れ」のような固定の文言（「〜のため自動で拒否した」に続く） */
 export function buildAutoDeniedBlocks(requestId: string, reason: string): { text: string; blocks: unknown[] } {
-  return noticeBlocks(`⌛ Permission request ${requestId}: ${reason}のため自動で拒否した`);
+  return oneLineView(`⌛ Permission request ${requestId}: ${reason}のため自動で拒否した`);
 }
 
 /** 回答を Claude に送れなかったときの表示（MCP の切断など。Claude 側は自分の期限で止まる） */
 export function buildVerdictFailedBlocks(requestId: string, behavior: 'allow' | 'deny'): { text: string; blocks: unknown[] } {
   const verb = behavior === 'allow' ? 'Allow' : 'Deny';
-  return noticeBlocks(`⚠️ Permission request ${requestId}: ${verb} を Claude に送れなかった。Claude Code のセッションを確認すること`);
+  return oneLineView(`⚠️ Permission request ${requestId}: ${verb} を Claude に送れなかった。Claude Code のセッションを確認すること`);
 }
 
 export interface BlockActionInput {
@@ -222,7 +203,7 @@ export type ActionParse =
   | { ok: false; reason: string };
 
 /** screen_pick の value（`<控えの ID>.<選択肢の番号 1 桁>`。screen.ts の MAX_OPTIONS が 9 なので 1 桁で足りる） */
-const SCREEN_PICK_RE = new RegExp(`^([a-z0-9]{${TOKEN_ID_LENGTH}})\\.(\\d)$`);
+const SCREEN_PICK_RE = new RegExp(`^(${TOKEN_ID_BODY})\\.(\\d)$`);
 /** 同じブロックに並ぶボタン（`screen_pick_0` / `rule_remove_3` など）。番号は 2 桁まで */
 const NUMBERED_ACTION_RE = new RegExp(`^(${ACTION.SCREEN_PICK}|${ACTION.RULE_REMOVE})_\\d{1,2}$`);
 /** rule_remove の value（ルールそのもの）の長さの上限 */
@@ -256,7 +237,7 @@ function parseToolAction(actionId: string | undefined, value: string | undefined
 /**
  * block_actions のボタン操作を検証して解釈する。次の順に調べ、最初に外れた理由で ok: false を返す:
  * type が block_actions → team が access.teamId → 押した人が allowFrom → チャンネルが許可ユーザーの DM か access.channels
- * → （画面・許可リスト操作のボタンならその value の形）→ value が request_id の形 → action_id（perm_allow / perm_deny / perm_more / perm_always）。
+ * → （画面・許可リスト操作のボタンならその value の形）→ value が request_id の形 → action_id（perm_allow / perm_deny / perm_more / perm_always / perm_session）。
  * 保留中の ID かどうかはここでは見ない（呼び出し側の PermissionRelay が判断する）。
  */
 export function parseBlockAction(

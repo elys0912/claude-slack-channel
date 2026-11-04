@@ -21,17 +21,13 @@ describe('hookToNotice', () => {
     expect(notice?.screenButton).toBe(button);
   });
 
-  it('permission_prompt は Slack に中継中（pending）なら黙る', () => {
-    expect(hookToNotice(ev({ hook_event_name: 'Notification', notification_type: 'permission_prompt' }), { waiting: true, pending: 1 })).toBeUndefined();
+  it('idle_prompt は Slack の返事待ちなら画面のボタン付きで知らせる', () => {
+    const idlePrompt = ev({ hook_event_name: 'Notification', notification_type: 'idle_prompt', message: 'waiting' });
+    expect(hookToNotice(idlePrompt, waiting)?.screenButton).toBe(true);
   });
 
-  it('idle_prompt と Stop は Slack に返事が無いときだけ知らせる', () => {
-    const idlePrompt = ev({ hook_event_name: 'Notification', notification_type: 'idle_prompt', message: 'waiting' });
-    expect(hookToNotice(idlePrompt, idle)).toBeUndefined();
-    expect(hookToNotice(idlePrompt, waiting)?.screenButton).toBe(true);
-    const stop = ev({ hook_event_name: 'Stop' });
-    expect(hookToNotice(stop, idle)).toBeUndefined();
-    expect(hookToNotice(stop, waiting)?.text).toContain('返事をしないまま');
+  it('Stop は Slack の返事待ちなら「返事をしないまま」と知らせる', () => {
+    expect(hookToNotice(ev({ hook_event_name: 'Stop' }), waiting)?.text).toContain('返事をしないまま');
   });
 
   // Stop / idle_prompt は Slack の返事待ち（waiting）のときだけ、permission_prompt は中継中（pending）でないときだけ
@@ -45,6 +41,7 @@ describe('hookToNotice', () => {
     ['Notification', 'permission_prompt', false, 0, true],
     ['Notification', 'permission_prompt', true, 0, true],
     ['Notification', 'permission_prompt', false, 1, false],
+    ['Notification', 'permission_prompt', true, 1, false],
   ] as const)('%s/%s waiting=%s pending=%s → 知らせる=%s', (name, type, isWaiting, pending, expected) => {
     const event = ev({ hook_event_name: name, ...(type ? { notification_type: type } : {}) });
     const notice = hookToNotice(event, { waiting: isWaiting, pending });
@@ -62,19 +59,35 @@ describe('hookToNotice', () => {
     expect(hookToNotice(ev({ hook_event_name: 'StopFailure', error: 'rate_limit', error_details: 'resets at 15:00' }), idle)?.text).toBe(
       '⛔ 使用量の上限（rate limit）に達した。上限が戻るまで応答できない\nresets at 15:00'
     );
-    expect(hookToNotice(ev({ hook_event_name: 'StopFailure', error: 'weird' }), idle)?.text).toContain('weird');
-    expect(hookToNotice(ev({ hook_event_name: 'StopFailure' }), idle)?.text).toContain('unknown');
   });
 
-  it('セッションの開始・終了・クリア・圧縮を知らせる（compact による SessionStart は PostCompact に任せる）', () => {
-    expect(hookToNotice(ev({ hook_event_name: 'SessionStart', source: 'startup', cwd: 'C:\\dev' }), idle)?.text).toBe('🟢 Claude Code のセッションを開始した: C:\\dev');
-    expect(hookToNotice(ev({ hook_event_name: 'SessionStart', source: 'resume' }), idle)?.text).toContain('開始した');
-    expect(hookToNotice(ev({ hook_event_name: 'SessionStart', source: 'clear' }), idle)?.text).toContain('クリア');
-    expect(hookToNotice(ev({ hook_event_name: 'SessionStart', source: 'compact' }), idle)).toBeUndefined();
-    expect(hookToNotice(ev({ hook_event_name: 'SessionEnd', reason: 'logout' }), idle)?.text).toContain('終了した（logout）');
-    // /clear の終了は、続く SessionStart（source=clear）の「会話をクリアした」だけにする
-    expect(hookToNotice(ev({ hook_event_name: 'SessionEnd', reason: 'clear' }), idle)).toBeUndefined();
-    expect(hookToNotice(ev({ hook_event_name: 'PostCompact', trigger: 'auto' }), idle)?.text).toContain('自動で圧縮');
-    expect(hookToNotice(ev({ hook_event_name: 'PostCompact', trigger: 'manual' }), idle)?.text).toBe('🧹 会話を圧縮した');
+  it.each([
+    ['未知の種別ならその名前', 'weird', 'weird'],
+    ['種別が無ければ unknown', undefined, 'unknown'],
+  ] as const)('StopFailure は%sを出す', (_label, error, expected) => {
+    const event = ev({ hook_event_name: 'StopFailure', ...(error ? { error } : {}) });
+    expect(hookToNotice(event, idle)?.text).toContain(expected);
+  });
+
+  describe('セッションの開始・終了・クリア・圧縮を知らせる', () => {
+    it.each([
+      ['SessionStart(startup)', { hook_event_name: 'SessionStart', source: 'startup', cwd: 'C:\\dev' }, '🟢 Claude Code のセッションを開始した: C:\\dev'],
+      ['SessionStart(resume)', { hook_event_name: 'SessionStart', source: 'resume' }, expect.stringContaining('開始した')],
+      ['SessionStart(clear)', { hook_event_name: 'SessionStart', source: 'clear' }, expect.stringContaining('クリア')],
+      ['SessionEnd(logout)', { hook_event_name: 'SessionEnd', reason: 'logout' }, expect.stringContaining('終了した（logout）')],
+      ['PostCompact(auto)', { hook_event_name: 'PostCompact', trigger: 'auto' }, expect.stringContaining('自動で圧縮')],
+      ['PostCompact(manual)', { hook_event_name: 'PostCompact', trigger: 'manual' }, '🧹 会話を圧縮した'],
+    ])('%s', (_label, fields, expected) => {
+      expect(hookToNotice(ev(fields), idle)?.text).toEqual(expected);
+    });
+
+    it.each([
+      // compact による SessionStart は PostCompact に任せる
+      ['SessionStart(compact)', { hook_event_name: 'SessionStart', source: 'compact' }],
+      // /clear の終了は、続く SessionStart（source=clear）の「会話をクリアした」だけにする
+      ['SessionEnd(clear)', { hook_event_name: 'SessionEnd', reason: 'clear' }],
+    ])('%s は知らせない', (_label, fields) => {
+      expect(hookToNotice(ev(fields), idle)).toBeUndefined();
+    });
   });
 });

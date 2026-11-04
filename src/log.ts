@@ -61,17 +61,40 @@ function formatArg(a: unknown): string {
 export interface LoggerOptions {
   file?: string;
   level?: LogLevel;
-  maxBytes?: number; // 既定 5MB
-  stderr?: boolean; // 既定 true
+  /** ファイルをこれを超えたら `<file>.1` へ回す。省略時は DEFAULT_MAX_BYTES */
+  maxBytes?: number;
+  /** stderr にも書くか。省略時は true */
+  stderr?: boolean;
 }
 
 const DEFAULT_MAX_BYTES = 5 * 1024 * 1024;
 
+/**
+ * file が maxBytes を超えていたら `<file>.1` へ移す（1 世代だけ残す）。無い・回せないときは何もしない（書き込みは続ける）。
+ * hook.ts の hooks.jsonl も同じ回し方にするため export する
+ */
+export function rotateIfLarger(file: string, maxBytes: number): void {
+  let size: number;
+  try {
+    size = fs.statSync(file).size;
+  } catch {
+    // ファイルがまだ無いだけなら何もしない
+    return;
+  }
+  if (size <= maxBytes) return;
+
+  try {
+    fs.renameSync(file, `${file}.1`);
+  } catch {
+    // ローテーション失敗は無視して書き込みを続ける
+  }
+}
+
 export class Logger {
-  private file: string | undefined;
+  private readonly file: string | undefined;
   private level: LogLevel;
-  private maxBytes: number;
-  private toStderr: boolean;
+  private readonly maxBytes: number;
+  private readonly toStderr: boolean;
   private name = '';
 
   constructor(opts: LoggerOptions = {}) {
@@ -79,10 +102,6 @@ export class Logger {
     this.level = opts.level ?? 'info';
     this.maxBytes = opts.maxBytes ?? DEFAULT_MAX_BYTES;
     this.toStderr = opts.stderr ?? true;
-  }
-
-  setLevel(level: LogLevel): void {
-    this.level = level;
   }
 
   getLevel(): LogLevel {
@@ -140,20 +159,7 @@ export class Logger {
         fs.mkdirSync(dir, { recursive: true });
       }
 
-      try {
-        const stat = fs.statSync(file);
-        if (stat.size > this.maxBytes) {
-          const rotated = `${file}.1`;
-          try {
-            fs.renameSync(file, rotated);
-          } catch {
-            // ローテーション失敗は無視して書き込みを続ける
-          }
-        }
-      } catch {
-        // ファイルがまだ無いだけなら何もしない
-      }
-
+      rotateIfLarger(file, this.maxBytes);
       fs.appendFileSync(file, line);
     } catch {
       // ファイル書き込みの失敗も呼び出し元へは伝えない

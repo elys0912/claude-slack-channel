@@ -5,13 +5,14 @@
 // ask との照合は、判断できないものを当たり（自動許可しない）に倒す。
 // このファイルは claude-slack-channel と claude-discord-channel で同じ内容にしている（直すときは両方を直す）。
 import path from 'node:path';
-import os from 'node:os';
-import type { PermissionRequest } from './permission.js';
-import { COMMAND_SEPARATOR_RE, denyDirOf, isSameOrAncestor, normalizeCommandName, toRulePath } from './allow-rules.js';
+import { inputField } from './permission-core.js';
+import type { PermissionRequest } from './permission-core.js';
+import { COMMAND_SEPARATOR_RE, RULE_RE, defaultContext, denyDirOf, isSameOrAncestor, normalizeCommandName, normalizeShellWords, toRulePath } from './allow-rules.js';
 import type { DenyContext } from './allow-rules.js';
 
+/** シェルのツール（小文字）。ルールの種別の対応箇所（allow-rules.ts の SHELL_TOOLS） */
 const SHELL_TOOLS = new Set(['bash', 'powershell']);
-/** パスのルール（Read / Edit）がどのツールに効くか（Claude Code の permission rule と同じ対応） */
+/** パスのルール（Read / Edit）がどのツールに効くか（Claude Code の permission rule と同じ対応）。ルールの種別の対応箇所 */
 const PATH_RULE_TARGETS: Record<string, readonly string[]> = {
   read: ['read', 'grep', 'glob'],
   edit: ['edit', 'write', 'multiedit', 'notebookedit'],
@@ -50,24 +51,8 @@ const WRAPPER_COMMANDS = new Set([
 ]);
 /** ファイル名だけのパターンで、正規表現に直す前にエスケープする文字（* と ? はワイルドカードとして別に扱う） */
 const REGEX_SPECIAL_RE = /[.+^$()|]/g;
-/** Tool / Tool(中身) の形のルール */
-const RULE_RE = /^([A-Za-z][\w-]*)(?:\((.*)\))?$/;
 
-/** input_preview（JSON）の文字列の項目。JSON でない（省略されている等）・文字列でなければ undefined */
-function inputField(req: PermissionRequest, field: string): string | undefined {
-  try {
-    const parsed: unknown = JSON.parse(req.input_preview);
-    if (typeof parsed === 'object' && parsed !== null) {
-      const value = (parsed as Record<string, unknown>)[field];
-      if (typeof value === 'string') return value;
-    }
-  } catch {
-    // 中身が読めないときは呼び出し側で「当たる」とみなす
-  }
-  return undefined;
-}
-
-/** パスを取るツールのパス（file_path / path / notebook_path） */
+/** パスを取るツールのパス（file_path / path / notebook_path）。読めなければ undefined（呼び出し側で当たりとみなす） */
 function pathOf(req: PermissionRequest): string | undefined {
   return inputField(req, 'file_path') ?? inputField(req, 'path') ?? inputField(req, 'notebook_path');
 }
@@ -96,10 +81,6 @@ function pathRuleMatches(body: string, req: PermissionRequest, ctx: DenyContext)
   const dir = denyDirOf(body, ctx);
   if (dir === undefined) return true;
   return isSameOrAncestor(dir, target);
-}
-
-function defaultContext(): DenyContext {
-  return { workDir: process.cwd(), home: os.homedir() };
 }
 
 /**
@@ -141,8 +122,7 @@ function shellCommandMatches(command: string, prefix: string): boolean {
     .map((part) => part.trim())
     .filter((part) => part !== '');
   if (parts.some((part) => part.split(/\s+/).some((word) => CONTROL_WORDS.has(word)))) return true;
-  const [prefixFirst = '', ...prefixRest] = prefix.toLowerCase().split(/\s+/);
-  const ruleWords = [normalizeCommandName(prefixFirst), ...prefixRest];
+  const ruleWords = normalizeShellWords(prefix);
   return parts.some((part) => shellPartMatches(part, ruleWords));
 }
 
@@ -168,30 +148,28 @@ function mcpRuleMatches(rule: string, tool: string): boolean | undefined {
  */
 export function matchingRule(req: PermissionRequest, rules: readonly string[], ctx: DenyContext = defaultContext()): string | undefined {
   const tool = req.tool_name.trim().toLowerCase();
-  for (const rule of rules) {
-    const mcp = mcpRuleMatches(rule, tool);
-    if (mcp !== undefined) {
-      if (mcp) return rule;
-      continue;
-    }
-    const m = RULE_RE.exec(rule.trim());
-    if (!m) return rule;
-    const ruleTool = (m[1] ?? '').toLowerCase();
-    const pathTargets = PATH_RULE_TARGETS[ruleTool];
-    if (!(pathTargets ?? [ruleTool]).includes(tool)) continue;
-    const body = m[2]?.trim();
-    if (!body) return rule;
-    if (pathTargets) {
-      if (pathRuleMatches(body, req, ctx)) return rule;
-      continue;
-    }
-    if (!SHELL_TOOLS.has(tool)) return rule;
-    const command = inputField(req, 'command')?.trim();
-    if (command === undefined) return rule;
-    const prefix = body.replace(/:\*$|\s*\*$/, '').trim();
-    if (shellCommandMatches(command, prefix)) return rule;
-  }
-  return undefined;
+  return rules.find((rule) => ruleMatches(rule, req, tool, ctx));
+}
+
+/** 1 本のルールがリクエストに当たるか（tool はリクエストのツール名の小文字）。種別ごとの扱いは matchingRule の説明のとおり */
+function ruleMatches(rule: string, req: PermissionRequest, tool: string, ctx: DenyContext): boolean {
+  const mcp = mcpRuleMatches(rule, tool);
+  if (mcp !== undefined) return mcp;
+
+  const m = RULE_RE.exec(rule.trim());
+  if (!m) return true;
+  const ruleTool = (m[1] ?? '').toLowerCase();
+  const pathTargets = PATH_RULE_TARGETS[ruleTool];
+  if (!(pathTargets ?? [ruleTool]).includes(tool)) return false;
+  const body = m[2]?.trim();
+  if (!body) return true;
+  if (pathTargets) return pathRuleMatches(body, req, ctx);
+  if (!SHELL_TOOLS.has(tool)) return true;
+
+  const command = inputField(req, 'command')?.trim();
+  if (command === undefined) return true;
+  const prefix = body.replace(/:\*$|\s*\*$/, '').trim();
+  return shellCommandMatches(command, prefix);
 }
 
 export interface SessionAllowState {
@@ -226,7 +204,7 @@ export class SessionAllowAll {
   }
 
   /**
-   * 全部許可のボタンを出してよいか。ask を読めない（設定ファイルが読めない・JSON でない）なら、
+   * ask のルールを読めるか。読めない（設定ファイルが読めない・JSON でない）なら、
    * 何を自動許可から外すべきか判断できないので false
    */
   available(): boolean {
@@ -236,6 +214,11 @@ export class SessionAllowAll {
     } catch {
       return false;
     }
+  }
+
+  /** 全部許可のボタンを出してよいか。まだ有効になっておらず、ask を読める（available）とき */
+  canOffer(): boolean {
+    return this.state === undefined && this.available();
   }
 
   /**

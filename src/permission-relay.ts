@@ -19,11 +19,14 @@ import type { PermissionRequest } from './permission.js';
 import type { SessionAllowAll } from './session-allow.js';
 import { deriveRule } from './allow-rules.js';
 import { clip } from './text.js';
+import { plainContext } from './blocks.js';
 
 /** 自動許可をスレッドに記録するとき、入力を載せる長さ */
 const AUTO_ALLOW_PREVIEW_MAX = 300;
 /** 自動許可の記録の context ブロックの長さ（plain_text の上限 3000 より少し短く） */
 const AUTO_ALLOW_TEXT_MAX = 2900;
+/** 自動許可の記録の先頭（通知欄の text と context の両方に付ける） */
+const AUTO_ALLOW_PREFIX = '🔓 自動許可: ';
 
 interface MessageRef {
   channel: string;
@@ -118,17 +121,12 @@ export class PermissionRelay {
     this.startExpiryTimer(req.request_id);
 
     // 自動許可から外す ask を読めないときは、全部許可のボタンを出さない
-    const sessionButton = this.sessionAllow !== undefined && this.sessionAllow.current === undefined && this.sessionAllow.available();
+    const showSessionButton = this.sessionAllow !== undefined && this.sessionAllow.canOffer();
     // 許可リストに足せるルールを作れないリクエストには「今後も許可」を出さない（その場の 1 回の許可だけにする）
-    const { text, blocks } = buildPermissionBlocks(req, undefined, sessionButton, deriveRule(req).ok);
+    const { text, blocks } = buildPermissionBlocks(req, { showSessionButton, showAlwaysButton: deriveRule(req).ok });
     if (await this.replyToLastThread(req, text, blocks)) return;
 
-    let results: MessageRef[] = [];
-    try {
-      results = await this.slack.postToAll(text, blocks, (channel) => this.activeThread.get(channel));
-    } catch (e) {
-      this.logger.error(`permission_request の配信で例外 id=${req.request_id}`, e);
-    }
+    const results = await this.broadcastToDms(req, text, blocks);
     const delivered = results.filter((r) => r.ts !== '');
     this.posted.set(req.request_id, delivered);
 
@@ -160,20 +158,33 @@ export class PermissionRelay {
       return false;
     }
     this.logger.info(`自動許可（全部許可中） id=${req.request_id} tool=${req.tool_name}`);
-    const target = this.lastThreadRef;
-    if (target) {
-      // 全部許可の間は、この記録が何を実行させたかの手がかりになる。実行許可のメッセージと同じく、不可視文字を見えるようにして切る
-      const preview = truncatePlain(req.input_preview, AUTO_ALLOW_PREVIEW_MAX).text;
-      const text = `🔓 自動許可: ${revealInvisible(req.tool_name)}\n${preview}`;
-      try {
-        await this.slack.postBlocks(target.channel, `🔓 自動許可: ${req.tool_name}`, [
-          { type: 'context', elements: [{ type: 'plain_text', text: clip(text, AUTO_ALLOW_TEXT_MAX) }] },
-        ], target.threadTs);
-      } catch (e) {
-        this.logger.warn('自動許可の記録の投稿に失敗', e);
-      }
-    }
+    await this.recordAutoAllow(req);
     return true;
+  }
+
+  /** 自動で許可したことを、最後に話しかけられたスレッドに記録する。まだ話しかけられていなければ何もしない。投げない */
+  private async recordAutoAllow(req: PermissionRequest): Promise<void> {
+    const target = this.lastThreadRef;
+    if (!target) return;
+
+    // 全部許可の間は、この記録が何を実行させたかの手がかりになる。実行許可のメッセージと同じく、不可視文字を見えるようにして切る
+    const preview = truncatePlain(req.input_preview, AUTO_ALLOW_PREVIEW_MAX).text;
+    const text = `${AUTO_ALLOW_PREFIX}${revealInvisible(req.tool_name)}\n${preview}`;
+    try {
+      await this.slack.postBlocks(target.channel, `${AUTO_ALLOW_PREFIX}${req.tool_name}`, [plainContext(clip(text, AUTO_ALLOW_TEXT_MAX))], target.threadTs);
+    } catch (e) {
+      this.logger.warn('自動許可の記録の投稿に失敗', e);
+    }
+  }
+
+  /** 許可ユーザー全員の DM に配信し、宛先ごとの結果を返す（ts が空なら失敗）。配信で例外なら空を返す。投げない */
+  private async broadcastToDms(req: PermissionRequest, text: string, blocks: unknown[]): Promise<MessageRef[]> {
+    try {
+      return await this.slack.postToAll(text, blocks, (channel) => this.activeThread.get(channel));
+    } catch (e) {
+      this.logger.error(`permission_request の配信で例外 id=${req.request_id}`, e);
+      return [];
+    }
   }
 
   /** 最後に話しかけられたスレッドに返信する。まだ話しかけられていない・投稿に失敗した・ts が返らなかったら false */

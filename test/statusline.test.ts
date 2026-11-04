@@ -1,8 +1,8 @@
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { USAGE_FILE, formatStatusLine, toUsageSnapshot, writeUsage } from '../src/statusline.js';
+import { useTempDir } from './helpers/temp-dir.js';
 
 /** statusline に渡る JSON の例（公式ドキュメントの欄のうち使うものと、使わないもの） */
 const INPUT = {
@@ -51,14 +51,11 @@ describe('formatStatusLine', () => {
 });
 
 describe('writeUsage', () => {
+  const tempDir = useTempDir('statusline-test-');
   let dir: string;
 
   beforeEach(() => {
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'statusline-test-'));
-  });
-
-  afterEach(() => {
-    fs.rmSync(dir, { recursive: true, force: true });
+    dir = tempDir();
   });
 
   it('書いて、一時ファイルを残さない', () => {

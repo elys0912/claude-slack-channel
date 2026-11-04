@@ -1,6 +1,7 @@
 // 単一インスタンス実行を保証するファイルロック。
 import fs from 'node:fs';
 import path from 'node:path';
+import { isObject, readJsonFile, writeFileAtomic } from './state-file.js';
 
 export interface LockInfo {
   pid: number;
@@ -9,8 +10,10 @@ export interface LockInfo {
 }
 
 export interface InstanceLockOptions {
-  staleMs?: number; // 既定 30000
-  intervalMs?: number; // 既定 10000
+  /** heartbeat がこれより古いロックは取ってよい。省略時は DEFAULT_STALE_MS */
+  staleMs?: number;
+  /** heartbeat を書き直す間隔。省略時は DEFAULT_INTERVAL_MS */
+  intervalMs?: number;
   now?: () => number;
   pid?: number;
   /** 記録された pid のプロセスが生きているか。死んでいれば heartbeat が新しくても取る。省略時は確認しない（常に生きている扱い） */
@@ -42,12 +45,11 @@ const DEFAULT_INTERVAL_MS = 10000;
 const FUTURE_TOLERANCE_MS = 5000;
 
 function isLockInfo(v: unknown): v is LockInfo {
-  if (typeof v !== 'object' || v === null) return false;
-  const o = v as Record<string, unknown>;
   return (
-    typeof o.pid === 'number' &&
-    typeof o.heartbeat === 'number' &&
-    typeof o.startedAt === 'number'
+    isObject(v) &&
+    typeof v.pid === 'number' &&
+    typeof v.heartbeat === 'number' &&
+    typeof v.startedAt === 'number'
   );
 }
 
@@ -73,19 +75,7 @@ export class InstanceLock {
   }
 
   private readInfo(): LockInfo | undefined {
-    let text: string;
-    try {
-      text = fs.readFileSync(this.file, 'utf8');
-    } catch {
-      return undefined;
-    }
-    try {
-      const parsed: unknown = JSON.parse(text);
-      if (isLockInfo(parsed)) return parsed;
-      return undefined;
-    } catch {
-      return undefined;
-    }
+    return readJsonFile(this.file, isLockInfo);
   }
 
   private writeInfo(info: LockInfo): void {
@@ -93,12 +83,7 @@ export class InstanceLock {
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
     }
-    const tmp = path.join(
-      dir,
-      `.${path.basename(this.file)}.tmp.${this.pid}.${Math.random().toString(36).slice(2)}`,
-    );
-    fs.writeFileSync(tmp, JSON.stringify(info));
-    fs.renameSync(tmp, this.file);
+    writeFileAtomic(this.file, JSON.stringify(info), this.pid);
   }
 
   /**

@@ -6,18 +6,17 @@ const BROADCAST_TAG_RE = /<!(channel|here|everyone)(?:\|[^>]*)?>/g;
 const SUBTEAM_TAG_RE = /<!subteam\^([A-Za-z0-9]+)(\|[^>]*)?>/g;
 const BARE_BROADCAST_RE = /@(channel|here|everyone)\b/g;
 /** ゼロ幅スペース。`@` と語の間に挟んでメンションとして解釈されないようにする */
-const ZWSP = '​';
+const ZWSP = '\u200b';
 
 /**
  * `<!channel>` `<!here>` `<!everyone>` `<!subteam^ID>` と、素の `@channel` 等の
  * 一斉メンションを、ゼロ幅スペースを挟んで無効化する。
  */
 export function neutralizeBroadcasts(text: string): string {
-  let result = text;
-  result = result.replace(BROADCAST_TAG_RE, (_m, kind: string) => `@${ZWSP}${kind}`);
-  result = result.replace(SUBTEAM_TAG_RE, (_m, id: string) => `@${ZWSP}subteam:${id}`);
-  result = result.replace(BARE_BROADCAST_RE, (_m, kind: string) => `@${ZWSP}${kind}`);
-  return result;
+  return text
+    .replace(BROADCAST_TAG_RE, (_m, kind: string) => `@${ZWSP}${kind}`)
+    .replace(SUBTEAM_TAG_RE, (_m, id: string) => `@${ZWSP}subteam:${id}`)
+    .replace(BARE_BROADCAST_RE, (_m, kind: string) => `@${ZWSP}${kind}`);
 }
 
 /** mrkdwn の text フィールド用フォールバックエスケープ（& < > のみ） */

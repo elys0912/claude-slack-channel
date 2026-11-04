@@ -1,13 +1,25 @@
 // 実行許可（permission relay）の、チャネルによらない部分（I/O なし）。
 // 保留中のリクエストの管理と、表示する前の文字の整え方（不可視文字・切り詰め）。表示の形（Slack の Block Kit・Discord のカード）は permission.ts。
 // このファイルは claude-slack-channel と claude-discord-channel で同じ内容にしている（直すときは両方を直す）。
-import { TOKEN_ID_LENGTH } from './text.js';
-
 export interface PermissionRequest {
   request_id: string;
   tool_name: string;
   description: string;
   input_preview: string;
+}
+
+/** input_preview（JSON）の文字列の項目。JSON でない（省略されている等）・文字列でなければ undefined */
+export function inputField(req: PermissionRequest, field: string): string | undefined {
+  try {
+    const parsed: unknown = JSON.parse(req.input_preview);
+    if (typeof parsed === 'object' && parsed !== null) {
+      const value = (parsed as Record<string, unknown>)[field];
+      if (typeof value === 'string') return value;
+    }
+  } catch {
+    // 読めないときの扱い（ルールを作らない・当たりとみなす）は呼び出し側が決める
+  }
+  return undefined;
 }
 
 /** request_id の文字集合（小文字 5 文字、l を除く）。gate.ts の返信パターンもこれから組み立てる */
@@ -127,6 +139,11 @@ function takeHead(units: readonly string[], budget: number): string[] {
   return out;
 }
 
+/** units の末尾から、UTF-16 長の合計が budget 以内に収まるだけ取る（並びは元の順） */
+function takeTail(units: readonly string[], budget: number): string[] {
+  return takeHead(units.slice().reverse(), budget).reverse();
+}
+
 function unitsLength(units: readonly string[]): number {
   return units.reduce((n, u) => n + u.length, 0);
 }
@@ -155,7 +172,7 @@ export function truncateHeadTail(text: string, maxLen: number): { text: string; 
   const budget = Math.max(0, maxLen - marker(total).length);
   const tailBudget = Math.floor(budget * PREVIEW_TAIL_RATIO);
   const head = takeHead(units, budget - tailBudget);
-  const tail = takeHead([...units.slice(head.length)].reverse(), tailBudget).reverse();
+  const tail = takeTail(units.slice(head.length), tailBudget);
   const omitted = total - unitsLength(head) - unitsLength(tail);
   return { text: head.join('') + marker(omitted) + tail.join(''), truncated: true };
 }
@@ -167,6 +184,3 @@ export const PREVIEW_TRUNCATED_WARNING =
 export function orPlaceholder(text: string, placeholder: string): string {
   return text.trim() === '' ? placeholder : text;
 }
-
-/** 画面の控え・提案の ID（ブリッジが発行する英小文字と数字 TOKEN_ID_LENGTH 文字。text.ts の newToken が作る） */
-export const TOKEN_ID_RE = new RegExp(`^[a-z0-9]{${TOKEN_ID_LENGTH}}$`);

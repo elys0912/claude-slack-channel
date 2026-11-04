@@ -11,7 +11,8 @@ import { clip, newToken } from './text.js';
 import type { PressedMessage } from './types.js';
 import { ACTION, PLAIN_TEXT_LIMIT, numberedAction } from './permission.js';
 import type { SlackBridge } from './slack.js';
-import { BUTTON_LABEL_MAX, plainSection } from './blocks.js';
+import { BUTTON_LABEL_MAX, button, plainContext, plainSection } from './blocks.js';
+import { ExpiringMap } from './expiring-map.js';
 
 /** 選択肢のボタンの有効期限 */
 const SNAPSHOT_TTL_MS = 5 * 60 * 1000;
@@ -23,7 +24,6 @@ export type ScreenSlack = Pick<SlackBridge, 'postText' | 'postBlocks' | 'updateB
 interface Snapshot {
   fingerprint: string;
   choice: ChoiceScreen;
-  expiresAt: number;
 }
 
 export interface ScreenRelayOptions {
@@ -37,12 +37,7 @@ export interface ScreenRelayOptions {
 
 /** 無応答の警告などに付ける「画面を確認」ボタン */
 export function screenShowButton(): unknown {
-  return {
-    type: 'button',
-    text: { type: 'plain_text', text: '🖥 画面を確認' },
-    action_id: ACTION.SCREEN_SHOW,
-    value: 'show',
-  };
+  return button('🖥 画面を確認', ACTION.SCREEN_SHOW, 'show');
 }
 
 /** 知らせの blocks。withScreenButton なら「🖥 画面を確認」ボタンを添える */
@@ -54,16 +49,15 @@ export class ScreenRelay {
   private readonly console: ConsoleAccess | undefined;
   private readonly slack: ScreenSlack;
   private readonly logger: Logger;
-  private readonly now: () => number;
   private readonly newId: () => string;
-  private readonly snapshots = new Map<string, Snapshot>();
+  private readonly snapshots: ExpiringMap<Snapshot>;
 
   constructor(opts: ScreenRelayOptions) {
     this.console = opts.console;
     this.slack = opts.slack;
     this.logger = opts.logger;
-    this.now = opts.now ?? Date.now;
     this.newId = opts.newId ?? newToken;
+    this.snapshots = new ExpiringMap(SNAPSHOT_TTL_MS, opts.now ?? Date.now);
   }
 
   /** 画面を読んでスレッドに出す。選択画面なら選択肢のボタン、そうでなければ画面の末尾。投げない */
@@ -84,9 +78,9 @@ export class ScreenRelay {
         );
         return;
       }
-      this.prune();
+      this.snapshots.prune();
       const id = this.newId();
-      this.snapshots.set(id, { fingerprint: choiceFingerprint(choice), choice, expiresAt: this.now() + SNAPSHOT_TTL_MS });
+      this.snapshots.add(id, { fingerprint: choiceFingerprint(choice), choice });
       const { text, blocks } = buildChoiceBlocks(id, choice);
       await this.slack.postBlocks(channel, text, blocks, threadTs);
       this.logger.info(`選択画面を Slack に表示 id=${id} 選択肢=${choice.options.length}`);
@@ -103,9 +97,8 @@ export class ScreenRelay {
   async pick(snapshotId: string, index: number, pressed: PressedMessage, byUserId: string): Promise<void> {
     const report = (message: string): Promise<void> => this.report(pressed, message);
 
-    const snapshot = this.snapshots.get(snapshotId);
-    this.snapshots.delete(snapshotId);
-    if (!snapshot || this.now() > snapshot.expiresAt) {
+    const snapshot = this.snapshots.take(snapshotId);
+    if (!snapshot) {
       await report('⌛ この選択肢は期限切れ。もう一度「画面を確認」から選び直すこと。');
       return;
     }
@@ -140,13 +133,6 @@ export class ScreenRelay {
       await this.slack.postText(pressed.channel, message, pressed.threadTs).catch(() => undefined);
     }
   }
-
-  private prune(): void {
-    const t = this.now();
-    for (const [id, s] of this.snapshots) {
-      if (t > s.expiresAt) this.snapshots.delete(id);
-    }
-  }
 }
 
 /** 選択画面を Slack に出すブロック。見出し・各選択肢の説明・選択肢のボタン */
@@ -161,16 +147,11 @@ export function buildChoiceBlocks(id: string, choice: ChoiceScreen): { text: str
     text,
     blocks: [
       plainSection(clip(`🖥 ターミナルの選択画面\n${heading}`, PLAIN_TEXT_LIMIT)),
-      { type: 'context', elements: [{ type: 'plain_text', text: clip(redact(details), PLAIN_TEXT_LIMIT) }] },
+      plainContext(clip(redact(details), PLAIN_TEXT_LIMIT)),
       {
         type: 'actions',
-        elements: choice.options.map((o, i) => ({
-          type: 'button',
-          text: { type: 'plain_text', text: clip(redact(o.label), BUTTON_LABEL_MAX) },
-          // 同じ actions ブロック内で action_id は重複できないので番号を付ける（受け側は接頭辞で判定）
-          action_id: numberedAction(ACTION.SCREEN_PICK, i),
-          value: `${id}.${i}`,
-        })),
+        // 同じ actions ブロック内で action_id は重複できないので番号を付ける（受け側は接頭辞で判定）
+        elements: choice.options.map((o, i) => button(clip(redact(o.label), BUTTON_LABEL_MAX), numberedAction(ACTION.SCREEN_PICK, i), `${id}.${i}`)),
       },
     ],
   };

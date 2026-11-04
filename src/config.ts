@@ -68,7 +68,8 @@ export function parseDotenv(text: string): Record<string, string> {
   return result;
 }
 
-export interface Tokens {
+/** 状態ディレクトリの .env の設定（トークンと各機能の設定） */
+export interface EnvSettings {
   botToken: string;
   appToken: string;
   /**
@@ -105,7 +106,7 @@ function readPercents(parsed: Record<string, string>, key: string, fallback: rea
 }
 
 /** 使用量とコンテキストの見張りの設定。USAGE_WATCH は既定で on（off / false / 0 で止める） */
-function readUsageWatch(parsed: Record<string, string>): Tokens['usageWatch'] {
+function readUsageWatch(parsed: Record<string, string>): EnvSettings['usageWatch'] {
   const enabled = parseSwitch(parsed.USAGE_WATCH);
   if (enabled === null) throw new Error('USAGE_WATCH は on か off で指定する');
   return {
@@ -115,8 +116,13 @@ function readUsageWatch(parsed: Record<string, string>): Tokens['usageWatch'] {
   };
 }
 
+/** KEEPALIVE_AFTER_MIN の上限。キャッシュの期限は 1 時間なので、それより前に送る */
+const MAX_KEEPALIVE_AFTER_MIN = 59;
+/** KEEPALIVE_MAX（最後の会話から送る回数）の上限 */
+const MAX_KEEPALIVE_COUNT = 48;
+
 /** キャッシュのつなぎ止めの設定。KEEPALIVE は既定で on（off / false / 0 で止める） */
-function readKeepalive(parsed: Record<string, string>): Tokens['keepalive'] {
+function readKeepalive(parsed: Record<string, string>): EnvSettings['keepalive'] {
   const enabled = parseSwitch(parsed.KEEPALIVE);
   if (enabled === null) throw new Error('KEEPALIVE は on か off で指定する');
   let quiet: QuietHours | undefined = DEFAULT_KEEPALIVE_QUIET;
@@ -129,9 +135,8 @@ function readKeepalive(parsed: Record<string, string>): Tokens['keepalive'] {
   }
   return {
     enabled: enabled ?? true,
-    // キャッシュの期限は 1 時間なので、それより前に送る
-    afterMin: readInt(parsed, 'KEEPALIVE_AFTER_MIN', 1, 59) ?? DEFAULT_KEEPALIVE_AFTER_MIN,
-    max: readInt(parsed, 'KEEPALIVE_MAX', 0, 48) ?? DEFAULT_KEEPALIVE_MAX,
+    afterMin: readInt(parsed, 'KEEPALIVE_AFTER_MIN', 1, MAX_KEEPALIVE_AFTER_MIN) ?? DEFAULT_KEEPALIVE_AFTER_MIN,
+    max: readInt(parsed, 'KEEPALIVE_MAX', 0, MAX_KEEPALIVE_COUNT) ?? DEFAULT_KEEPALIVE_MAX,
     quiet,
   };
 }
@@ -141,7 +146,7 @@ function readKeepalive(parsed: Record<string, string>): Tokens['keepalive'] {
  * ファイルが読めない・キーが無い・接頭辞が違う・DOWNLOAD_DIR が絶対パスでないときは投げる（メッセージにトークンの値は含めない）。
  * warn は .env の値を読み替えたときの知らせ（起動は止めない）。省略時は知らせない。
  */
-export function loadTokens(dir: string, warn?: (message: string) => void): Tokens {
+export function loadTokens(dir: string, warn?: (message: string) => void): EnvSettings {
   const file = path.join(dir, '.env');
   let text: string;
   try {
@@ -152,7 +157,7 @@ export function loadTokens(dir: string, warn?: (message: string) => void): Token
 
   const parsed = parseDotenv(text);
   // process.env には書き込まない（子プロセスへ引き継がれるため）
-  const tokens: Tokens = {
+  const tokens: EnvSettings = {
     botToken: requireToken(parsed, 'SLACK_BOT_TOKEN', 'xoxb-'),
     appToken: requireToken(parsed, 'SLACK_APP_TOKEN', 'xapp-'),
     keepalive: readKeepalive(parsed),
@@ -207,6 +212,7 @@ export const HomeCustomSchema = z.strictObject({
   header: z.string().min(1).max(150).optional(),
   running: z.string().min(1).optional(),
   stopped: z.string().min(1).optional(),
+  /** 開くたびにこの中から 1 つを選んで出す */
   greetings: z.array(z.string().min(1)).max(100).optional(),
   body: z.array(z.string()).max(100).optional(),
   footer: z.string().min(1).optional(),
@@ -214,20 +220,26 @@ export const HomeCustomSchema = z.strictObject({
 
 export type ParsedHomeCustom = z.infer<typeof HomeCustomSchema>;
 
+/** 状態ディレクトリのファイル名 */
+const HOME_CUSTOM_FILE = 'home.json';
+const ACCESS_FILE = 'access.json';
+
+/** zod の検証エラーを `<パス>: <理由>; ...` の 1 行にする（パスが無ければ `(root)`） */
+function formatIssues(error: z.ZodError): string {
+  return error.issues.map((issue) => `${issue.path.length > 0 ? issue.path.join('.') : '(root)'}: ${issue.message}`).join('; ');
+}
+
 /**
  * dir/home.json を読む。ファイルが無ければ undefined（既定の文面を使う）。
  * 読めない・JSON が壊れている・スキーマ違反のときは投げる（呼び出し側でログに残して既定の文面にする）。
  */
 export function loadHomeCustom(dir: string): ParsedHomeCustom | undefined {
-  const file = path.join(dir, 'home.json');
+  const file = path.join(dir, HOME_CUSTOM_FILE);
   if (!fs.existsSync(file)) return undefined;
   const json: unknown = JSON.parse(stripBom(fs.readFileSync(file, 'utf8')));
   const result = HomeCustomSchema.safeParse(json);
   if (!result.success) {
-    const details = result.error.issues
-      .map((issue) => `${issue.path.length > 0 ? issue.path.join('.') : '(root)'}: ${issue.message}`)
-      .join('; ');
-    throw new Error(`home.json の検証に失敗: ${details}`);
+    throw new Error(`home.json の検証に失敗: ${formatIssues(result.error)}`);
   }
   return result.data;
 }
@@ -238,7 +250,7 @@ export function loadHomeCustom(dir: string): ParsedHomeCustom | undefined {
  * スキーマ違反（`access.json の検証に失敗: <パス>: <理由>; ...`）。
  */
 export function loadAccess(dir: string): ParsedAccess {
-  const file = path.join(dir, 'access.json');
+  const file = path.join(dir, ACCESS_FILE);
   let text: string;
   try {
     text = fs.readFileSync(file, 'utf8');
@@ -255,10 +267,7 @@ export function loadAccess(dir: string): ParsedAccess {
 
   const result = AccessSchema.safeParse(json);
   if (!result.success) {
-    const details = result.error.issues
-      .map((issue) => `${issue.path.length > 0 ? issue.path.join('.') : '(root)'}: ${issue.message}`)
-      .join('; ');
-    throw new Error(`access.json の検証に失敗: ${details}`);
+    throw new Error(`access.json の検証に失敗: ${formatIssues(result.error)}`);
   }
 
   return result.data;

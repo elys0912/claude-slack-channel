@@ -66,10 +66,13 @@ GitHub Actions（`.github/workflows/ci.yml`）は、main への push と pull re
 | `src/notice.ts` | ブリッジからの通知の投稿（最後のスレッド、無ければ DM） |
 | `src/status.ts` | `!status` の文面（純関数） |
 | `src/session-control.ts` | `!restart` / `!compact` / `!clear`（再起動フラグと、ターミナルへの決まったコマンドの送信） |
+| `src/parent-process.ts` | `!restart force` で親プロセス（Claude Code 本体）を止める（Windows は taskkill でツリーごと） |
 | `src/console.ts` | ターミナル画面の読み取りと選択キーの送信（`scripts/console.ps1` の呼び出し） |
 | `src/screen.ts` | 画面のテキストから選択画面を取り出す（純関数） |
 | `src/screen-relay.ts` | `!screen` と選択肢ボタンの処理 |
-| `src/allow-rules.ts` | 「今後も許可」のルールの生成（作ってよいものの一覧）、deny との照合、保存 |
+| `src/allow-rules.ts` | 「今後も許可」のルールの生成（作ってよいものの一覧）、deny との照合 |
+| `src/allow-rule-store.ts` | 「今後も許可」で足したルールの保存（`allow-extra.json`） |
+| `src/settings-files.ts` | Claude Code の settings JSON（deny / ask・managed settings）の読み込み |
 | `src/allow-extra-check.ts` | 起動スクリプトから呼ぶコマンド。`allow-extra.json` のルールを、今の方式で作れるものと作れないものに分けて JSON で返す |
 | `src/rule-relay.ts` | 「今後も許可」の提案・確認と、`!rules` の処理 |
 | `src/home.ts` | ホームタブの画面の組み立て（純関数） |
@@ -79,8 +82,10 @@ GitHub Actions（`.github/workflows/ci.yml`）は、main への push と pull re
 | `src/format.ts` | 送信前のテキストの整形（`@here` などの無害化） |
 | `src/chunk.ts` | 長文の分割 |
 | `src/lock.ts` | 単一インスタンス実行のファイルロック |
+| `src/state-file.ts` | 状態ディレクトリの JSON ファイルの読み込みと、一時ファイルからの置き換えによる書き込み |
 | `src/log.ts` | ログの出力（トークンの伏せ字を含む） |
 | `src/errors.ts` | エラーの値を文字列にする helper |
+| `src/main-module.ts` | コマンドとして直接起動されたかの判定（hook・statusline などの入口のファイルが使う） |
 | `src/stdio-guard.ts` | stdout を MCP 専用に保つガード |
 | `src/text.ts` | 文字列の小さな整形（BOM の除去・切り詰め・ID の生成） |
 | `src/types.ts` | 共有の型 |
@@ -94,6 +99,9 @@ GitHub Actions（`.github/workflows/ci.yml`）は、main への push と pull re
 | `slack-app-manifest.yaml` | Slack アプリの manifest |
 | `test/*.test.ts` | vitest のテスト |
 | `test/helpers/fake-slack.ts` | Slack の Web API / Socket Mode の差し替え（`slack.test.ts` / `app.test.ts` で共用） |
+| `test/helpers/random-text.ts` | 固定シードの乱数と、`chunkText` の試験に使う乱数のテキスト（`chunk.test.ts`・`chunk-legacy.test.ts` で共用） |
+| `test/helpers/chunk-reconstruct.ts` | `chunkText` の出力から足したフェンスを取り除いて元の文字列に戻し、整合を確かめる（`chunk.test.ts`・`chunk-legacy.test.ts` で共用） |
+| `test/helpers/powershell.ts` | テストから `scripts/*.ps1` を `powershell.exe` で動かす（`common-script`・`start-script`・`console-script` のテストで共用） |
 | `test/fixtures/chunk-legacy.ts` | 分割前の `chunkText` の実装。`chunk-legacy.test.ts` で出力が一致することを確かめる |
 | `tsconfig.json` | 本体（`src` / `scripts`）のビルドの設定 |
 | `tsconfig.test.json` | テストを含めた型検査用の設定（出力なし） |

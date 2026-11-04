@@ -1,21 +1,18 @@
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { sendNotice } from '../src/notify-cli.js';
 import { ACCESS, makeWeb } from './helpers/fake-slack.js';
+import { useTempDir } from './helpers/temp-dir.js';
 
 describe('sendNotice', () => {
+  const tempDir = useTempDir('notify-cli-test-');
   let dir: string;
 
   beforeEach(() => {
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'notify-cli-test-'));
+    dir = tempDir();
     fs.writeFileSync(path.join(dir, '.env'), 'SLACK_BOT_TOKEN=xoxb-TEST-DUMMY\nSLACK_APP_TOKEN=xapp-TEST-DUMMY\n');
     fs.writeFileSync(path.join(dir, 'access.json'), JSON.stringify(ACCESS));
-  });
-
-  afterEach(() => {
-    fs.rmSync(dir, { recursive: true, force: true });
   });
 
   it('許可ユーザー全員の DM に送り、送れた数を返す', async () => {

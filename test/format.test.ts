@@ -1,43 +1,46 @@
 import { describe, expect, it } from 'vitest';
 import { META_VALUE_MAX, escapeMrkdwn, linkifyMarkdownUrls, neutralizeBroadcasts, sanitizeMeta } from '../src/format.js';
 
+// 一斉通知を無効化するために @ の直後へ挟むゼロ幅スペース（見た目では区別できないので名前で書く）
+const ZWSP = '\u200b';
+
 describe('neutralizeBroadcasts', () => {
   it('neutralizes <!channel>', () => {
-    expect(neutralizeBroadcasts('<!channel>')).toBe('@​channel');
+    expect(neutralizeBroadcasts('<!channel>')).toBe(`@${ZWSP}channel`);
   });
 
   it('neutralizes <!here>', () => {
-    expect(neutralizeBroadcasts('<!here>')).toBe('@​here');
+    expect(neutralizeBroadcasts('<!here>')).toBe(`@${ZWSP}here`);
   });
 
   it('ラベル付きの <!here|here> / <!channel|channel> / <!everyone|x> も無効化する', () => {
-    expect(neutralizeBroadcasts('<!here|here>')).toBe('@​here');
-    expect(neutralizeBroadcasts('a <!channel|channel> b')).toBe('a @​channel b');
-    expect(neutralizeBroadcasts('<!everyone|x>')).toBe('@​everyone');
+    expect(neutralizeBroadcasts('<!here|here>')).toBe(`@${ZWSP}here`);
+    expect(neutralizeBroadcasts('a <!channel|channel> b')).toBe(`a @${ZWSP}channel b`);
+    expect(neutralizeBroadcasts('<!everyone|x>')).toBe(`@${ZWSP}everyone`);
   });
 
   it('neutralizes <!everyone>', () => {
-    expect(neutralizeBroadcasts('<!everyone>')).toBe('@​everyone');
+    expect(neutralizeBroadcasts('<!everyone>')).toBe(`@${ZWSP}everyone`);
   });
 
   it('neutralizes <!subteam^S123>', () => {
     const result = neutralizeBroadcasts('<!subteam^S123>');
     expect(result).not.toContain('<!subteam');
-    expect(result).toContain('​');
+    expect(result).toContain(ZWSP);
   });
 
   it('neutralizes <!subteam^S123|label>', () => {
     const result = neutralizeBroadcasts('<!subteam^S123|eng-team>');
     expect(result).not.toContain('<!subteam');
-    expect(result).toContain('​');
+    expect(result).toContain(ZWSP);
   });
 
   it('neutralizes bare @here', () => {
-    expect(neutralizeBroadcasts('hi @here please')).toBe('hi @​here please');
+    expect(neutralizeBroadcasts('hi @here please')).toBe(`hi @${ZWSP}here please`);
   });
 
   it('neutralizes bare @channel and @everyone', () => {
-    expect(neutralizeBroadcasts('@channel @everyone')).toBe('@​channel @​everyone');
+    expect(neutralizeBroadcasts('@channel @everyone')).toBe(`@${ZWSP}channel @${ZWSP}everyone`);
   });
 
   it('leaves normal text and normal mentions alone', () => {
@@ -85,14 +88,17 @@ describe('sanitizeMeta', () => {
 
   it('値は META_VALUE_MAX 文字までに切り詰め、末尾を … にする', () => {
     expect(META_VALUE_MAX).toBe(2000);
-    const out = sanitizeMeta({ ok: 'x'.repeat(2000), long: 'y'.repeat(2001) });
-    expect(out.ok).toBe('x'.repeat(2000));
-    expect(out.long).toBe('y'.repeat(1999) + '…');
+    const out = sanitizeMeta({ ok: 'x'.repeat(META_VALUE_MAX), long: 'y'.repeat(META_VALUE_MAX + 1) });
+    expect(out.ok).toBe('x'.repeat(META_VALUE_MAX));
+    // 末尾の … の 1 文字ぶん本文を削る
+    expect(out.long).toBe('y'.repeat(META_VALUE_MAX - 1) + '…');
   });
 
   it('切り詰めの境目がサロゲートペアの途中なら、その 1 文字ごと落とす', () => {
-    const out = sanitizeMeta({ emoji: 'x'.repeat(1998) + '😀😀' });
-    expect(out.emoji).toBe('x'.repeat(1998) + '…');
+    // 本文として残せる META_VALUE_MAX - 1 文字目がサロゲートペアの前半に当たる長さ
+    const plainLength = META_VALUE_MAX - 2;
+    const out = sanitizeMeta({ emoji: 'x'.repeat(plainLength) + '😀😀' });
+    expect(out.emoji).toBe('x'.repeat(plainLength) + '…');
     expect(out.emoji).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
   });
 });

@@ -1,4 +1,6 @@
 // Slack の Web API / Socket Mode を差し替えるテスト用の偽物（slack.test.ts / app.test.ts で共用）
+import { SlackBridge } from '../../src/slack.js';
+import { Logger } from '../../src/log.js';
 import type { SlackWebApiLike, SocketClientLike } from '../../src/slack.js';
 import type { ParsedAccess } from '../../src/config.js';
 
@@ -149,6 +151,77 @@ export function makeSocket(): FakeSocket {
     },
   };
   return socket;
+}
+
+export interface MadeBridge {
+  bridge: SlackBridge;
+  web: FakeWeb;
+  socket: FakeSocket;
+  logger: Logger;
+}
+
+/** 偽の Web API / Socket Mode につないだ SlackBridge を作る（init は呼ばない）。省略した部品はここで作る */
+export function makeBridge(
+  parts: { access?: ParsedAccess; fetch?: typeof fetch; logger?: Logger; web?: FakeWeb; socket?: FakeSocket } = {}
+): MadeBridge {
+  const web = parts.web ?? makeWeb();
+  const socket = parts.socket ?? makeSocket();
+  const logger = parts.logger ?? new Logger({ stderr: false });
+  const bridge = new SlackBridge({
+    botToken: 'xoxb-TEST-DUMMY',
+    appToken: 'xapp-TEST-DUMMY',
+    access: parts.access ?? ACCESS,
+    logger,
+    web,
+    socket,
+    ...(parts.fetch ? { fetch: parts.fetch } : {}),
+  });
+  return { bridge, web, socket, logger };
+}
+
+interface EnvelopeOptions {
+  /** 同じ event_id の受信は重複として捨てられるので、続けて送るときは変える */
+  eventId?: string;
+  teamId?: string;
+  ack?: () => Promise<void>;
+}
+
+/** Socket Mode の events_api の受信封筒 */
+export function eventEnvelope(
+  event: Record<string, unknown>,
+  { eventId = 'Ev1', teamId = 'T123ABC', ack = async () => undefined }: EnvelopeOptions = {}
+): Record<string, unknown> {
+  return {
+    type: 'events_api',
+    envelope_id: 'env-1',
+    body: { team_id: teamId, event_id: eventId, event },
+    ack,
+  };
+}
+
+/** 許可ユーザー U111AAA から DM1 への DM の受信封筒。event の項目は overrides で上書きする */
+export function messageEnvelope(overrides: Record<string, unknown> = {}, options: EnvelopeOptions = {}): Record<string, unknown> {
+  const event = { type: 'message', channel_type: 'im', channel: DM1, user: 'U111AAA', text: 'hello', ts: '1.1', ...overrides };
+  return eventEnvelope(event, options);
+}
+
+/** 許可ユーザー U111AAA が DM1 でボタン（perm_allow / abcde）を押した interactive の受信封筒。body の項目は overrides で上書きする */
+export function blockActionEnvelope(
+  overrides: Record<string, unknown> = {},
+  ack: () => Promise<void> = async () => undefined
+): Record<string, unknown> {
+  return {
+    type: 'interactive',
+    body: {
+      type: 'block_actions',
+      team: { id: 'T123ABC' },
+      user: { id: 'U111AAA' },
+      channel: { id: DM1 },
+      actions: [{ action_id: 'perm_allow', value: 'abcde' }],
+      ...overrides,
+    },
+    ack,
+  };
 }
 
 /** @slack/web-api が投げる platform error（data.error にコードが入る）を模す */

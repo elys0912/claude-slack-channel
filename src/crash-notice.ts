@@ -3,6 +3,7 @@
 // （終了したセッションのブリッジは claude.exe と一緒に止まっているので、知らせられるのは次のブリッジだけ）。
 import fs from 'node:fs';
 import { stripBom } from './text.js';
+import { isObject, parseJson } from './state-file.js';
 
 /** start.ps1 が置く印（状態ディレクトリ） */
 export const CRASH_FILE = 'crash.json';
@@ -23,15 +24,14 @@ export interface CrashRecord {
 }
 
 function isCrashRecord(value: unknown): value is CrashRecord {
-  if (typeof value !== 'object' || value === null) return false;
-  const r = value as Record<string, unknown>;
   return (
-    typeof r.at === 'number' &&
-    typeof r.exit_code === 'number' &&
-    typeof r.count === 'number' &&
-    typeof r.max === 'number' &&
-    typeof r.window_min === 'number' &&
-    typeof r.resumed === 'boolean'
+    isObject(value) &&
+    typeof value.at === 'number' &&
+    typeof value.exit_code === 'number' &&
+    typeof value.count === 'number' &&
+    typeof value.max === 'number' &&
+    typeof value.window_min === 'number' &&
+    typeof value.resumed === 'boolean'
   );
 }
 
@@ -50,11 +50,7 @@ export function takeCrashNotice(file: string): string | undefined {
     return undefined;
   }
   fs.rmSync(file, { force: true });
-  try {
-    // PowerShell 5.1 の Set-Content -Encoding UTF8 は BOM を付けるので外す
-    const parsed: unknown = JSON.parse(stripBom(text));
-    return isCrashRecord(parsed) ? crashNoticeText(parsed) : undefined;
-  } catch {
-    return undefined;
-  }
+  // PowerShell 5.1 の Set-Content -Encoding UTF8 は BOM を付けるので外す
+  const record = parseJson(stripBom(text), isCrashRecord);
+  return record ? crashNoticeText(record) : undefined;
 }

@@ -2,7 +2,7 @@
 
 const CLOSE_FENCE = '\n```';
 /** limit の下限。フェンスの開き直し・閉じ直しを入れても本文が残るだけの余裕 */
-const MIN_LIMIT = 64;
+export const MIN_LIMIT = 64;
 /** maxFeasibleCut で cut を詰め直す回数の上限（通常は 1〜2 回で収束する） */
 const MAX_CUT_ADJUSTMENTS = 64;
 /** 区切り位置を探す範囲（チャンクの後ろ側の何分の 1 か） */

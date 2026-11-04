@@ -1,25 +1,57 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { SlackBridge, isMarkdownRejection, toBlockActionInput, toInboundMessage } from '../src/slack.js';
 import type { ActionContext } from '../src/slack.js';
-import { Logger } from '../src/log.js';
 import type { GateResult } from '../src/gate.js';
 import type { ActionParse } from '../src/permission.js';
-import { ACCESS, BOT, DM1, DM2, flush, makeSocket, makeWeb, platformError } from './helpers/fake-slack.js';
-import type { FakeSocket, FakeWeb } from './helpers/fake-slack.js';
+import {
+  BOT,
+  DM1,
+  DM2,
+  blockActionEnvelope,
+  flush,
+  makeBridge,
+  messageEnvelope,
+  platformError,
+} from './helpers/fake-slack.js';
+import type { FakeWeb, MadeBridge } from './helpers/fake-slack.js';
 
-function makeBridge(): { bridge: SlackBridge; web: FakeWeb; socket: FakeSocket; logger: Logger } {
-  const web = makeWeb();
-  const socket = makeSocket();
-  const logger = new Logger({ stderr: false });
-  const bridge = new SlackBridge({
-    botToken: 'xoxb-TEST-DUMMY',
-    appToken: 'xapp-TEST-DUMMY',
-    access: ACCESS,
-    logger,
-    web,
-    socket,
+/** ゼロ幅スペース。一斉メンションを無効化するとき @ の直後に入る */
+/** markdown_text で送る 1 通の上限（src/slack.ts の MARKDOWN_LIMIT と同じ値） */
+const MARKDOWN_TEXT_MAX = 11000;
+/** text で送り直すときの 1 通の上限（src/slack.ts の TEXT_LIMIT と同じ値） */
+const TEXT_MAX = 3900;
+/** 再接続のバックオフの初期値。失敗するたびに 2 倍にする（src/slack.ts の RECONNECT_BASE_MS・RECONNECT_BACKOFF_FACTOR と同じ値） */
+const BACKOFF_INITIAL_MS = 1000;
+/** バックオフの上限（60 秒）を十分に超える待ち。この間に再接続が起きないことを確かめる */
+const PAST_BACKOFF_MAX_MS = 120000;
+const ZWSP = '\u200b';
+
+/** init 済みの SlackBridge。init が呼んだ API は calls から除く */
+async function initBridge(): Promise<MadeBridge> {
+  const made = makeBridge();
+  await made.bridge.init();
+  made.web.calls.length = 0;
+  return made;
+}
+
+/** init して start した SlackBridge。onMessage・onAction に渡ったものを届いた順に集める */
+async function startWithCapture() {
+  const made = await initBridge();
+  const messages: GateResult[] = [];
+  const raws: unknown[] = [];
+  const actions: ActionParse[] = [];
+  const ctxs: ActionContext[] = [];
+  await made.bridge.start({
+    onMessage: (r, raw) => {
+      messages.push(r);
+      raws.push(raw);
+    },
+    onAction: (p, ctx) => {
+      actions.push(p);
+      ctxs.push(ctx);
+    },
   });
-  return { bridge, web, socket, logger };
+  return { ...made, messages, raws, actions, ctxs };
 }
 
 describe('isMarkdownRejection', () => {
@@ -80,11 +112,7 @@ describe('SlackBridge.postText', () => {
   let web: FakeWeb;
 
   beforeEach(async () => {
-    const made = makeBridge();
-    bridge = made.bridge;
-    web = made.web;
-    await bridge.init();
-    web.calls.length = 0;
+    ({ bridge, web } = await initBridge());
   });
 
   it('長文を markdown_text で分割して送る', async () => {
@@ -95,19 +123,21 @@ describe('SlackBridge.postText', () => {
     expect(res.ts.length).toBe(posts.length);
     for (const p of posts) {
       expect(typeof p.args.markdown_text).toBe('string');
-      expect(String(p.args.markdown_text).length).toBeLessThanOrEqual(11000);
+      expect(String(p.args.markdown_text).length).toBeLessThanOrEqual(MARKDOWN_TEXT_MAX);
       expect(p.args.channel).toBe(DM1);
     }
   });
 
-  it('分けた結果が空白だけになるチャンクは送らない。本文が空白だけなら何も送らない', async () => {
-    // 10998 字 + 改行 5 個は、11000 字目（改行 2 個まで）で切れて、残りが改行 3 個だけになる
-    const res = await bridge.postText(DM1, 'a'.repeat(10998) + '\n'.repeat(5));
+  it('分けた結果が空白だけになるチャンクは送らない', async () => {
+    // 上限より 2 字少ない本文 + 改行 5 個は、上限の字（改行 2 個まで）で切れて、残りが改行 3 個だけになる
+    const res = await bridge.postText(DM1, 'a'.repeat(MARKDOWN_TEXT_MAX - 2) + '\n'.repeat(5));
     expect(res.ts).toHaveLength(1);
     expect(web.calls.filter((c) => c.method === 'chat.postMessage')).toHaveLength(1);
+  });
 
+  it('本文が空白だけなら何も送らない', async () => {
     expect((await bridge.postText(DM1, ' \n\t ')).ts).toEqual([]);
-    expect(web.calls.filter((c) => c.method === 'chat.postMessage')).toHaveLength(1);
+    expect(web.calls.filter((c) => c.method === 'chat.postMessage')).toHaveLength(0);
   });
 
   it('短い本文は 1 通で送る', async () => {
@@ -130,7 +160,7 @@ describe('SlackBridge.postText', () => {
     expect(res.ts.length).toBe(sent.length);
     for (const p of sent) {
       expect(p.args.markdown_text).toBeUndefined();
-      expect(String(p.args.text).length).toBeLessThanOrEqual(3900);
+      expect(String(p.args.text).length).toBeLessThanOrEqual(TEXT_MAX);
     }
     // escapeMrkdwn が効いている
     expect(sent.map((p) => String(p.args.text)).join('')).toContain('&lt;tag&gt;');
@@ -156,55 +186,54 @@ describe('SlackBridge.postText', () => {
     await bridge.postText(DM1, '<!channel> みんな見て @here');
     const sent = String(web.calls[0]?.args.markdown_text);
     expect(sent).not.toContain('<!channel>');
-    expect(sent).toContain('@​channel');
-    expect(sent).toContain('@​here');
+    expect(sent).toContain(`@${ZWSP}channel`);
+    expect(sent).toContain(`@${ZWSP}here`);
   });
 
-  it('許可されていないチャンネルには送れない', async () => {
-    await expect(bridge.postText('D999ZZZ', 'hi')).rejects.toThrow(/許可されていない/);
-    await expect(bridge.postBlocks('D999ZZZ', 'hi', [])).rejects.toThrow(/許可されていない/);
-    await expect(bridge.updateBlocks('D999ZZZ', '1.0', 'hi', [])).rejects.toThrow(/許可されていない/);
-    await expect(bridge.updateText('D999ZZZ', '1.0', 'hi')).rejects.toThrow(/許可されていない/);
-    await expect(bridge.addReaction('D999ZZZ', '1.0', 'eyes')).rejects.toThrow(/許可されていない/);
+  it.each([
+    ['postText', (b: SlackBridge) => b.postText('D999ZZZ', 'hi')],
+    ['postBlocks', (b: SlackBridge) => b.postBlocks('D999ZZZ', 'hi', [])],
+    ['updateBlocks', (b: SlackBridge) => b.updateBlocks('D999ZZZ', '1.0', 'hi', [])],
+    ['updateText', (b: SlackBridge) => b.updateText('D999ZZZ', '1.0', 'hi')],
+    ['addReaction', (b: SlackBridge) => b.addReaction('D999ZZZ', '1.0', 'eyes')],
+  ])('%s は許可されていないチャンネルには送れない', async (_name, send) => {
+    await expect(send(bridge)).rejects.toThrow(/許可されていない/);
     expect(web.calls.length).toBe(0);
   });
 });
 
 describe('SlackBridge の送信系', () => {
-  it('postBlocks / updateBlocks は text を無害化する', async () => {
-    const { bridge, web } = makeBridge();
-    await bridge.init();
-    web.calls.length = 0;
+  it('postBlocks は text を無害化し、リンクとメディアを展開させない', async () => {
+    const { bridge, web } = await initBridge();
 
     const r = await bridge.postBlocks(DM1, '<!here> perm', [{ type: 'section' }]);
     expect(r.ts).toBe('100.1');
     expect(web.calls[0]?.args).toMatchObject({ unfurl_links: false, unfurl_media: false });
-    expect(String(web.calls[0]?.args.text)).toContain('@​here');
+    expect(String(web.calls[0]?.args.text)).toContain(`@${ZWSP}here`);
+  });
+
+  it('updateBlocks は text を無害化する', async () => {
+    const { bridge, web } = await initBridge();
 
     await bridge.updateBlocks(DM1, '100.1', '<!channel> done', []);
-    expect(String(web.calls[1]?.args.text)).toContain('@​channel');
+    expect(String(web.calls[0]?.args.text)).toContain(`@${ZWSP}channel`);
   });
 
   it('addReaction は失敗しても投げない', async () => {
-    const { bridge, web } = makeBridge();
-    await bridge.init();
+    const { bridge, web } = await initBridge();
     web.reactionError = platformError('already_reacted');
     await expect(bridge.addReaction(DM1, '1.0', 'eyes')).resolves.toBeUndefined();
   });
 
   it('postToAll は許可ユーザー全員に送る', async () => {
-    const { bridge, web } = makeBridge();
-    await bridge.init();
-    web.calls.length = 0;
+    const { bridge, web } = await initBridge();
     const res = await bridge.postToAll('perm', [{ type: 'section' }]);
     expect(res.map((r) => r.channel)).toEqual([DM1, DM2]);
     expect(web.calls.filter((c) => c.method === 'chat.postMessage').length).toBe(2);
   });
 
   it('postToAll は threadFor が返したスレッドにだけ返信する', async () => {
-    const { bridge, web } = makeBridge();
-    await bridge.init();
-    web.calls.length = 0;
+    const { bridge, web } = await initBridge();
     await bridge.postToAll('perm', [{ type: 'section' }], (ch) => (ch === DM1 ? '5.0' : undefined));
     const posts = web.calls.filter((c) => c.method === 'chat.postMessage');
     expect(posts[0]?.args.channel).toBe(DM1);
@@ -215,29 +244,8 @@ describe('SlackBridge の送信系', () => {
 });
 
 describe('SlackBridge の受信', () => {
-  function messageEnvelope(overrides: Record<string, unknown> = {}): Record<string, unknown> {
-    return {
-      type: 'events_api',
-      envelope_id: 'env-1',
-      body: {
-        team_id: 'T123ABC',
-        event_id: 'Ev1',
-        event: {
-          type: 'message',
-          channel_type: 'im',
-          channel: DM1,
-          user: 'U111AAA',
-          text: 'hello',
-          ts: '1.1',
-          ...overrides,
-        },
-      },
-    };
-  }
-
   it('events_api の message を gate に通して onMessage を呼ぶ。ack が先', async () => {
-    const { bridge, socket } = makeBridge();
-    await bridge.init();
+    const { bridge, socket } = await initBridge();
     const order: string[] = [];
     const seen: GateResult[] = [];
     await bridge.start({
@@ -249,12 +257,14 @@ describe('SlackBridge の受信', () => {
     });
     expect(socket.started).toBe(1);
 
-    socket.emit('slack_event', {
-      ...messageEnvelope(),
-      ack: async () => {
-        order.push('ack');
-      },
-    });
+    socket.emit(
+      'slack_event',
+      messageEnvelope({}, {
+        ack: async () => {
+          order.push('ack');
+        },
+      })
+    );
     await flush();
 
     expect(order).toEqual(['ack', 'handler']);
@@ -268,33 +278,24 @@ describe('SlackBridge の受信', () => {
   });
 
   it('許可されていないユーザーは drop になる', async () => {
-    const { bridge, socket } = makeBridge();
-    await bridge.init();
-    const seen: GateResult[] = [];
-    await bridge.start({ onMessage: (r) => void seen.push(r), onAction: () => undefined });
+    const { socket, messages } = await startWithCapture();
 
-    socket.emit('slack_event', { ...messageEnvelope({ user: 'U999ZZZ' }), ack: async () => undefined });
+    socket.emit('slack_event', messageEnvelope({ user: 'U999ZZZ' }));
     await flush();
-    expect(seen[0]?.kind).toBe('drop');
+    expect(messages[0]?.kind).toBe('drop');
   });
 
   it('自分（bot）の発言は drop になる', async () => {
-    const { bridge, socket } = makeBridge();
-    await bridge.init();
-    const seen: GateResult[] = [];
-    await bridge.start({ onMessage: (r) => void seen.push(r), onAction: () => undefined });
+    const { socket, messages } = await startWithCapture();
 
-    socket.emit('slack_event', { ...messageEnvelope({ user: BOT }), ack: async () => undefined });
+    socket.emit('slack_event', messageEnvelope({ user: BOT }));
     await flush();
-    expect(seen[0]?.kind).toBe('drop');
+    expect(messages[0]?.kind).toBe('drop');
   });
 
   it('events_api 以外は slack_event では扱わない（ack もしない）', async () => {
-    const { bridge, socket } = makeBridge();
-    await bridge.init();
+    const { socket, messages } = await startWithCapture();
     let acked = 0;
-    const seen: GateResult[] = [];
-    await bridge.start({ onMessage: (r) => void seen.push(r), onAction: () => undefined });
 
     socket.emit('slack_event', {
       type: 'interactive',
@@ -305,7 +306,7 @@ describe('SlackBridge の受信', () => {
     });
     await flush();
     expect(acked).toBe(0);
-    expect(seen.length).toBe(0);
+    expect(messages.length).toBe(0);
   });
 
   it('init で DM を開けなかった許可ユーザーも、gate を通った受信の channel を送信先に加える', async () => {
@@ -324,18 +325,11 @@ describe('SlackBridge の受信', () => {
       onAction: () => undefined,
     });
     // gate で落ちる受信（許可外ユーザー）では加えない
-    socket.emit('slack_event', {
-      ...messageEnvelope({ user: 'U999ZZZ', channel: 'D999ZZZ' }),
-      ack: async () => undefined,
-    });
+    socket.emit('slack_event', messageEnvelope({ user: 'U999ZZZ', channel: 'D999ZZZ' }));
     await flush();
     expect(bridge.allowedDmChannels.has('D999ZZZ')).toBe(false);
 
-    socket.emit('slack_event', {
-      ...messageEnvelope({ user: 'U222BBB', channel: DM2 }),
-      body: { ...(messageEnvelope({ user: 'U222BBB', channel: DM2 }).body as object), event_id: 'Ev2' },
-      ack: async () => undefined,
-    });
+    socket.emit('slack_event', messageEnvelope({ user: 'U222BBB', channel: DM2 }, { eventId: 'Ev2' }));
     await flush();
     expect(allowedAtHandler).toEqual([false, true]); // onMessage より前に加わっている
     expect(bridge.allowedDmChannels.has(DM2)).toBe(true);
@@ -346,8 +340,7 @@ describe('SlackBridge の受信', () => {
   });
 
   it('受信イベントは 1 本の列で順に処理する。ack は前のイベントの処理を待たない', async () => {
-    const { bridge, socket } = makeBridge();
-    await bridge.init();
+    const { bridge, socket } = await initBridge();
     const order: string[] = [];
     let release: () => void = () => undefined;
     const gateOpen = new Promise<void>((r) => {
@@ -363,12 +356,8 @@ describe('SlackBridge の受信', () => {
       onAction: () => void order.push('action'),
     });
 
-    const env = (text: string, eventId: string): Record<string, unknown> => {
-      const e = messageEnvelope({ text });
-      return { ...e, body: { ...(e.body as object), event_id: eventId } };
-    };
-    socket.emit('slack_event', { ...env('first', 'Ev1'), ack: async () => void order.push('ack:first') });
-    socket.emit('slack_event', { ...env('second', 'Ev2'), ack: async () => void order.push('ack:second') });
+    socket.emit('slack_event', messageEnvelope({ text: 'first' }, { eventId: 'Ev1', ack: async () => void order.push('ack:first') }));
+    socket.emit('slack_event', messageEnvelope({ text: 'second' }, { eventId: 'Ev2', ack: async () => void order.push('ack:second') }));
     socket.emit('interactive', { type: 'interactive', body: {}, ack: async () => void order.push('ack:action') });
     await flush();
     expect(order).toEqual(['ack:first', 'ack:second', 'ack:action', 'start:first']);
@@ -388,16 +377,15 @@ describe('SlackBridge の受信', () => {
   });
 
   it('onMessage が例外を投げても落ちず、logger.error に記録される', async () => {
-    const { bridge, socket, logger } = makeBridge();
+    const { bridge, socket, logger } = await initBridge();
     const errorSpy = vi.spyOn(logger, 'error');
-    await bridge.init();
     await bridge.start({
       onMessage: () => {
         throw new Error('boom');
       },
       onAction: () => undefined,
     });
-    socket.emit('slack_event', { ...messageEnvelope(), ack: async () => undefined });
+    socket.emit('slack_event', messageEnvelope());
     await flush();
     expect(errorSpy).toHaveBeenCalledTimes(1);
     expect(errorSpy.mock.calls[0]?.[0]).toContain('slack_event');
@@ -405,8 +393,7 @@ describe('SlackBridge の受信', () => {
   });
 
   it('block_actions を parseBlockAction に通す。ack が先', async () => {
-    const { bridge, socket } = makeBridge();
-    await bridge.init();
+    const { bridge, socket } = await initBridge();
     const order: string[] = [];
     const seen: ActionParse[] = [];
     const ctxs: ActionContext[] = [];
@@ -419,20 +406,12 @@ describe('SlackBridge の受信', () => {
       },
     });
 
-    socket.emit('interactive', {
-      type: 'interactive',
-      body: {
-        type: 'block_actions',
-        team: { id: 'T123ABC' },
-        user: { id: 'U111AAA' },
-        channel: { id: DM1 },
-        container: { message_ts: '55.5' },
-        actions: [{ action_id: 'perm_allow', value: 'abcde' }],
-      },
-      ack: async () => {
+    socket.emit(
+      'interactive',
+      blockActionEnvelope({ container: { message_ts: '55.5' } }, async () => {
         order.push('ack');
-      },
-    });
+      })
+    );
     await flush();
 
     expect(order).toEqual(['ack', 'handler']);
@@ -441,30 +420,16 @@ describe('SlackBridge の受信', () => {
   });
 
   it('許可外チャンネルの block_actions は ok:false になる', async () => {
-    const { bridge, socket } = makeBridge();
-    await bridge.init();
-    const seen: ActionParse[] = [];
-    await bridge.start({ onMessage: () => undefined, onAction: (p) => void seen.push(p) });
+    const { socket, actions } = await startWithCapture();
 
-    socket.emit('interactive', {
-      type: 'interactive',
-      body: {
-        type: 'block_actions',
-        team: { id: 'T123ABC' },
-        user: { id: 'U111AAA' },
-        channel: { id: 'D999ZZZ' },
-        actions: [{ action_id: 'perm_allow', value: 'abcde' }],
-      },
-      ack: async () => undefined,
-    });
+    socket.emit('interactive', blockActionEnvelope({ channel: { id: 'D999ZZZ' } }));
     await flush();
-    expect(seen[0]).toEqual({ ok: false, reason: 'channel_not_allowed' });
+    expect(actions[0]).toEqual({ ok: false, reason: 'channel_not_allowed' });
   });
 
   it('onAction が例外を投げても落ちず、logger.error に記録される', async () => {
-    const { bridge, socket, logger } = makeBridge();
+    const { bridge, socket, logger } = await initBridge();
     const errorSpy = vi.spyOn(logger, 'error');
-    await bridge.init();
     await bridge.start({
       onMessage: () => undefined,
       onAction: () => {
@@ -479,23 +444,26 @@ describe('SlackBridge の受信', () => {
   });
 
   it('stop すると disconnect される', async () => {
-    const { bridge, socket } = makeBridge();
-    await bridge.init();
-    await bridge.start({ onMessage: () => undefined, onAction: () => undefined });
+    const { bridge, socket } = await startWithCapture();
     await bridge.stop();
     expect(socket.disconnected).toBe(1);
   });
 
-  it('切断されたら、古い接続を disconnect してから start し直す', async () => {
-    vi.useFakeTimers();
-    try {
-      const { bridge, socket } = makeBridge();
-      await bridge.init();
-      await bridge.start({ onMessage: () => undefined, onAction: () => undefined });
+  describe('再接続（偽のタイマー）', () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('切断されたら、古い接続を disconnect してから start し直す', async () => {
+      const { bridge, socket } = await startWithCapture();
       expect(socket.started).toBe(1);
 
       socket.drop();
-      await vi.advanceTimersByTimeAsync(999);
+      await vi.advanceTimersByTimeAsync(BACKOFF_INITIAL_MS - 1);
       expect(socket.started).toBe(1);
       await vi.advanceTimersByTimeAsync(1);
       expect(socket.disconnected).toBe(1);
@@ -504,37 +472,30 @@ describe('SlackBridge の受信', () => {
       expect(socket.open).toBe(1);
 
       // 張り直しの disconnect() が出す disconnected で、さらに再接続を予約しない
-      await vi.advanceTimersByTimeAsync(120000);
+      await vi.advanceTimersByTimeAsync(PAST_BACKOFF_MAX_MS);
       expect(socket.started).toBe(2);
 
       // 繋がったのでバックオフは初期値に戻っている
       socket.drop();
-      await vi.advanceTimersByTimeAsync(1000);
+      await vi.advanceTimersByTimeAsync(BACKOFF_INITIAL_MS);
       expect(socket.started).toBe(3);
       expect(socket.leaked).toBe(0);
       await bridge.stop();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
+    });
 
-  it('start() が失敗したらバックオフを伸ばしてやり直し、繋がったら初期値に戻す', async () => {
-    vi.useFakeTimers();
-    try {
-      const { bridge, socket, logger } = makeBridge();
+    it('start() が失敗したらバックオフを伸ばしてやり直し、繋がったら初期値に戻す', async () => {
+      const { bridge, socket, logger } = await startWithCapture();
       const errorSpy = vi.spyOn(logger, 'error');
-      await bridge.init();
-      await bridge.start({ onMessage: () => undefined, onAction: () => undefined });
 
       socket.failStart = ['auth', 'closed'];
       socket.drop();
-      await vi.advanceTimersByTimeAsync(1000);
+      await vi.advanceTimersByTimeAsync(BACKOFF_INITIAL_MS);
       expect(socket.started).toBe(2); // 1 回目: apps.connections.open の失敗
-      await vi.advanceTimersByTimeAsync(1999);
+      await vi.advanceTimersByTimeAsync(BACKOFF_INITIAL_MS * 2 - 1);
       expect(socket.started).toBe(2);
       await vi.advanceTimersByTimeAsync(1);
       expect(socket.started).toBe(3); // 2 回目: hello 前に切断
-      await vi.advanceTimersByTimeAsync(3999);
+      await vi.advanceTimersByTimeAsync(BACKOFF_INITIAL_MS * 4 - 1);
       expect(socket.started).toBe(3);
       await vi.advanceTimersByTimeAsync(1);
       expect(socket.started).toBe(4); // 3 回目で成功
@@ -543,51 +504,34 @@ describe('SlackBridge の受信', () => {
       expect(errorSpy.mock.calls.filter((c) => String(c[0]).includes('再接続に失敗'))).toHaveLength(2);
 
       socket.drop();
-      await vi.advanceTimersByTimeAsync(1000);
+      await vi.advanceTimersByTimeAsync(BACKOFF_INITIAL_MS);
       expect(socket.started).toBe(5);
       await bridge.stop();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
+    });
 
-  it('stop 後は再接続しない（予約済みの再接続も取り消す）', async () => {
-    vi.useFakeTimers();
-    try {
-      const { bridge, socket } = makeBridge();
-      await bridge.init();
-      await bridge.start({ onMessage: () => undefined, onAction: () => undefined });
+    it('stop 後は再接続しない（予約済みの再接続も取り消す）', async () => {
+      const { bridge, socket } = await startWithCapture();
 
       socket.drop();
       await bridge.stop();
       socket.drop();
-      await vi.advanceTimersByTimeAsync(120000);
+      await vi.advanceTimersByTimeAsync(PAST_BACKOFF_MAX_MS);
       expect(socket.started).toBe(1);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
+    });
 
-  it('最初の start() の途中で切断されても、別途再接続を予約しない', async () => {
-    vi.useFakeTimers();
-    try {
-      const { bridge, socket } = makeBridge();
-      await bridge.init();
+    it('最初の start() の途中で切断されても、別途再接続を予約しない', async () => {
+      const { bridge, socket } = await initBridge();
       socket.failStart = ['closed'];
       await expect(bridge.start({ onMessage: () => undefined, onAction: () => undefined })).rejects.toThrow();
-      await vi.advanceTimersByTimeAsync(120000);
+      await vi.advanceTimersByTimeAsync(PAST_BACKOFF_MAX_MS);
       expect(socket.started).toBe(1);
-    } finally {
-      vi.useRealTimers();
-    }
+    });
   });
 
   it('接続状態のイベントは info ログに残り、error は出ない', async () => {
-    const { bridge, socket, logger } = makeBridge();
+    const { bridge, socket, logger } = await startWithCapture();
     const infoSpy = vi.spyOn(logger, 'info');
     const errorSpy = vi.spyOn(logger, 'error');
-    await bridge.init();
-    await bridge.start({ onMessage: () => undefined, onAction: () => undefined });
     infoSpy.mockClear();
     for (const s of ['connecting', 'connected', 'reconnecting', 'disconnecting']) {
       socket.emit(s, {});
@@ -631,12 +575,18 @@ describe('toBlockActionInput', () => {
     expect(ctx.messageTs).toBe('77.7');
   });
 
-  it('threadTs は container.thread_ts を優先し、無ければ message.thread_ts を使う', () => {
+  it('threadTs は container.thread_ts を message.thread_ts より優先する', () => {
     expect(
       toBlockActionInput({ container: { message_ts: '55.5', thread_ts: '20.0' }, message: { thread_ts: '30.0' } }).ctx
         .threadTs
     ).toBe('20.0');
+  });
+
+  it('container.thread_ts が無ければ message.thread_ts を threadTs に使う', () => {
     expect(toBlockActionInput({ message: { ts: '77.7', thread_ts: '30.0' } }).ctx.threadTs).toBe('30.0');
+  });
+
+  it('thread_ts がどこにも無ければ threadTs は undefined', () => {
     expect(toBlockActionInput({ container: { message_ts: '55.5' } }).ctx).toEqual({
       userId: undefined,
       channelId: undefined,
@@ -720,113 +670,47 @@ describe('toInboundMessage の現状固定', () => {
 });
 
 describe('SlackBridge の受信（現状固定）', () => {
-  async function startWithActionCapture() {
-    const made = makeBridge();
-    await made.bridge.init();
-    const seen: ActionParse[] = [];
-    const ctxs: ActionContext[] = [];
-    await made.bridge.start({
-      onMessage: () => undefined,
-      onAction: (p, ctx) => {
-        seen.push(p);
-        ctxs.push(ctx);
-      },
-    });
-    return { ...made, seen, ctxs };
-  }
-
-  it('container.message_ts が無ければ message.ts を messageTs に使う', async () => {
-    const { socket, ctxs } = await startWithActionCapture();
-    socket.emit('interactive', {
-      type: 'interactive',
-      body: {
-        type: 'block_actions',
-        team: { id: 'T123ABC' },
-        user: { id: 'U111AAA' },
-        channel: { id: DM1 },
-        message: { ts: '77.7' },
-        actions: [{ action_id: 'perm_deny', value: 'abcde' }],
-      },
-      ack: async () => undefined,
-    });
-    await flush();
-    expect(ctxs[0]?.messageTs).toBe('77.7');
-  });
-
-  it('container.message_ts があれば message.ts より優先する', async () => {
-    const { socket, ctxs } = await startWithActionCapture();
-    socket.emit('interactive', {
-      type: 'interactive',
-      body: {
-        type: 'block_actions',
-        team: { id: 'T123ABC' },
-        user: { id: 'U111AAA' },
-        channel: { id: DM1 },
-        container: { message_ts: '55.5' },
-        message: { ts: '77.7' },
-        actions: [{ action_id: 'perm_deny', value: 'abcde' }],
-      },
-      ack: async () => undefined,
-    });
-    await flush();
-    expect(ctxs[0]?.messageTs).toBe('55.5');
-  });
-
+  // messageTs・threadTs の取り出し方は toBlockActionInput の単体で確かめる。ここでは onAction に渡る結果と ctx だけを見る
   it('actions が配列でなければ action 無しとして invalid_request_id になる', async () => {
-    const { socket, seen, ctxs } = await startWithActionCapture();
-    socket.emit('interactive', {
-      type: 'interactive',
-      body: {
-        type: 'block_actions',
-        team: { id: 'T123ABC' },
-        user: { id: 'U111AAA' },
-        channel: { id: DM1 },
-        actions: { action_id: 'perm_allow', value: 'abcde' },
-      },
-      ack: async () => undefined,
-    });
+    const { socket, actions, ctxs } = await startWithCapture();
+    socket.emit('interactive', blockActionEnvelope({ actions: { action_id: 'perm_allow', value: 'abcde' } }));
     await flush();
-    expect(seen[0]).toEqual({ ok: false, reason: 'invalid_request_id' });
+    expect(actions[0]).toEqual({ ok: false, reason: 'invalid_request_id' });
     expect(ctxs[0]).toEqual({ userId: 'U111AAA', channelId: DM1, messageTs: undefined });
   });
 
   it('body が空でも onAction は呼ばれる（not_block_actions）', async () => {
-    const { socket, seen, ctxs } = await startWithActionCapture();
+    const { socket, actions, ctxs } = await startWithCapture();
     socket.emit('interactive', { type: 'interactive', body: {}, ack: async () => undefined });
     await flush();
-    expect(seen[0]).toEqual({ ok: false, reason: 'not_block_actions' });
+    expect(actions[0]).toEqual({ ok: false, reason: 'not_block_actions' });
     expect(ctxs[0]).toEqual({ userId: undefined, channelId: undefined, messageTs: undefined });
   });
 
   it('ack が例外を投げても処理は続く（warn に記録）', async () => {
-    const made = makeBridge();
-    const warnSpy = vi.spyOn(made.logger, 'warn');
-    await made.bridge.init();
-    const seen: GateResult[] = [];
-    await made.bridge.start({ onMessage: (r) => void seen.push(r), onAction: () => undefined });
-    made.socket.emit('slack_event', {
-      type: 'events_api',
-      body: {
-        team_id: 'T123ABC',
-        event_id: 'Ev9',
-        event: { type: 'message', channel_type: 'im', channel: DM1, user: 'U111AAA', text: 'hi', ts: '9.9' },
-      },
-      ack: async () => {
-        throw new Error('ack failed');
-      },
-    });
+    const { socket, logger, messages } = await startWithCapture();
+    const warnSpy = vi.spyOn(logger, 'warn');
+    socket.emit(
+      'slack_event',
+      messageEnvelope(
+        { text: 'hi', ts: '9.9' },
+        {
+          eventId: 'Ev9',
+          ack: async () => {
+            throw new Error('ack failed');
+          },
+        }
+      )
+    );
     await flush();
-    expect(seen[0]?.kind).toBe('deliver');
+    expect(messages[0]?.kind).toBe('deliver');
     expect(warnSpy.mock.calls[0]?.[0]).toContain('ack');
   });
 
   it('event.type が message 以外なら ack だけして onMessage は呼ばない', async () => {
-    const made = makeBridge();
-    await made.bridge.init();
+    const { socket, messages } = await startWithCapture();
     let acked = 0;
-    const seen: GateResult[] = [];
-    await made.bridge.start({ onMessage: (r) => void seen.push(r), onAction: () => undefined });
-    made.socket.emit('slack_event', {
+    socket.emit('slack_event', {
       type: 'events_api',
       body: { team_id: 'T123ABC', event: { type: 'reaction_added' } },
       ack: async () => {
@@ -835,23 +719,12 @@ describe('SlackBridge の受信（現状固定）', () => {
     });
     await flush();
     expect(acked).toBe(1);
-    expect(seen).toEqual([]);
+    expect(messages).toEqual([]);
   });
 
   it('onMessage に渡る raw は threadTs が無ければ ts で埋まる', async () => {
-    const made = makeBridge();
-    await made.bridge.init();
-    const raws: unknown[] = [];
-    await made.bridge.start({ onMessage: (_r, raw) => void raws.push(raw), onAction: () => undefined });
-    made.socket.emit('slack_event', {
-      type: 'events_api',
-      body: {
-        team_id: 'T123ABC',
-        event_id: 'Ev1',
-        event: { type: 'message', channel_type: 'im', channel: DM1, user: 'U111AAA', text: 'hi', ts: '1.1' },
-      },
-      ack: async () => undefined,
-    });
+    const { socket, raws } = await startWithCapture();
+    socket.emit('slack_event', messageEnvelope({ text: 'hi' }));
     await flush();
     expect(raws[0]).toEqual({ channel: DM1, ts: '1.1', threadTs: '1.1', user: 'U111AAA' });
   });
@@ -859,8 +732,7 @@ describe('SlackBridge の受信（現状固定）', () => {
 
 describe('SlackBridge の送信（現状固定）', () => {
   it('ratelimited（SDK のリトライ枯渇）はそのままの例外として投げる', async () => {
-    const { bridge, web } = makeBridge();
-    await bridge.init();
+    const { bridge, web } = await initBridge();
     const err = platformError('ratelimited');
     web.rejectMarkdown = err;
     await expect(bridge.postText(DM1, 'hi')).rejects.toBe(err);
@@ -869,17 +741,14 @@ describe('SlackBridge の送信（現状固定）', () => {
   });
 
   it('コードが無い汎用 Error（リトライ枯渇時）もそのまま投げる', async () => {
-    const { bridge, web } = makeBridge();
-    await bridge.init();
+    const { bridge, web } = await initBridge();
     const err = new Error('A rate limit was exceeded (retries exhausted)');
     web.rejectMarkdown = err;
     await expect(bridge.postText(DM1, 'hi')).rejects.toBe(err);
   });
 
   it('途中のチャンクで失敗すると、送れた件数 sent=N を付けた例外になる', async () => {
-    const { bridge, web } = makeBridge();
-    await bridge.init();
-    web.calls.length = 0;
+    const { bridge, web } = await initBridge();
     const original = web.chat.postMessage;
     let n = 0;
     web.chat.postMessage = async (args) => {
@@ -895,27 +764,22 @@ describe('SlackBridge の送信（現状固定）', () => {
   });
 
   it('空文字の postText は何も送らず ts:[] を返す', async () => {
-    const { bridge, web } = makeBridge();
-    await bridge.init();
-    web.calls.length = 0;
+    const { bridge, web } = await initBridge();
     await expect(bridge.postText(DM1, '')).resolves.toEqual({ ts: [] });
     expect(web.calls).toEqual([]);
   });
 
   it('updateText は blocks を空にして escapeMrkdwn した text で更新する', async () => {
-    const { bridge, web } = makeBridge();
-    await bridge.init();
-    web.calls.length = 0;
+    const { bridge, web } = await initBridge();
     await bridge.updateText(DM1, '1.0', '<b> & <!here>');
     expect(web.calls[0]?.method).toBe('chat.update');
     expect(web.calls[0]?.args.blocks).toEqual([]);
-    expect(web.calls[0]?.args.text).toBe('&lt;b&gt; &amp; @​here');
+    expect(web.calls[0]?.args.text).toBe(`&lt;b&gt; &amp; @${ZWSP}here`);
   });
 
   it('postToAll は失敗したチャンネルを結果から除いて続行する', async () => {
-    const { bridge, web, logger } = makeBridge();
+    const { bridge, web, logger } = await initBridge();
     const errorSpy = vi.spyOn(logger, 'error');
-    await bridge.init();
     const original = web.chat.postMessage;
     web.chat.postMessage = async (args) => {
       if (args.channel === DM1) throw platformError('channel_not_found');
@@ -960,15 +824,8 @@ describe('SlackBridge の送信（現状固定）', () => {
 
 describe('SlackBridge のファイル取得', () => {
   function bridgeWithFetch(response: Response): { bridge: SlackBridge; web: FakeWeb; requests: { url: string; auth: string | null }[] } {
-    const web = makeWeb();
     const requests: { url: string; auth: string | null }[] = [];
-    const bridge = new SlackBridge({
-      botToken: 'xoxb-TEST-DUMMY',
-      appToken: 'xapp-TEST-DUMMY',
-      access: ACCESS,
-      logger: new Logger({ stderr: false }),
-      web,
-      socket: makeSocket(),
+    const { bridge, web } = makeBridge({
       fetch: async (input, init) => {
         requests.push({ url: input instanceof Request ? input.url : input.toString(), auth: new Headers(init?.headers).get('authorization') });
         return response;

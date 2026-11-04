@@ -36,8 +36,8 @@ export const HookEventSchema = z.looseObject(HOOK_EVENT_SHAPE);
 /** hooks.jsonl の 1 行。Claude Code の hook が stdin で受け取る JSON から、使う欄だけを写したもの */
 export type HookEvent = z.infer<z.ZodObject<typeof HOOK_EVENT_SHAPE>>;
 
-/** stdin の JSON から写す欄（文字列のものだけ） */
-export const HOOK_STRING_FIELDS = ['hook_event_name', ...(Object.keys(COPIED_FIELDS) as (keyof typeof COPIED_FIELDS)[])] as const;
+/** stdin の JSON から写す欄（文字列のもので、hook_event_name 以外。hook_event_name は必須なので hook.ts が別に検査する） */
+export const HOOK_STRING_FIELDS = Object.keys(COPIED_FIELDS) as readonly (keyof typeof COPIED_FIELDS)[];
 
 /** start.ps1 が起動ごとに一意の値を入れる環境変数。claude.exe から hook とブリッジの両方に引き継がれる */
 export const SESSION_TAG_ENV = 'SLACK_CHANNEL_SESSION_TAG';

@@ -50,50 +50,75 @@ function textColumn(line: string): number {
  * 選択肢が 2 つ未満なら選択画面ではない（入力欄の `> ` などを誤認しないため）として undefined を返す。
  */
 export function parseChoiceScreen(screen: string): ChoiceScreen | undefined {
-  const lines = screen.split('\n').map((l) => l.replace(/\s+$/, ''));
-
-  let cursorLine = -1;
-  for (let i = lines.length - 1; i >= 0; i--) {
-    if (CURSOR_RE.test(lines[i] ?? '')) {
-      cursorLine = i;
-      break;
-    }
-  }
+  const lines = linesWithoutTrailingSpace(screen);
+  const cursorLine = findCursorLine(lines);
   if (cursorLine < 0) return undefined;
 
   const cursorText = lines[cursorLine] ?? '';
   const numbered = NUMBERED_RE.test(cursorText);
   const column = textColumn(cursorText);
-
   const belongs = (line: string | undefined): boolean => {
     if (line === undefined || line.trim() === '' || isRule(line)) return false;
     if (numbered) return NUMBERED_RE.test(line);
     return textColumn(line) === column;
   };
 
+  const { start, end } = expandBlock(lines, cursorLine, belongs);
+  const block = lines.slice(start, end + 1);
+  if (block.length < 2 || block.length > MAX_OPTIONS) return undefined;
+
+  return {
+    title: collectTitle(lines, start),
+    options: block.map((line) => toOption(line, numbered)),
+    cursor: cursorLine - start,
+  };
+}
+
+function linesWithoutTrailingSpace(screen: string): string[] {
+  return screen.split('\n').map((l) => l.replace(/\s+$/, ''));
+}
+
+/** 空行を除いた、画面の末尾 maxLines 行 */
+function nonEmptyTail(screen: string, maxLines: number): string[] {
+  return linesWithoutTrailingSpace(screen)
+    .filter((l) => l.trim() !== '')
+    .slice(-maxLines);
+}
+
+/** 下から最初に見つかったカーソル行の位置。無ければ -1 */
+function findCursorLine(lines: readonly string[]): number {
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (CURSOR_RE.test(lines[i] ?? '')) return i;
+  }
+  return -1;
+}
+
+/** カーソル行から前後へ、belongs に当たる行が続く範囲（start・end とも含む） */
+function expandBlock(lines: readonly string[], cursorLine: number, belongs: (line: string | undefined) => boolean): { start: number; end: number } {
   let start = cursorLine;
   while (belongs(lines[start - 1])) start--;
   let end = cursorLine;
   while (belongs(lines[end + 1])) end++;
+  return { start, end };
+}
 
-  const block = lines.slice(start, end + 1);
-  if (block.length < 2 || block.length > MAX_OPTIONS) return undefined;
+/** 選択肢の 1 行。番号付きなら番号を残し、カーソル記号は外す */
+function toOption(line: string, numbered: boolean): ChoiceOption {
+  const cursor = CURSOR_RE.exec(line);
+  const body = cursor ? (cursor[2] ?? '') : line.trim();
+  const num = NUMBERED_RE.exec(line);
+  return splitLabel(numbered && num ? `${num[1]}. ${num[2] ?? ''}` : body);
+}
 
-  const options = block.map((line) => {
-    const cursor = CURSOR_RE.exec(line);
-    const body = cursor ? (cursor[2] ?? '') : line.trim();
-    const num = NUMBERED_RE.exec(line);
-    return splitLabel(numbered && num ? `${num[1]}. ${num[2] ?? ''}` : body);
-  });
-
+/** 選択肢の上の見出し（TITLE_LOOKBACK 行まで遡り、罫線で止める。空行は除く） */
+function collectTitle(lines: readonly string[], start: number): string[] {
   const title: string[] = [];
   for (let i = start - 1; i >= 0 && i >= start - TITLE_LOOKBACK; i--) {
     const line = lines[i] ?? '';
     if (isRule(line)) break;
     if (line.trim() !== '') title.unshift(line.trim());
   }
-
-  return { title, options, cursor: cursorLine - start };
+  return title;
 }
 
 /** 画面が同じ選択画面のままかを比べるための指紋（見出し・選択肢・カーソル位置） */
@@ -130,21 +155,12 @@ const RESPONDING_RE = /esc to interrupt/i;
  */
 export function hasEmptyPrompt(screen: string): boolean {
   if (parseChoiceScreen(screen) !== undefined) return false;
-  const tail = screen
-    .split('\n')
-    .map((l) => l.replace(/\s+$/, ''))
-    .filter((l) => l.trim() !== '')
-    .slice(-PROMPT_LOOKBACK);
+  const tail = nonEmptyTail(screen, PROMPT_LOOKBACK);
   if (tail.some((l) => RESPONDING_RE.test(l))) return false;
   return tail.some((l) => EMPTY_PROMPT_RE.test(l));
 }
 
 /** 画面の末尾 maxLines 行（空行を詰める）。選択画面でないときに Slack に送る */
 export function screenTail(screen: string, maxLines = DEFAULT_TAIL_LINES): string {
-  return screen
-    .split('\n')
-    .map((l) => l.replace(/\s+$/, ''))
-    .filter((l) => l.trim() !== '')
-    .slice(-maxLines)
-    .join('\n');
+  return nonEmptyTail(screen, maxLines).join('\n');
 }

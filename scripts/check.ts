@@ -23,6 +23,14 @@ const APP_TOKEN_ERROR_HINTS: Record<string, string> = {
   missing_scope: 'App-Level Token に connections:write のスコープが無い。発行し直すときにスコープを付けて',
 };
 
+/** Slack API の失敗の code（無ければ例外の文）を出し、hints に対処があれば続けて出す */
+function reportSlackError(api: string, e: unknown, hints: Record<string, string>): void {
+  const code = slackErrorCode(e);
+  console.error(`[check] ${api} に失敗: ${code ?? errMessage(e)}`);
+  const hint = code ? hints[code] : undefined;
+  if (hint) console.error(`  ${hint}`);
+}
+
 /**
  * App-Level Token（Socket Mode の接続に使う）が有効か。接続の URL を取れるかだけを見て、接続はしない（URL も表示しない）。
  * 失敗したら理由を出して false
@@ -33,11 +41,31 @@ async function checkAppToken(appToken: string): Promise<boolean> {
     console.log('SLACK_APP_TOKEN: apps.connections.open OK（Socket Mode に接続できる）');
     return true;
   } catch (e) {
-    const code = slackErrorCode(e);
-    console.error(`[check] apps.connections.open に失敗: ${code ?? errMessage(e)}`);
-    const hint = code ? APP_TOKEN_ERROR_HINTS[code] : undefined;
-    if (hint) console.error(`  ${hint}`);
+    reportSlackError('apps.connections.open', e, APP_TOKEN_ERROR_HINTS);
     return false;
+  }
+}
+
+/** ブリッジ本体（SlackBridge.init）と同じく、access.json の teamId と auth.test の team_id の完全一致を求める。一致しなくても警告だけ */
+function checkTeamId(accessTeamId: string, authTeamId: string | undefined): void {
+  if (accessTeamId !== authTeamId) {
+    console.warn(`[check] 警告: access.json の teamId（${accessTeamId}）と auth.test の team_id（${authTeamId}）が一致しない`);
+  } else {
+    console.log('teamId: access.json と auth.test で一致');
+  }
+}
+
+/** allowFrom の各ユーザーの表示名を出す。取れなかったユーザーは理由を出して続ける */
+async function printAllowFrom(client: WebClient, allowFrom: readonly string[]): Promise<void> {
+  console.log('--- allowFrom ---');
+  for (const userId of allowFrom) {
+    try {
+      const info = await client.users.info({ user: userId });
+      const name = info.user?.real_name ?? info.user?.name ?? '(表示名なし)';
+      console.log(`${userId}: ${name}`);
+    } catch (e) {
+      console.log(`${userId}: 表示名の取得に失敗（${errMessage(e)}）`);
+    }
   }
 }
 
@@ -71,10 +99,7 @@ async function main(): Promise<void> {
   try {
     auth = await client.auth.test();
   } catch (e) {
-    const code = slackErrorCode(e);
-    console.error(`[check] auth.test に失敗: ${code ?? errMessage(e)}`);
-    const hint = code ? AUTH_ERROR_HINTS[code] : undefined;
-    if (hint) console.error(`  ${hint}`);
+    reportSlackError('auth.test', e, AUTH_ERROR_HINTS);
     process.exitCode = 1;
     return;
   }
@@ -88,25 +113,8 @@ async function main(): Promise<void> {
   if (!(await checkAppToken(tokens.appToken))) process.exitCode = 1;
 
   if (access) {
-    // ブリッジ本体（SlackBridge.init）と同じく team_id との完全一致を求める
-    if (access.teamId !== auth.team_id) {
-      console.warn(
-        `[check] 警告: access.json の teamId（${access.teamId}）と auth.test の team_id（${auth.team_id}）が一致しない`
-      );
-    } else {
-      console.log('teamId: access.json と auth.test で一致');
-    }
-
-    console.log('--- allowFrom ---');
-    for (const userId of access.allowFrom) {
-      try {
-        const info = await client.users.info({ user: userId });
-        const name = info.user?.real_name ?? info.user?.name ?? '(表示名なし)';
-        console.log(`${userId}: ${name}`);
-      } catch (e) {
-        console.log(`${userId}: 表示名の取得に失敗（${errMessage(e)}）`);
-      }
-    }
+    checkTeamId(access.teamId, auth.team_id);
+    await printAllowFrom(client, access.allowFrom);
   }
 }
 

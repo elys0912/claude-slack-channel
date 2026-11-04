@@ -1,12 +1,12 @@
 // 単発の知らせ（dist/src/notify-cli.js <本文>）。ブリッジが動いていないときに start.ps1 が呼ぶ
 // （claude.exe が想定外の終了を繰り返し、起動し直しを諦めたとき。ブリッジは claude.exe と一緒に止まっているので、ほかに知らせる手段が無い）。
 // 状態ディレクトリの .env と access.json を読み、許可ユーザー全員の DM に送る。Socket Mode にはつながない。失敗したら exit 1。
-import { pathToFileURL } from 'node:url';
 import { loadAccess, loadTokens, stateDir } from './config.js';
 import { Logger } from './log.js';
 import { SlackBridge } from './slack.js';
 import type { SlackWebApiLike } from './slack.js';
 import { errMessage } from './errors.js';
+import { isMainModule } from './main-module.js';
 
 /** 許可ユーザー全員の DM に text を送り、送れた数を返す。web はテスト用（省略時は本物の Web API） */
 export async function sendNotice(dir: string, text: string, web?: SlackWebApiLike): Promise<number> {
@@ -35,6 +35,6 @@ async function main(): Promise<void> {
 }
 
 // 直接起動されたときだけ動く（テストや他モジュールからの import では動かない）
-if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMainModule(import.meta.url)) {
   void main();
 }
