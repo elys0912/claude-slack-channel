@@ -236,7 +236,12 @@ function formatIssues(error: z.ZodError): string {
 export function loadHomeCustom(dir: string): ParsedHomeCustom | undefined {
   const file = path.join(dir, HOME_CUSTOM_FILE);
   if (!fs.existsSync(file)) return undefined;
-  const json: unknown = JSON.parse(stripBom(fs.readFileSync(file, 'utf8')));
+  let json: unknown;
+  try {
+    json = JSON.parse(stripBom(fs.readFileSync(file, 'utf8')));
+  } catch (e) {
+    throw new Error(`home.json を読めない（JSON の構文を確かめる）: ${errMessage(e)}`, { cause: e });
+  }
   const result = HomeCustomSchema.safeParse(json);
   if (!result.success) {
     throw new Error(`home.json の検証に失敗: ${formatIssues(result.error)}`);

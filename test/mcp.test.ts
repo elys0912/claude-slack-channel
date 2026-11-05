@@ -118,7 +118,7 @@ describe('ChannelServer の tools', () => {
     expect(out.isError).toBe(true);
   });
 
-  it('reply / react / edit_message を出す', async () => {
+  it('reply / react / edit_message を出し、reply の入力は object の形にする', async () => {
     const { client } = await connect();
     const res = await client.listTools();
     const names = res.tools.map((t) => t.name).sort();

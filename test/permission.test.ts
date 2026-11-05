@@ -240,10 +240,11 @@ describe('buildPermissionBlocks', () => {
       input_preview: 'P'.repeat(4000)
     };
     const { blocks } = buildPermissionBlocks(hugeReq);
-    for (const block of blockViewsOf(blocks)) {
-      if (block.type === 'section' && block.text?.type === 'plain_text') {
-        expect(block.text.text.length).toBeLessThanOrEqual(3000);
-      }
+    const plainSections = blockViewsOf(blocks).filter((block) => block.type === 'section' && block.text?.type === 'plain_text');
+    // 該当するブロックが無いと、下の確かめが 1 回も走らずに通ってしまうので、先に数を確かめる
+    expect(plainSections.length).toBeGreaterThan(0);
+    for (const block of plainSections) {
+      expect(block.text?.text.length).toBeLessThanOrEqual(3000);
     }
   });
 });
@@ -373,22 +374,22 @@ describe('parseBlockAction', () => {
 
   it('rejects a team mismatch', () => {
     const result = parseBlockAction({ ...validInput, teamId: 'TOTHER' }, access, allowedChannels);
-    expect(result.ok).toBe(false);
+    expect(result).toEqual({ ok: false, reason: 'team_mismatch' });
   });
 
   it('rejects a user not in allowFrom', () => {
     const result = parseBlockAction({ ...validInput, userId: 'UNKNOWN' }, access, allowedChannels);
-    expect(result.ok).toBe(false);
+    expect(result).toEqual({ ok: false, reason: 'user_not_allowed' });
   });
 
   it('rejects a channel not in allowedChannels', () => {
     const result = parseBlockAction({ ...validInput, channelId: 'DOTHER' }, access, allowedChannels);
-    expect(result.ok).toBe(false);
+    expect(result).toEqual({ ok: false, reason: 'channel_not_allowed' });
   });
 
   it('rejects an invalid request id (contains l)', () => {
     const result = parseBlockAction({ ...validInput, value: 'abcdl' }, access, allowedChannels);
-    expect(result.ok).toBe(false);
+    expect(result).toEqual({ ok: false, reason: 'invalid_request_id' });
   });
 
   it('rejects an unknown action_id', () => {

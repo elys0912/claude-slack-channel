@@ -225,11 +225,20 @@ describe('loadTokens', () => {
   });
 
   it('process.env を変更しない', () => {
-    writeEnv(dir);
-    expect(process.env.SLACK_BOT_TOKEN).toBeUndefined();
-    loadTokens(dir);
-    expect(process.env.SLACK_BOT_TOKEN).toBeUndefined();
-    expect(process.env.SLACK_APP_TOKEN).toBeUndefined();
+    // 実行する環境に同じ名前の変数があると確かめられないので、テストの間だけ消す
+    const saved = { SLACK_BOT_TOKEN: process.env.SLACK_BOT_TOKEN, SLACK_APP_TOKEN: process.env.SLACK_APP_TOKEN };
+    delete process.env.SLACK_BOT_TOKEN;
+    delete process.env.SLACK_APP_TOKEN;
+    try {
+      writeEnv(dir);
+      loadTokens(dir);
+      expect(process.env.SLACK_BOT_TOKEN).toBeUndefined();
+      expect(process.env.SLACK_APP_TOKEN).toBeUndefined();
+    } finally {
+      for (const [name, value] of Object.entries(saved)) {
+        if (value !== undefined) process.env[name] = value;
+      }
+    }
   });
 });
 

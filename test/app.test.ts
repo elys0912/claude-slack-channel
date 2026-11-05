@@ -226,6 +226,8 @@ describe('app.ts は import 時に副作用を持たない', () => {
       SIGTERM: process.listenerCount('SIGTERM'),
     };
     try {
+      // このファイルは app.js を静的にも import しているので、読み直さないとキャッシュが返り、import 時の副作用を見られない
+      vi.resetModules();
       const mod = await import('../src/app.js');
       expect(typeof mod.startBridgeApp).toBe('function');
       expect(process.listenerCount('unhandledRejection')).toBe(before.unhandledRejection);
