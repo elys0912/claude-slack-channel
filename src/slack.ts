@@ -713,7 +713,10 @@ export class SlackBridge {
     }
   }
 
-  /** リアクション付与（受信時の 👀 や回答の印）。失敗しても投げない（ログに残す） */
+  /**
+   * リアクション付与（受信時の 👀 や回答の印）。Slack 側の失敗は投げない（ログに残す）。
+   * 許可外のチャンネルだけは、ほかの送信系と同じく投げる（呼び出し側の誤りなので握りつぶさない）
+   */
   async addReaction(channel: string, ts: string, name: string): Promise<void> {
     this.assertAllowed(channel);
     try {

@@ -12,7 +12,8 @@ function bash(command: string): PermissionRequest {
   return req('Bash', { command });
 }
 
-function setup(deny: string[] = []) {
+// failRemove なら、ルールの削除で例外を投げる（許可リストのファイルを書けないとき）
+function setup(deny: string[] = [], { failRemove = false } = {}) {
   const rules: string[] = [];
   const posts: { kind: string; text: string; blocks?: unknown[] }[] = [];
   let t = 0;
@@ -26,6 +27,7 @@ function setup(deny: string[] = []) {
         return true;
       },
       remove: (r) => {
+        if (failRemove) throw new Error('EPERM');
         const i = rules.indexOf(r);
         if (i < 0) return false;
         rules.splice(i, 1);
@@ -112,23 +114,60 @@ describe('RuleRelay', () => {
     expect(rules).toEqual([]);
   });
 
-  it('一覧は削除ボタン（action_id は重複しない）付きで出す', async () => {
+  it('一覧は削除ボタン（action_id は重複しない。value は一覧の ID と番号）付きで出す', async () => {
     const { relay, rules, posts } = setup();
     rules.push('Bash(git status)', 'WebFetch');
     await relay.list('C1', '9.0');
 
     expect(actionsOf(posts[0]?.blocks ?? []).map((e) => [e.action_id, e.value])).toEqual([
-      ['rule_remove_0', 'Bash(git status)'],
-      ['rule_remove_1', 'WebFetch'],
+      ['rule_remove_0', 'prop0001.0'],
+      ['rule_remove_1', 'prop0001.1'],
     ]);
   });
 
-  it('削除を押したらそのルールだけを消す', async () => {
-    const { relay, rules, pressed } = setup();
+  it('削除を押したらその番号のルールだけを消し、一覧を結果に書き換える', async () => {
+    const { relay, rules, posts, pressed } = setup();
     rules.push('Bash(git status)', 'WebFetch');
-    await relay.remove('WebFetch', pressed, 'U1');
+    await relay.list('C1', '9.0');
+    await relay.remove('prop0001', 1, pressed, 'U1');
 
     expect(rules).toEqual(['Bash(git status)']);
+    expect(posts.at(-1)).toMatchObject({ kind: 'update', text: expect.stringContaining('消した: WebFetch') });
+  });
+
+  it('長いルール（501 文字以上）も一覧から消せる', async () => {
+    const { relay, rules, pressed } = setup();
+    const longRule = `Read(//c/${'x'.repeat(600)}/**)`;
+    rules.push(longRule);
+    await relay.list('C1', '9.0');
+    await relay.remove('prop0001', 0, pressed, 'U1');
+
+    expect(rules).toEqual([]);
+  });
+
+  it('消したあとの一覧や、期限切れの一覧からは消さない', async () => {
+    const { relay, rules, posts, pressed, advance } = setup();
+    rules.push('A', 'B', 'C');
+    await relay.list('C1', '9.0');
+    await relay.remove('prop0001', 0, pressed, 'U1');
+    // 同じ一覧から続けて押すと、番号がずれているので消さない
+    await relay.remove('prop0001', 0, pressed, 'U1');
+    expect(rules).toEqual(['B', 'C']);
+    expect(posts.at(-1)?.text).toContain('期限切れ');
+
+    await relay.list('C1', '9.0');
+    advance(PROPOSAL_TTL_MS + 1);
+    await relay.remove('prop0001', 0, pressed, 'U1');
+    expect(rules).toEqual(['B', 'C']);
+  });
+
+  it('ルールを消せなかったら、一覧を「消せなかった」に書き換える', async () => {
+    const { relay, rules, posts, pressed } = setup([], { failRemove: true });
+    rules.push('WebFetch');
+    await relay.list('C1', '9.0');
+    await relay.remove('prop0001', 0, pressed, 'U1');
+
+    expect(posts.at(-1)).toMatchObject({ kind: 'update', text: expect.stringContaining('消せなかった: WebFetch') });
   });
 
   it('長いルールがたまっても、一覧の文は plain_text の上限（3000 文字）に収め、ボタンは全件出す', async () => {

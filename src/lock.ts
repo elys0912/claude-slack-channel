@@ -87,13 +87,14 @@ export class InstanceLock {
   }
 
   /**
-   * ロックを取る。既存のロックが次のどれかなら上書きして取る（どれでもなければ holder を返して諦める）:
+   * ロックを取る。既存のロックが次のどれかなら上書きして取る（どれでもなければ holder を返して諦める。
+   * 書き込みや読み直しに失敗して持ち主が分からないときは、holder を付けない）:
    * - isSelf: 記録された pid が自分の pid と同じ
    * - stale: heartbeat が staleMs（既定 30 秒）より古い、または現在時刻より 5 秒を超えて未来
    * - dead: isAlive が記録された pid を死んでいると判定した（強制終了されて解放されずに残ったロック）
    * 読めない・形の違うロックファイルは無いものとして扱う。取れたら intervalMs ごとの heartbeat 更新を始める。
    */
-  tryAcquire(): { acquired: true } | { acquired: false; holder: LockInfo } {
+  tryAcquire(): { acquired: true } | { acquired: false; holder?: LockInfo } {
     const existing = this.readInfo();
 
     if (existing) {
@@ -113,16 +114,16 @@ export class InstanceLock {
     try {
       this.writeInfo(info);
     } catch {
-      // 書き込み自体に失敗した場合は取得できなかったものとして扱う
+      // 書き込み自体に失敗した場合は取得できなかったものとして扱う。
+      // 読み直せなければ持ち主は分からない（自分の info を持ち主として返すと、自分の pid を別のインスタンスと出してしまう）
       const reread = this.readInfo();
-      return { acquired: false, holder: reread ?? info };
+      return reread ? { acquired: false, holder: reread } : { acquired: false };
     }
 
     // 書いた直後に読み直して、自分が本当に取れたかを確認する（完全な排他は求めない）
     const reread = this.readInfo();
-    if (!reread || reread.pid !== this.pid) {
-      return { acquired: false, holder: reread ?? info };
-    }
+    if (!reread) return { acquired: false };
+    if (reread.pid !== this.pid) return { acquired: false, holder: reread };
 
     this.startedAt = startedAt;
     this.startHeartbeat();

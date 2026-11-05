@@ -117,6 +117,16 @@ describe('buildPermissionBlocks', () => {
     expect(section?.text?.type).toBe('plain_text');
   });
 
+  it('通知欄の文（text）でも、ツール名の不可視文字を見える形にする（許可・拒否の後の文も同じ）', () => {
+    // 文字の向きを右から左に変える文字（RLO）。ファイルに直接書かず、符号位置から作る
+    const rlo = String.fromCodePoint(0x202e);
+    const req = { ...sampleReq, tool_name: `Write${rlo}txt.exe` };
+    for (const { text } of [buildPermissionBlocks(req), buildResolvedBlocks(req, 'allow', 'U1')]) {
+      expect(text).not.toContain(rlo);
+      expect(text).toContain('u{202E}');
+    }
+  });
+
   it('truncates a long input_preview and sets truncated=true, adding a See more button', () => {
     const longReq: PermissionRequest = { ...sampleReq, input_preview: 'x'.repeat(5000) };
     const { blocks, truncated } = buildPermissionBlocks(longReq, { previewLimit: 100 });
@@ -230,10 +240,11 @@ describe('buildPermissionBlocks', () => {
       input_preview: 'P'.repeat(4000)
     };
     const { blocks } = buildPermissionBlocks(hugeReq);
-    for (const block of blockViewsOf(blocks)) {
-      if (block.type === 'section' && block.text?.type === 'plain_text') {
-        expect(block.text.text.length).toBeLessThanOrEqual(3000);
-      }
+    const plainSections = blockViewsOf(blocks).filter((block) => block.type === 'section' && block.text?.type === 'plain_text');
+    // 該当するブロックが無いと、下の確かめが 1 回も走らずに通ってしまうので、先に数を確かめる
+    expect(plainSections.length).toBeGreaterThan(0);
+    for (const block of plainSections) {
+      expect(block.text?.text.length).toBeLessThanOrEqual(3000);
     }
   });
 });
@@ -321,10 +332,11 @@ describe('parseBlockAction', () => {
     [{ actionId: 'screen_pick_2', value: 'k3x9ab2q.2' }, { ok: true, kind: 'screen_pick', snapshotId: 'k3x9ab2q', index: 2 }],
     [{ actionId: 'rule_add', value: 'k3x9ab2q' }, { ok: true, kind: 'rule_confirm', proposalId: 'k3x9ab2q', accept: true }],
     [{ actionId: 'rule_cancel', value: 'k3x9ab2q' }, { ok: true, kind: 'rule_confirm', proposalId: 'k3x9ab2q', accept: false }],
-    [{ actionId: 'rule_remove_0', value: 'Bash(git status:*)' }, { ok: true, kind: 'rule_remove', rule: 'Bash(git status:*)' }],
+    [{ actionId: 'rule_remove_3', value: 'k3x9ab2q.13' }, { ok: true, kind: 'rule_remove', listId: 'k3x9ab2q', index: 13 }],
     [{ actionId: 'screen_pick_0', value: 'bad' }, { ok: false, reason: 'invalid_value' }],
     [{ actionId: 'rule_add', value: 'UPPER123' }, { ok: false, reason: 'invalid_value' }],
     [{ actionId: 'rule_remove_1', value: '' }, { ok: false, reason: 'invalid_value' }],
+    [{ actionId: 'rule_remove_1', value: 'Bash(git status:*)' }, { ok: false, reason: 'invalid_value' }],
   ])('画面・許可リスト操作のボタン %o', (overrides, expected) => {
     expect(parseBlockAction({ ...validInput, ...overrides }, access, allowedChannels)).toEqual(expected);
   });
@@ -362,22 +374,22 @@ describe('parseBlockAction', () => {
 
   it('rejects a team mismatch', () => {
     const result = parseBlockAction({ ...validInput, teamId: 'TOTHER' }, access, allowedChannels);
-    expect(result.ok).toBe(false);
+    expect(result).toEqual({ ok: false, reason: 'team_mismatch' });
   });
 
   it('rejects a user not in allowFrom', () => {
     const result = parseBlockAction({ ...validInput, userId: 'UNKNOWN' }, access, allowedChannels);
-    expect(result.ok).toBe(false);
+    expect(result).toEqual({ ok: false, reason: 'user_not_allowed' });
   });
 
   it('rejects a channel not in allowedChannels', () => {
     const result = parseBlockAction({ ...validInput, channelId: 'DOTHER' }, access, allowedChannels);
-    expect(result.ok).toBe(false);
+    expect(result).toEqual({ ok: false, reason: 'channel_not_allowed' });
   });
 
   it('rejects an invalid request id (contains l)', () => {
     const result = parseBlockAction({ ...validInput, value: 'abcdl' }, access, allowedChannels);
-    expect(result.ok).toBe(false);
+    expect(result).toEqual({ ok: false, reason: 'invalid_request_id' });
   });
 
   it('rejects an unknown action_id', () => {

@@ -169,9 +169,11 @@ export class PermissionRelay {
 
     // 全部許可の間は、この記録が何を実行させたかの手がかりになる。実行許可のメッセージと同じく、不可視文字を見えるようにして切る
     const preview = truncatePlain(req.input_preview, AUTO_ALLOW_PREVIEW_MAX).text;
-    const text = `${AUTO_ALLOW_PREFIX}${revealInvisible(req.tool_name)}\n${preview}`;
+    const toolName = revealInvisible(req.tool_name);
+    const text = `${AUTO_ALLOW_PREFIX}${toolName}\n${preview}`;
     try {
-      await this.slack.postBlocks(target.channel, `${AUTO_ALLOW_PREFIX}${req.tool_name}`, [plainContext(clip(text, AUTO_ALLOW_TEXT_MAX))], target.threadTs);
+      // 通知欄の文も、不可視文字を見える形にしたツール名を使う（文字の向きを変える文字などで表示を偽らせない）
+      await this.slack.postBlocks(target.channel, `${AUTO_ALLOW_PREFIX}${toolName}`, [plainContext(clip(text, AUTO_ALLOW_TEXT_MAX))], target.threadTs);
     } catch (e) {
       this.logger.warn('自動許可の記録の投稿に失敗', e);
     }

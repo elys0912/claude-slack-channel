@@ -67,6 +67,8 @@ describe('chunkText のコードブロック', () => {
     const limit = MIN_LIMIT;
     const chunks = chunkText(text, limit);
     expect(chunks.length).toBeGreaterThan(1);
+    // 開き直しが 1 つも無くても、組み立て直した結果は元と一致してしまうので、2 つ目以降が開き直していることを先に確かめる
+    expect(chunks.slice(1).every((chunk) => chunk.startsWith('```js\n'))).toBe(true);
     // reconstructAndCheck は、各チャンクが limit 以内であることと、開き直しが ```js\n で始まることも確かめる
     expect(reconstructAndCheck(chunks, limit)).toBe(text);
   });

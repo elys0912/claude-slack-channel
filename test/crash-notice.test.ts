@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { CRASH_FILE, takeCrashNotice } from '../src/crash-notice.js';
 import { useTempDir } from './helpers/temp-dir.js';
 
@@ -35,6 +35,18 @@ describe('takeCrashNotice', () => {
     fs.writeFileSync(file, '{ broken');
     expect(takeCrashNotice(file)).toBeUndefined();
     expect(fs.existsSync(file)).toBe(false);
+  });
+
+  it('crash.json を消せなくても（ロック中など）投げずに知らせの文を返す', () => {
+    fs.writeFileSync(file, JSON.stringify({ at: 1000, exit_code: 1, count: 1, max: 3, window_min: 10, resumed: true }));
+    const rmSync = vi.spyOn(fs, 'rmSync').mockImplementation(() => {
+      throw new Error('EBUSY');
+    });
+    try {
+      expect(takeCrashNotice(file)).toContain('起動し直した');
+    } finally {
+      rmSync.mockRestore();
+    }
   });
 
   it('キーが欠けた記録は undefined', () => {

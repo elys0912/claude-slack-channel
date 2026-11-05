@@ -96,10 +96,11 @@ async function main(dir: string, logger: Logger): Promise<void> {
   const lockResult = await acquireWithRetry(lock, { timeoutMs: LOCK_RETRY_MS, intervalMs: LOCK_RETRY_INTERVAL_MS });
   const degraded = !lockResult.acquired;
   if (!lockResult.acquired) {
+    const holderPid = lockResult.holder?.pid ?? '不明';
     writeStderr(
-      `別のインスタンスが動いている（pid=${lockResult.holder.pid}）。Slack には接続せず、MCP サーバーのみ起動する（${DEGRADED_RELOCK_MS / MS_PER_SECOND} 秒ごとにロックを取り直す）`
+      `別のインスタンスが動いている（pid=${holderPid}）。Slack には接続せず、MCP サーバーのみ起動する（${DEGRADED_RELOCK_MS / MS_PER_SECOND} 秒ごとにロックを取り直す）`
     );
-    logger.warn(`ロック取得に失敗（保持者 pid=${lockResult.holder.pid}）。縮退モードで起動する`);
+    logger.warn(`ロック取得に失敗（保持者 pid=${holderPid}）。縮退モードで起動する`);
   }
 
   let config: BridgeConfig;

@@ -15,6 +15,8 @@ import { ExpiringMap } from './expiring-map.js';
 const PROPOSAL_TTL_MS = 10 * 60 * 1000;
 /** 一覧に並べる削除ボタンの上限（actions ブロックの要素数の上限 25 に収める） */
 const LIST_MAX = 20;
+/** 一覧（削除ボタンの番号とルールの対応）の有効期限。提案と同じにする */
+const LIST_TTL_MS = PROPOSAL_TTL_MS;
 export type RuleSlack = Pick<SlackBridge, 'postText' | 'postBlocks' | 'updateBlocks'>;
 
 export interface RuleRelayOptions {
@@ -32,11 +34,14 @@ export class RuleRelay {
   private readonly newId: () => string;
   /** 提案の ID → 追加するルール */
   private readonly proposals: ExpiringMap<string>;
+  /** 一覧の ID → 削除ボタンの番号順に並べたルール */
+  private readonly lists: ExpiringMap<string[]>;
 
   constructor(opts: RuleRelayOptions) {
     this.opts = opts;
     this.newId = opts.newId ?? newToken;
     this.proposals = new ExpiringMap(PROPOSAL_TTL_MS, opts.now ?? Date.now);
+    this.lists = new ExpiringMap(LIST_TTL_MS, opts.now ?? Date.now);
   }
 
   /** 実行許可のリクエストから候補を作り、追加してよいかをスレッドで確認する。作れない・deny に当たるならその旨を知らせる。投げない */
@@ -78,8 +83,13 @@ export class RuleRelay {
       return;
     }
     try {
+      // 解釈できないルールは deny と照らせないので、足さない
       const parsed = parseRuleForCheck(rule);
-      const hits = parsed ? denyOverlaps(parsed, this.opts.loadDeny()) : [];
+      if (!parsed) {
+        await this.report(pressed, `⚠️ ルールを解釈できないので追加しない: ${rule}`);
+        return;
+      }
+      const hits = denyOverlaps(parsed, this.opts.loadDeny());
       if (hits.length > 0) {
         await this.report(pressed, `🚫 deny に当たるので追加しない: ${rule}\n当たった deny: ${hits.join(', ')}`);
         return;
@@ -102,25 +112,34 @@ export class RuleRelay {
         await slack.postText(channel, 'Slack から追加したルールは無い。', threadTs);
         return;
       }
-      const { text, blocks } = buildRuleListBlocks(rules);
+      this.lists.prune();
+      const id = this.newId();
+      const shown = rules.slice(0, LIST_MAX);
+      this.lists.add(id, shown);
+      const { text, blocks } = buildRuleListBlocks(rules, shown, id);
       await slack.postBlocks(channel, text, blocks, threadTs);
     } catch (e) {
       logger.warn('許可リストの一覧に失敗', e);
     }
   }
 
-  /** 追加分のルールを消す。投げない */
-  async remove(rule: string, pressed: PressedMessage, byUserId: string): Promise<void> {
+  /**
+   * 一覧で押された番号のルールを消し、一覧を結果に書き換える。投げない。
+   * 消すと番号がずれるので、同じ一覧からは続けて消さない（期限切れと同じ扱い。!rules から出し直す）
+   */
+  async remove(listId: string, index: number, pressed: PressedMessage, byUserId: string): Promise<void> {
+    const rule = this.lists.take(listId)?.[index];
+    if (rule === undefined) {
+      await this.report(pressed, '⌛ この一覧は期限切れ。もう一度 !rules から選び直すこと。');
+      return;
+    }
     try {
       const removed = this.opts.store.remove(rule);
       if (removed) this.opts.logger.info(`許可リストから削除 rule=${rule} by=${byUserId}`);
-      await this.opts.slack.postText(
-        pressed.channel,
-        removed ? `🗑 許可リストから消した: ${rule}（次に起動し直したときから反映）` : `ℹ️ 既に無かった: ${rule}`,
-        pressed.threadTs
-      );
+      await this.report(pressed, removed ? `🗑 許可リストから消した: ${rule}（次に起動し直したときから反映）` : `ℹ️ 既に無かった: ${rule}`);
     } catch (e) {
       this.opts.logger.warn('許可リストからの削除に失敗', e);
+      await this.report(pressed, `⚠️ 消せなかった: ${rule}`);
     }
   }
 
@@ -153,9 +172,8 @@ function buildProposalBlocks(id: string, rule: string): { text: string; blocks: 
   };
 }
 
-/** 追加分のルールの一覧と削除ボタン。ボタンは先頭の LIST_MAX 件だけ並べる */
-function buildRuleListBlocks(rules: string[]): { text: string; blocks: unknown[] } {
-  const shown = rules.slice(0, LIST_MAX);
+/** 追加分のルールの一覧と削除ボタン。ボタンは shown（先頭の LIST_MAX 件）だけ並べ、value は `<一覧の ID>.<番号>` */
+function buildRuleListBlocks(rules: string[], shown: string[], listId: string): { text: string; blocks: unknown[] } {
   const more = rules.length > shown.length ? `\n（ほか ${rules.length - shown.length} 件）` : '';
   return {
     text: `Slack から追加したルール ${rules.length} 件`,
@@ -164,7 +182,7 @@ function buildRuleListBlocks(rules: string[]): { text: string; blocks: unknown[]
       section(clip(`Slack から追加したルール（次に起動し直したときに反映）${more}\n${shown.map((r) => `• ${r}`).join('\n')}`, PLAIN_TEXT_LIMIT)),
       {
         type: 'actions',
-        elements: shown.map((r, i) => button(clip(`🗑 ${r}`, BUTTON_LABEL_MAX), numberedAction(ACTION.RULE_REMOVE, i), r)),
+        elements: shown.map((r, i) => button(clip(`🗑 ${r}`, BUTTON_LABEL_MAX), numberedAction(ACTION.RULE_REMOVE, i), `${listId}.${i}`)),
       },
     ],
   };

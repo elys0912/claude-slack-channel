@@ -124,7 +124,10 @@ export class UsageWatch {
     }
   }
 
-  /** 使用量の上限に当たった（StopFailure の rate_limit）。いちばん使っている枠のリセット時刻を過ぎたら、戻ったと知らせる */
+  /**
+   * 使用量の上限に当たった（StopFailure の rate_limit）。いちばん使っている枠のリセット時刻を過ぎたら、戻ったと知らせる。
+   * 使用量の情報（usage.json）が無く、リセット時刻が分からないときは、戻ったとは知らせない（時刻を推測して誤って知らせないため）
+   */
   limitHit(): void {
     this.limited = true;
     const windows = this.activeWindows();

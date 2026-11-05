@@ -102,8 +102,10 @@ describe('Logger', () => {
   });
 
   it('ログ出力の例外を呼び出し元へ投げない', () => {
-    const logger = new Logger({ file, stderr: false });
-    // maxBytes に不正値を入れても例外を投げないことを確認（内部で吸収）
+    // ファイルの下にログを置こうとして、書き込みを失敗させる
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, '');
+    const logger = new Logger({ file: path.join(file, 'child.log'), stderr: false });
     expect(() => logger.info('x')).not.toThrow();
   });
 });

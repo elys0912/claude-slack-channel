@@ -324,10 +324,11 @@ function Register-PlaceholderServer {
 
 # --- 起動の補助 -----------------------------------------------------------------
 
-# Start-Process -ArgumentList に渡す値を、空白を含んでも 1 つの引数として届くよう引用符で囲む
+# Start-Process -ArgumentList に渡す値を、空白を含んでも 1 つの引数として届くよう引用符で囲む。
+# 値の中の " は \" にする（そのままだと引数がそこで切れる。Windows のパスには入らないが、パターンの文字列には入りうる）
 function Quote-Arg {
     param([string]$Value)
-    return '"' + $Value + '"'
+    return '"' + ($Value -replace '"', '\"') + '"'
 }
 
 # 警告ダイアログに自動で答える dialog-answer.ps1 を、同じコンソールで別プロセスとして起動する。
