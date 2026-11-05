@@ -108,7 +108,8 @@ export function buildPermissionBlocks(
   ];
 
   return {
-    text: neutralizeBroadcasts(`🔐 Permission: ${req.tool_name}`),
+    // 通知欄の文も、ブロックと同じく不可視文字を見える形にして切ったツール名を使う（文字の向きを変える文字などで表示を偽らせない）
+    text: neutralizeBroadcasts(`🔐 Permission: ${toolNameResult.text}`),
     blocks,
     truncated
   };
@@ -146,7 +147,7 @@ export function buildResolvedBlocks(
   ];
 
   return {
-    text: neutralizeBroadcasts(`${emoji} ${verb}: ${req.tool_name}`),
+    text: neutralizeBroadcasts(`${emoji} ${verb}: ${toolNameResult.text}`),
     blocks
   };
 }
@@ -199,15 +200,18 @@ export type ActionParse =
   /** 許可リストへの追加の提案に答える */
   | { ok: true; kind: 'rule_confirm'; proposalId: string; accept: boolean }
   /** 許可リストから追加分のルールを消す */
-  | { ok: true; kind: 'rule_remove'; rule: string }
+  | { ok: true; kind: 'rule_remove'; listId: string; index: number }
   | { ok: false; reason: string };
 
 /** screen_pick の value（`<控えの ID>.<選択肢の番号 1 桁>`。screen.ts の MAX_OPTIONS が 9 なので 1 桁で足りる） */
 const SCREEN_PICK_RE = new RegExp(`^(${TOKEN_ID_BODY})\\.(\\d)$`);
 /** 同じブロックに並ぶボタン（`screen_pick_0` / `rule_remove_3` など）。番号は 2 桁まで */
 const NUMBERED_ACTION_RE = new RegExp(`^(${ACTION.SCREEN_PICK}|${ACTION.RULE_REMOVE})_\\d{1,2}$`);
-/** rule_remove の value（ルールそのもの）の長さの上限 */
-const RULE_VALUE_MAX = 500;
+/**
+ * rule_remove の value（`<一覧の ID>.<ルールの番号>`。番号は rule-relay.ts の LIST_MAX が 20 なので 2 桁まで）。
+ * ルールそのものを value に入れると、Slack の value の長さとこの照合の上限を超えるルールが消せなくなるため、番号にした
+ */
+const RULE_REMOVE_RE = new RegExp(`^(${TOKEN_ID_BODY})\\.(\\d{1,2})$`);
 
 /** request_id を value に持たないボタン。該当しなければ undefined（従来の perm_* の判定に進む） */
 function parseToolAction(actionId: string | undefined, value: string | undefined): ActionParse | undefined {
@@ -226,9 +230,11 @@ function parseToolAction(actionId: string | undefined, value: string | undefined
     case ACTION.RULE_CANCEL:
       if (!TOKEN_ID_RE.test(value ?? '')) return { ok: false, reason: 'invalid_value' };
       return { ok: true, kind: 'rule_confirm', proposalId: value ?? '', accept: actionId === ACTION.RULE_ADD };
-    case ACTION.RULE_REMOVE:
-      if (!value || value.length > RULE_VALUE_MAX) return { ok: false, reason: 'invalid_value' };
-      return { ok: true, kind: 'rule_remove', rule: value };
+    case ACTION.RULE_REMOVE: {
+      const m = RULE_REMOVE_RE.exec(value ?? '');
+      if (!m) return { ok: false, reason: 'invalid_value' };
+      return { ok: true, kind: 'rule_remove', listId: m[1] ?? '', index: Number(m[2]) };
+    }
     default:
       return undefined;
   }

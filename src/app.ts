@@ -409,7 +409,7 @@ export async function handleAction(wiring: Wiring, parsed: ActionParse, ctx: Act
       return;
 
     case 'rule_remove':
-      if (at && wiring.rules) await wiring.rules.remove(parsed.rule, at, byUserId);
+      if (at && wiring.rules) await wiring.rules.remove(parsed.listId, parsed.index, at, byUserId);
       return;
 
     default:
