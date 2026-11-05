@@ -49,7 +49,12 @@ export function takeCrashNotice(file: string): string | undefined {
   } catch {
     return undefined;
   }
-  fs.rmSync(file, { force: true });
+  // 消せなくても（ロック中など）知らせは返す。次の起動でもう一度知らせることになるが、起動を止めるよりよい
+  try {
+    fs.rmSync(file, { force: true });
+  } catch {
+    // 上のとおり
+  }
   // PowerShell 5.1 の Set-Content -Encoding UTF8 は BOM を付けるので外す
   const record = parseJson(stripBom(text), isCrashRecord);
   return record ? crashNoticeText(record) : undefined;

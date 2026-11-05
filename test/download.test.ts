@@ -108,6 +108,18 @@ describe('sanitizeFileName', () => {
     expect(name.length).toBe(200);
     expect(name.endsWith('.tar.gz')).toBe(true);
   });
+
+  it('切る位置が絵文字（サロゲートペア）の途中なら、その手前で切る', () => {
+    const name = sanitizeFileName(`${'a'.repeat(99)}${'😀'.repeat(60)}.txt`, 'F1');
+    expect(name.length).toBeLessThanOrEqual(200);
+    // 対になっていないサロゲートが残ると、encodeURIComponent が URIError を投げる
+    expect(() => encodeURIComponent(name)).not.toThrow();
+    expect(name.endsWith('.txt')).toBe(true);
+  });
+
+  it('切った位置で末尾が空白になったら、もう一度削る', () => {
+    expect(sanitizeFileName(`${'a'.repeat(199)} ${'b'.repeat(10)}`, 'F1')).toBe('a'.repeat(199));
+  });
 });
 
 describe('createUnique', () => {

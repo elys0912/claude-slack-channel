@@ -21,6 +21,8 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $consoleScript = Join-Path $PSScriptRoot 'console.ps1'
+# 作業フォルダーにある powershell.exe を拾わないよう、OS 付属のものを絶対パスで起動する（start.ps1 と同じ）
+$powershellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 # console.ps1 は画面を UTF-8 で書き出す。子プロセスの出力は [Console]::OutputEncoding で読まれるので合わせる
 # （既定の cp932 のままだと日本語が化けて、日本語の Pattern が一致しない）。
 # このコンソールの出力コードページは console.ps1 も同じ値にするので、claude.exe の表示への影響は増えない。
@@ -31,7 +33,7 @@ $SettleMs = 500
 
 function Invoke-Console {
     param([string[]]$Arguments)
-    return (& powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $consoleScript @Arguments)
+    return (& $powershellExe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $consoleScript @Arguments)
 }
 
 function Write-Log {

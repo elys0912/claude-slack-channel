@@ -23,6 +23,19 @@ function writeLock(file: string, info: Partial<LockInfo>): void {
   fs.writeFileSync(file, JSON.stringify(info));
 }
 
+// テストで作ったロック。テストが途中で失敗しても heartbeat のタイマーが残らないよう、各テストの後にすべて release する
+const createdLocks: InstanceLock[] = [];
+
+function newLock(...args: ConstructorParameters<typeof InstanceLock>): InstanceLock {
+  const lock = new InstanceLock(...args);
+  createdLocks.push(lock);
+  return lock;
+}
+
+afterEach(() => {
+  for (const lock of createdLocks.splice(0)) lock.release();
+});
+
 describe('InstanceLock', () => {
   const tempDir = useTempDir('lock-test-');
   let file: string;
@@ -35,7 +48,7 @@ describe('InstanceLock', () => {
   });
 
   it('ロックが無ければ取得できる', () => {
-    const lock = new InstanceLock(file, { now, pid: 111 });
+    const lock = newLock(file, { now, pid: 111 });
     const result = lock.tryAcquire();
     expect(result.acquired).toBe(true);
     expect(fs.existsSync(file)).toBe(true);
@@ -43,14 +56,14 @@ describe('InstanceLock', () => {
   });
 
   it('新しいロックがあれば他の pid は取得できない', () => {
-    const lockA = new InstanceLock(file, { now, pid: 111 });
+    const lockA = newLock(file, { now, pid: 111 });
     expect(lockA.tryAcquire().acquired).toBe(true);
 
-    const lockB = new InstanceLock(file, { now, pid: 222 });
+    const lockB = newLock(file, { now, pid: 222 });
     const result = lockB.tryAcquire();
     expect(result.acquired).toBe(false);
     if (!result.acquired) {
-      expect(result.holder.pid).toBe(111);
+      expect(result.holder?.pid).toBe(111);
     }
     lockA.release();
   });
@@ -60,26 +73,33 @@ describe('InstanceLock', () => {
     writeLock(file, { pid: DEAD_PID, heartbeat: clock, startedAt: clock });
     clock += STALE_MS + 10_000;
 
-    const lock = new InstanceLock(file, { now, pid: 222, staleMs: STALE_MS });
+    const lock = newLock(file, { now, pid: 222, staleMs: STALE_MS });
     const result = lock.tryAcquire();
     expect(result.acquired).toBe(true);
     lock.release();
   });
 
+  it('ロックを書けず読み直せもしないときは、持ち主を付けずに諦める（自分を持ち主にしない）', () => {
+    // ロックファイルの場所をディレクトリにして、書き込みも読み直しも失敗させる
+    fs.mkdirSync(file);
+    const result = newLock(file, { now, pid: 111 }).tryAcquire();
+    expect(result).toEqual({ acquired: false });
+  });
+
   it('壊れたファイルなら取得できる', () => {
     fs.writeFileSync(file, 'not valid json {{{');
-    const lock = new InstanceLock(file, { now, pid: 111 });
+    const lock = newLock(file, { now, pid: 111 });
     const result = lock.tryAcquire();
     expect(result.acquired).toBe(true);
     lock.release();
   });
 
   it('release は他人のロックを消さない', () => {
-    const lockA = new InstanceLock(file, { now, pid: 111 });
+    const lockA = newLock(file, { now, pid: 111 });
     expect(lockA.tryAcquire().acquired).toBe(true);
 
     // 別 pid のインスタンスで release を試みる（保持していないので消さない）
-    const lockB = new InstanceLock(file, { now, pid: 222 });
+    const lockB = newLock(file, { now, pid: 222 });
     lockB.release();
 
     expect(fs.existsSync(file)).toBe(true);
@@ -89,27 +109,27 @@ describe('InstanceLock', () => {
   });
 
   it('release の後なら取得できる', () => {
-    const lockA = new InstanceLock(file, { now, pid: 111 });
+    const lockA = newLock(file, { now, pid: 111 });
     expect(lockA.tryAcquire().acquired).toBe(true);
     lockA.release();
     expect(fs.existsSync(file)).toBe(false);
 
-    const lockB = new InstanceLock(file, { now, pid: 222 });
+    const lockB = newLock(file, { now, pid: 222 });
     expect(lockB.tryAcquire().acquired).toBe(true);
     lockB.release();
   });
 
   it('自分自身の pid ならロックを取得できる', () => {
-    const lockA = new InstanceLock(file, { now, pid: 111 });
+    const lockA = newLock(file, { now, pid: 111 });
     expect(lockA.tryAcquire().acquired).toBe(true);
 
-    const lockA2 = new InstanceLock(file, { now, pid: 111 });
+    const lockA2 = newLock(file, { now, pid: 111 });
     expect(lockA2.tryAcquire().acquired).toBe(true);
     lockA.release();
   });
 
   it('書き出すキーは pid / heartbeat / startedAt だけ', () => {
-    const lock = new InstanceLock(file, { now, pid: 111 });
+    const lock = newLock(file, { now, pid: 111 });
     expect(lock.tryAcquire().acquired).toBe(true);
     const info = readLock(file);
     expect(Object.keys(info).sort()).toEqual(['heartbeat', 'pid', 'startedAt']);
@@ -122,29 +142,29 @@ describe('InstanceLock', () => {
   it('stale 判定の境界: heartbeat からちょうど staleMs 経過では取得できず、それを超えると取得できる', () => {
     writeLock(file, { pid: DEAD_PID, heartbeat: clock, startedAt: clock });
     clock += STALE_MS;
-    const lockA = new InstanceLock(file, { now, pid: 222, staleMs: STALE_MS });
+    const lockA = newLock(file, { now, pid: 222, staleMs: STALE_MS });
     expect(lockA.tryAcquire().acquired).toBe(false);
 
     clock += 1;
-    const lockB = new InstanceLock(file, { now, pid: 222, staleMs: STALE_MS });
+    const lockB = newLock(file, { now, pid: 222, staleMs: STALE_MS });
     expect(lockB.tryAcquire().acquired).toBe(true);
     lockB.release();
   });
 
   it('heartbeat が 5 秒を超えて未来なら不正として取得でき、5 秒以内なら取得できない', () => {
     writeLock(file, { pid: DEAD_PID, heartbeat: clock + FUTURE_TOLERANCE_MS, startedAt: clock });
-    const lockA = new InstanceLock(file, { now, pid: 222 });
+    const lockA = newLock(file, { now, pid: 222 });
     expect(lockA.tryAcquire().acquired).toBe(false);
 
     writeLock(file, { pid: DEAD_PID, heartbeat: clock + FUTURE_TOLERANCE_MS + 1, startedAt: clock });
-    const lockB = new InstanceLock(file, { now, pid: 222 });
+    const lockB = newLock(file, { now, pid: 222 });
     expect(lockB.tryAcquire().acquired).toBe(true);
     lockB.release();
   });
 
   it('キーが欠けたファイルは壊れているものとして扱い取得できる', () => {
     writeLock(file, { pid: DEAD_PID, heartbeat: clock });
-    const lock = new InstanceLock(file, { now, pid: 111 });
+    const lock = newLock(file, { now, pid: 111 });
     expect(lock.tryAcquire().acquired).toBe(true);
     lock.release();
   });
@@ -159,7 +179,7 @@ describe('InstanceLock', () => {
     });
 
     it('取っている間は intervalMs ごとに heartbeat だけを書き（pid・startedAt はそのまま）、release の後は書かない', () => {
-      const lock = new InstanceLock(file, { now, pid: 111, intervalMs: 1000 });
+      const lock = newLock(file, { now, pid: 111, intervalMs: 1000 });
       expect(lock.tryAcquire().acquired).toBe(true);
 
       clock += 1500;
@@ -180,12 +200,12 @@ describe('InstanceLock', () => {
 
     it('別の pid に取られていたら書き戻さず、onLost に取った側を渡して heartbeat を止める', () => {
       const onLost = vi.fn();
-      const lockA = new InstanceLock(file, { now, pid: 111, intervalMs: 10, onLost });
+      const lockA = newLock(file, { now, pid: 111, intervalMs: 10, onLost });
       expect(lockA.tryAcquire().acquired).toBe(true);
 
       // スリープ明け: A の heartbeat が既定の staleMs より古くなり、B が取る
       clock += STALE_MS + 1000;
-      const lockB = new InstanceLock(file, { now, pid: 222 });
+      const lockB = newLock(file, { now, pid: 222 });
       expect(lockB.tryAcquire().acquired).toBe(true);
       vi.advanceTimersByTime(10);
 
@@ -215,11 +235,11 @@ describe('InstanceLock の isAlive（強制終了で残ったロック）', () =
     const now = () => 1_000_000;
     writeLock(file, { pid: 111, heartbeat: 1_000_000, startedAt: 1_000_000 });
 
-    const alive = new InstanceLock(file, { now, pid: 222, isAlive: () => true });
+    const alive = newLock(file, { now, pid: 222, isAlive: () => true });
     expect(alive.tryAcquire().acquired).toBe(false);
 
     const checked: number[] = [];
-    const dead = new InstanceLock(file, { now, pid: 222, isAlive: (pid) => (checked.push(pid), false) });
+    const dead = newLock(file, { now, pid: 222, isAlive: (pid) => (checked.push(pid), false) });
     expect(dead.tryAcquire().acquired).toBe(true);
     expect(checked).toEqual([111]);
     dead.release();
@@ -242,9 +262,9 @@ describe('acquireWithRetry', () => {
   });
 
   it('旧インスタンスが途中で手放せば、そこで取れる', async () => {
-    const old = new InstanceLock(file, { pid: 111 });
+    const old = newLock(file, { pid: 111 });
     expect(old.tryAcquire().acquired).toBe(true);
-    const lock = new InstanceLock(file, { pid: 222 });
+    const lock = newLock(file, { pid: 222 });
     const waits: number[] = [];
     const result = await acquireWithRetry(lock, {
       timeoutMs: 5000,
@@ -260,13 +280,13 @@ describe('acquireWithRetry', () => {
   });
 
   it('時間内に取れなければ、最後の結果（持ち主）を返す', async () => {
-    const old = new InstanceLock(file, { pid: 111 });
+    const old = newLock(file, { pid: 111 });
     expect(old.tryAcquire().acquired).toBe(true);
-    const lock = new InstanceLock(file, { pid: 222 });
+    const lock = newLock(file, { pid: 222 });
     let slept = 0;
     const result = await acquireWithRetry(lock, { timeoutMs: 2000, intervalMs: 500, sleep: async () => void slept++ });
     expect(result.acquired).toBe(false);
-    if (!result.acquired) expect(result.holder.pid).toBe(111);
+    if (!result.acquired) expect(result.holder?.pid).toBe(111);
     expect(slept).toBe(4);
     old.release();
   });

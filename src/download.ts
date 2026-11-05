@@ -23,6 +23,14 @@ const DOWNLOAD_TIMEOUT_MS = 30 * 60 * 1000;
 const EXTRACT_POLL_MS = 500;
 /** 保存するファイル名の長さの上限（拡張子を残して本体を切る） */
 const MAX_NAME_LENGTH = 200;
+/** UTF-16 の上位サロゲートの範囲（サロゲートペアの 1 つ目）。ファイル名を切るとき、ペアの途中で切らないため */
+const HIGH_SURROGATE_FIRST = 0xd800;
+const HIGH_SURROGATE_LAST = 0xdbff;
+/**
+ * 同名を避ける番号（`名前 (1).拡張子`）を試す回数の上限。同じ名前が 1000 件並ぶことは普段の使い方では無いので、
+ * それを超えたら書き込めない理由（権限など）が別にあるとみて止める
+ */
+const MAX_UNIQUE_NAME_ATTEMPTS = 1000;
 /** エラーに載せる tar の標準エラーの長さ */
 const STDERR_MAX = 500;
 
@@ -78,17 +86,32 @@ const UNSAFE_NAME_CHARS_RE = /[<>:"|?*\u0000-\u001f]/g;
  */
 export function sanitizeFileName(name: string, fallback: string): string {
   const baseName = name.split(/[\\/]/).pop() ?? '';
-  let safe = baseName.replace(UNSAFE_NAME_CHARS_RE, '_').trim().replace(/[. ]+$/, '');
+  let safe = trimTrailingDotsAndSpaces(baseName.replace(UNSAFE_NAME_CHARS_RE, '_').trim());
   if (safe === '') safe = fallback;
   if (WINDOWS_RESERVED_RE.test(safe)) safe = `_${safe}`;
   if (safe.length > MAX_NAME_LENGTH) {
     const { stem, ext } = splitName(safe);
     const stemRoom = Math.max(1, MAX_NAME_LENGTH - ext.length);
     // 拡張子だけで上限に届くときも、stem を 1 文字残して全体を MAX_NAME_LENGTH に収める
-    const keptExt = ext.slice(0, MAX_NAME_LENGTH - 1);
-    safe = stem.slice(0, stemRoom) + keptExt;
+    const keptExt = truncateUtf16(ext, MAX_NAME_LENGTH - 1);
+    // 切った位置で末尾が . か空白になることがあるので、もう一度削る
+    safe = trimTrailingDotsAndSpaces(truncateUtf16(stem, stemRoom) + keptExt);
+    if (safe === '') safe = fallback;
   }
   return safe;
+}
+
+/** 末尾の . と空白を削る（Windows はファイル名の末尾の . と空白を落とすため） */
+function trimTrailingDotsAndSpaces(name: string): string {
+  return name.replace(/[. ]+$/, '');
+}
+
+/** text を UTF-16 の単位で最大 max まで切る。サロゲートペア（絵文字など）の途中では切らず、その手前で止める */
+function truncateUtf16(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const lastCode = text.charCodeAt(max - 1);
+  const endsInHighSurrogate = lastCode >= HIGH_SURROGATE_FIRST && lastCode <= HIGH_SURROGATE_LAST;
+  return text.slice(0, endsInHighSurrogate ? max - 1 : max);
 }
 
 /**
@@ -97,7 +120,7 @@ export function sanitizeFileName(name: string, fallback: string): string {
  */
 export function createUnique(dir: string, name: string, kind: 'file' | 'dir'): string {
   const { stem, ext } = splitName(name);
-  for (let n = 0; ; n++) {
+  for (let n = 0; n < MAX_UNIQUE_NAME_ATTEMPTS; n++) {
     const candidate = path.join(dir, n === 0 ? name : `${stem} (${n})${ext}`);
     try {
       if (kind === 'file') fs.closeSync(fs.openSync(candidate, 'wx'));
@@ -107,6 +130,7 @@ export function createUnique(dir: string, name: string, kind: 'file' | 'dir'): s
       if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
     }
   }
+  throw new Error(`${name} の空いている名前が見つからない（${MAX_UNIQUE_NAME_ATTEMPTS} 件まで試した）`);
 }
 
 /** 通過したバイト数を数え、上限を超えたらエラーで止める */
