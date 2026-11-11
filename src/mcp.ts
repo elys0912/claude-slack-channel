@@ -20,7 +20,7 @@ const LOGGED_ID_MAX = 40;
  * config/channel-settings.json の `mcp__slackbridge__*` も同じ名前にすること
  */
 export const SERVER_NAME = 'slackbridge';
-export const SERVER_VERSION = '0.1.0';
+export const SERVER_VERSION = '0.2.0';
 
 export const INSTRUCTIONS = [
   `このチャンネルは Slack の DM と許可されたチャンネルを中継する。メッセージは <channel source="${SERVER_NAME}" ...> の形で届く。`,
