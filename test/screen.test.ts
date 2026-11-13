@@ -36,6 +36,24 @@ describe('hasEmptyPrompt', () => {
   it('入力欄がずっと上（末尾 8 行より前）にあれば false', () => {
     expect(hasEmptyPrompt('❯ \n' + 'output\n'.repeat(10))).toBe(false);
   });
+
+  // 2026-11-13 に !restart が弾かれ続けた画面（conhost。手元の /compact の履歴が選択肢に見えた）
+  it('入力欄より上に手元の入力の履歴と ⎿ の行があっても、空の入力欄なら true', () => {
+    const screen = [
+      '✻ Crunched for 4s · done 23:51',
+      '',
+      '> /compact',
+      '  ⎿  Compacted (ctrl+o to see full summary)',
+      '',
+      '────────────────────────────────',
+      '>',
+      '────────────────────────────────',
+      '  ⏵⏵ accept edits on (shift+tab to cycle)',
+    ].join('\n');
+
+    expect(parseChoiceScreen(screen)).toBeUndefined();
+    expect(hasEmptyPrompt(screen)).toBe(true);
+  });
 });
 
 // 2026-09-30 に実際に止まった画面（Claude in Chrome の案内）
