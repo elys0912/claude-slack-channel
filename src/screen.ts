@@ -51,7 +51,9 @@ function textColumn(line: string): number {
  */
 export function parseChoiceScreen(screen: string): ChoiceScreen | undefined {
   const lines = linesWithoutTrailingSpace(screen);
-  const cursorLine = findCursorLine(lines);
+  // 選択画面の間は入力欄が消える。空の入力欄より上は履歴なので見ない
+  // （conhost では手元の入力が `> /compact` の形で残り、下の `⎿` の行と並んで選択肢に見えるため）
+  const cursorLine = findCursorLine(lines, lastEmptyPromptLine(lines) + 1);
   if (cursorLine < 0) return undefined;
 
   const cursorText = lines[cursorLine] ?? '';
@@ -85,10 +87,18 @@ function nonEmptyTail(screen: string, maxLines: number): string[] {
     .slice(-maxLines);
 }
 
-/** 下から最初に見つかったカーソル行の位置。無ければ -1 */
-function findCursorLine(lines: readonly string[]): number {
-  for (let i = lines.length - 1; i >= 0; i--) {
+/** 下から最初に見つかったカーソル行の位置（first 行目より上は見ない）。無ければ -1 */
+function findCursorLine(lines: readonly string[], first: number): number {
+  for (let i = lines.length - 1; i >= first; i--) {
     if (CURSOR_RE.test(lines[i] ?? '')) return i;
+  }
+  return -1;
+}
+
+/** いちばん下の空の入力欄の行の位置。無ければ -1 */
+function lastEmptyPromptLine(lines: readonly string[]): number {
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (EMPTY_PROMPT_RE.test(lines[i] ?? '')) return i;
   }
   return -1;
 }
