@@ -24,7 +24,7 @@ Slack から実行できる範囲を変える前（`-PermissionMode` を変え�
 また、Claude Code のセッションの中（VS Code 拡張など）から起動すると、親のセッションの目印になる環境変数（`CLAUDECODE` など）が引き継がれる。これがあると子セッションとして扱われ、`reply` ツールが使えなくなるので、消してから起動する。
 
 **作業フォルダーの local スコープにも `slackbridge` を登録する。** Claude Code 2.1.289 から、`--dangerously-load-development-channels server:<名前>` は、設定ファイル（user・project・local など）に同じ名前の MCP サーバーが無いと受け付けない。`--mcp-config` で渡したサーバーは数に入らない。
-そこで起動スクリプトは、起動の前に `claude mcp add -s local slackbridge -e SLACK_CHANNEL_PLACEHOLDER=1 -- node <clone 先>\dist\src\main.js` を作業フォルダーで実行する（登録済みなら何もしない）。登録先は `%USERPROFILE%\.claude.json` の、その作業フォルダーの欄。
+そこで起動スクリプトは起動の前に `claude mcp add -s local slackbridge -e SLACK_CHANNEL_PLACEHOLDER=1 -- node <clone 先>\dist\src\main.js` を作業フォルダーで実行する（登録済みなら何もしない）。登録先は `%USERPROFILE%\.claude.json` の、その作業フォルダーの欄。
 Slack のセッションは `--strict-mcp-config` なので、この登録は読み込まれず、`--mcp-config` のサーバーが動く。普段のセッションでは読み込まれるが、`SLACK_CHANNEL_PLACEHOLDER=1` のときのサーバーはツールを持たず、Slack にも状態ディレクトリにも触らない。
 要らなくなったら、作業フォルダーで `claude mcp remove -s local slackbridge` を実行する。
 
@@ -40,7 +40,7 @@ Slack のセッションは `--strict-mcp-config` なので、この登録は読
 | `acceptEdits` | 作業フォルダーの中のファイル編集を**確認なしで**通す。Slack からの指示だけでファイルが書き換わるので、使うのは信頼できる相手とだけにする |
 | `plan` | 読み取りと計画だけを行い、変更はしない |
 
-どのモードでも deny のルールは効く。`bypassPermissions` への切り替えは、`channel-settings.json` で禁止している。
+どのモードでも deny のルールは適用される。`bypassPermissions` への切り替えは `channel-settings.json` で禁止している。
 
 ### [config/channel-settings.json](../config/channel-settings.json)
 
@@ -79,7 +79,7 @@ deny は常に allow より優先される（評価順は deny → ask → allow
 | WebFetch | `WebFetch(domain:<ホスト>)` | URL のホストに絞る。ホストが英小文字・数字・`.`・`-` だけのとき（`*.example.com` や IPv6 の `[::1]` からは作らない）。ツール全体の `WebFetch` は作らない |
 | MCP の個別ツール | `mcp__<サーバー>__<ツール>` | ツール名（頭にサーバー名が付いていれば除く）を語に分け、最初の語が `get` / `list` / `read` / `search` / `find` / `describe` / `view` / `show` で、`create` / `delete` / `send` / `download` / `replace` / `or` / `and` などの書き込みの語を含まないもの |
 
-- シェルのルールは、引数を取らない呼び出しの完全一致だけにする。`Bash(git status)` は `git status` そのものにだけ効き、`git status --short` には効かない。
+- シェルのルールは引数を取らない呼び出しの完全一致だけにする。`Bash(git status)` は `git status` そのものにだけ効き、`git status --short` には効かない。
   引数付きの呼び出し（`ls C:\x` など）の確認には ♾ を出さない。引数を問わない形（`:*`）にすると、一覧のコマンドでも引数で読み書きできるため。
   - `git log` は `--output=<ファイル>` で任意のファイルを書き、`-p` / `--all` で過去に commit されたファイル（作業ツリーでは deny の `.env` など）の中身を出す。`--ext-diff` / `--textconv` で設定済みの外部プログラムも動かす。
   - `git branch` は `-D` / `-m` / `-f` などで ref を消す・動かし、名前だけの引数でブランチを作り、`--edit-description` でエディタを起動する。
@@ -87,10 +87,10 @@ deny は常に allow より優先される（評価順は deny → ask → allow
   - このため `git log` / `git branch` / `Get-ChildItem` は一覧から外し、`ls` / `dir` は引数なしだけにした。
   - `cat` / `type` / `Get-Content` / `git diff` / `git show` などの読み取りは、プロジェクトの外や deny のファイル（`.env` など）を読めるので置かない。
     Claude Code の `Read` の deny は、シェルの子プロセスには効かない前提で扱う。
-- 入力の綴りが、大文字小文字を除いて一覧と同じときだけ作り、ルールには一覧の綴りを使う（`GIT Status` からは `Bash(git status)`）。
+- 入力の綴りが大文字小文字を除いて一覧と同じときだけ作り、ルールには一覧の綴りを使う（`GIT Status` からは `Bash(git status)`）。
   拡張子や版番号の付いた名前（`git.exe` / `ls.cmd` / `dir2`）、引用符やパスの付いた名前からは作らない。一覧に無い別のプログラムにルールができないようにするため。
 - 複合コマンド（`;` / `&&` / `||` / `|` / `&` / 改行 / `$(` / バッククォート）とリダイレクト（`<` / `>`）を含むものからは作らない。区切りは「全部許可」の ask との照合と同じ定義を使う。
-- 作ったルールは、deny と照合してから追加する（[使い方の詳細](usage.md#許可リストへの追加-今後も許可)）。
+- 作ったルールは deny と照合してから追加する（[使い方の詳細](usage.md#許可リストへの追加-今後も許可)）。
 - 前の方式で `allow-extra.json` に入ったルール（`Bash(git log:*)`・`PowerShell(npm.cmd:*)`・ツール全体の `WebFetch` など）は、起動のたびに今の方式で作れる形かを確かめ、作れないものは allow に入れない。
   `allow-extra.json` は書き換えず、起動の通知（Slack）とターミナルの警告で一覧を知らせる。要らなければ `!rules` から消す。
 
@@ -99,7 +99,7 @@ deny は常に allow より優先される（評価順は deny → ask → allow
 
 ## セキュリティ
 
-- 送信者は、Slack のユーザー ID（`allowFrom`）とワークスペース ID（`teamId`）で判定する。ワークスペース ID は、イベントのワークスペースと、送信者が所属するワークスペースの両方を照合する。表示名やメールアドレスでは判定しない。
+- 送信者は Slack のユーザー ID（`allowFrom`）とワークスペース ID（`teamId`）で判定する。ワークスペース ID は、イベントのワークスペースと、送信者が所属するワークスペースの両方を照合する。表示名やメールアドレスでは判定しない。
   ボタン操作では、押された場所が許可ユーザーとの DM か `channels` のチャンネルであることも確かめる。
 - トークンは状態ディレクトリの `.env` にだけ置く。環境変数からは読まず、MCP の設定ファイルにも書かない。
 - ログに出るトークン（`xox` + 英小文字1字 + `-` で始まるもの全般、`xapp-`、`Bearer ...`）と、GitHub のトークン（`ghp_` など・`github_pat_`）、AWS のアクセスキー ID（`AKIA` / `ASIA`）、`sk-` で始まる API キーは伏せ字にする。`!screen` で送る画面も同じ範囲を伏せる。
@@ -108,7 +108,7 @@ deny は常に allow より優先される（評価順は deny → ask → allow
 
 ### 複数のユーザーで使うとき
 
-`allowFrom` の全員が、同じセッションを共有する。実行許可のメッセージは、最後に話しかけたスレッドに届く（DM 全体に配ったときは、全員の DM に届く）。
+`allowFrom` の全員が同じセッションを共有する。実行許可のメッセージは最後に話しかけたスレッドに届く（DM 全体に配ったときは、全員の DM に届く）。
 **誰か1人が答えれば、それで決まる**。ほかの人に配信したメッセージの表示も、結果に変わる。
 チャンネルでは、`allowFrom` に無いメンバーにも、実行しようとしているコマンドの内容が見える。`!screen` の画面の内容や選択肢のボタンも、同じスレッドに出る。
 
@@ -119,10 +119,10 @@ deny は常に allow より優先される（評価順は deny → ask → allow
 次のリスクは、使う側が承知しておく。
 
 - 許可ユーザーの Slack アカウントが乗っ取られると、手元の Claude をそのまま操作される。
-- 確認で許可した操作は、その内容どおりに実行される。確認の内容はよく読む。
+- 確認で許可した操作はその内容どおりに実行される。確認の内容はよく読む。
 - 「今後も許可」で足したルールは、以後その操作を確認なしで実行させる。シェルのルールは引数なしの完全一致だけだが、`git status` も `core.fsmonitor` などのリポジトリの設定にあるプログラムを動かす（その設定を書き換えられていることが前提）。
   要らなくなったら `!rules` から消す。
-- 「今後も許可」の MCP のツールは、名前だけで読み取り専用と判断する。名前と中身が違うサーバー（`get_` で外部に送るものなど）は見分けられない。
+- 「今後も許可」の MCP のツールは名前だけで読み取り専用と判断する。名前と中身が違うサーバー（`get_` で外部に送るものなど）は見分けられない。
 - `extra-mcp.json` に登録した MCP サーバーのツールは、確認なしで実行される。
 - `!screen` の選択肢ボタンで、ターミナルの選択画面に Slack から答えられる（信頼の確認などの画面も含む）。
 - Slack のメッセージ・リポジトリの中身・Web ページに仕込まれた指示（プロンプトインジェクション）を、Claude が実行しようとすることがある。最後の防御は確認での拒否になる。
