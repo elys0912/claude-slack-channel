@@ -3,7 +3,7 @@
 Slack のメッセージを、手元の PC で動いている Claude Code のセッションに中継する MCP channel サーバー（以下、ブリッジ）。
 Claude の返信やリアクションを受け取るのも、実行許可に答えるのも、Slack の中で済む。Windows 専用。
 
-初めて使うときは、「必要なもの」から「起動」までを順に進めれば動かせる。その先は、必要になったときに [ドキュメント](#ドキュメント) の該当するファイルを開く。動かないときは [トラブルシューティング](docs/reference.md#トラブルシューティング) を見る。
+初めて使うときは、「必要なもの」から「起動」までを順に進めれば動かせる。その先は必要になったときに [ドキュメント](#ドキュメント) の該当するファイルを開く。動かないときは [トラブルシューティング](docs/reference.md#トラブルシューティング) を見る。
 
 ## 概要
 
@@ -24,7 +24,7 @@ Claude Code（claude.exe、手元のセッション）
 
 ## 必要なもの
 
-- Windows と Windows Terminal。VS Code の統合ターミナルは、動作を確かめていないので対象外。
+- Windows と Windows Terminal。VS Code の統合ターミナルは動作を確かめていないので対象外。
 - Node.js 24 以上。Claude Code が `node` コマンドでこのサーバーを起動するので、`node` と `npm` に **PATH を通しておく**。
 - Claude Code。channels 機能と、channel 経由の実行許可の確認に対応した版が要る（最低バージョンは確かめていない）。`claude.exe` は次の順に探す。
   1. PATH 上の `claude`
@@ -184,10 +184,10 @@ Claude Code 側の出来事（使用量の上限、ターミナル側の入力�
 Slack から手元の PC を操作する以上、何をどこまで許すかが一番の注意点になる。詳しくは [docs/security.md](docs/security.md) を参照。
 
 - 送信者は Slack のユーザー ID（`allowFrom`）とワークスペース ID（`teamId`）で判定する。表示名やメールアドレスは使わない。
-- Slack のセッションは、ユーザー設定（`~/.claude/settings.json`）を読まない設定で起動する。普段使いのために入れた緩い許可を、Slack からの指示に効かせないため。権限は [config/channel-settings.json](config/channel-settings.json) で絞る。
+- Slack のセッションはユーザー設定（`~/.claude/settings.json`）を読まない設定で起動する。普段使いのために入れた緩い許可を、Slack からの指示に効かせないため。権限は [config/channel-settings.json](config/channel-settings.json) で絞る。
 - 主に次のリスクが残る（すべては [残るリスク](docs/security.md#残るリスク) にある）。
   - 許可ユーザーの Slack アカウントが乗っ取られると、手元の Claude をそのまま操作される。
-  - 確認で許可した操作は、その内容どおりに実行される。確認の中身はよく読む。
+  - 確認で許可した操作はその内容どおりに実行される。確認の中身はよく読む。
   - Slack のメッセージ・リポジトリの中身・Web ページに仕込まれた指示（プロンプトインジェクション）を、Claude が実行しようとすることがある。最後の防御は確認での拒否になる。
 - トークンが漏れたら、まず App-Level Token を Revoke する。手順は [トークンが漏れたとき](docs/security.md#トークンが漏れたとき) にある。
 
